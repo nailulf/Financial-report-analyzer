@@ -166,3 +166,63 @@ def finish_run(
         "Finished run %d: status=%s processed=%d failed=%d skipped=%d",
         run_id, status, stocks_processed, stocks_failed, stocks_skipped,
     )
+
+
+# ------------------------------------------------------------------
+# Refresh job tracking (UI-triggered per-ticker refresh jobs)
+# ------------------------------------------------------------------
+
+def get_pending_refresh_job(ticker: str) -> int | None:
+    """
+    Return the id of the most recent active refresh job for ticker, or None.
+    Matches both 'pending' and 'running' so a re-run can re-attach to a job
+    that was already started but crashed before completing.
+    """
+    resp = (
+        get_client()
+        .table("stock_refresh_requests")
+        .select("id")
+        .eq("ticker", ticker.upper())
+        .in_("status", ["pending", "running"])
+        .order("requested_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = resp.data or []
+    return rows[0]["id"] if rows else None
+
+
+def update_refresh_job(job_id: int, **fields) -> None:
+    """Update arbitrary fields on a stock_refresh_requests row."""
+    get_client().table("stock_refresh_requests").update(fields).eq("id", job_id).execute()
+
+
+def update_refresh_scraper_progress(
+    job_id: int,
+    scraper_name: str,
+    status: str,
+    rows_added: int | None = None,
+    duration_ms: int | None = None,
+    error_msg: str | None = None,
+) -> None:
+    """Update a refresh_scraper_progress row for job_id + scraper_name."""
+    from datetime import datetime, timezone
+    fields: dict = {
+        "status": status,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if rows_added is not None:
+        fields["rows_added"] = rows_added
+    if duration_ms is not None:
+        fields["duration_ms"] = duration_ms
+    if error_msg is not None:
+        fields["error_msg"] = error_msg
+    (
+        get_client()
+        .table("refresh_scraper_progress")
+        .update(fields)
+        .eq("request_id", job_id)
+        .eq("scraper_name", scraper_name)
+        .execute()
+    )
+    logger.debug("Refresh progress: job=%d scraper=%s status=%s", job_id, scraper_name, status)

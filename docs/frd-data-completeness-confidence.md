@@ -30,7 +30,6 @@ When completeness is low, users can trigger a data refresh and — if the scrape
 
 ## Non-Goals
 
-- Automated re-scraping on a schedule (covered by existing cron/run_all.py)
 - Confidence scores for individual fields (too granular for now)
 - User-facing data editing or manual overrides
 
@@ -408,12 +407,29 @@ Triggers a single-ticker scraper run.
 { job_id: number }
 ```
 
-**Implementation:** Inserts a row into `stock_refresh_requests`, then spawns a child process running:
-```
-python run_all.py --ticker {TICKER} --full
-```
+**Implementation:**
+1. If a `pending` or `running` job already exists for this ticker, returns its `job_id` (idempotent — prevents duplicate jobs from multiple button clicks).
+2. Otherwise, inserts a row into `stock_refresh_requests` and seeds `refresh_scraper_progress` rows (one per scraper, status `waiting`).
+3. Fires a `workflow_dispatch` event to GitHub Actions via the REST API, passing `mode=full`, `ticker`, and `job_id` as inputs.
 
-> **Note:** Since Vercel Functions have a 10s timeout, the actual Python process must be run via a different mechanism. Options: (a) a local Next.js dev server that can spawn processes, (b) a dedicated local API server (FastAPI), (c) a Supabase Edge Function. For personal use on local dev, option (a) is simplest. This is an open question — see §10.
+The GitHub Actions runner executes `python run_all.py --full --ticker {TICKER} --job-id {JOB_ID}`, which auto-detects the job and updates all progress rows in real time.
+
+Requires two environment variables on Vercel:
+- `GITHUB_ACTIONS_TOKEN` — GitHub PAT with `workflow` scope
+- `GITHUB_REPO` — repository slug, e.g. `yourname/idx-stock-analysis`
+
+If these are unset, the job row is still created but no runner is triggered (graceful degradation — user can still run Python locally).
+
+### 7.4 GET `/api/stocks/[ticker]/refresh`
+
+Returns the most recent active (`pending` or `running`) job for the ticker, or `{ job_id: null }`.
+
+Used by the `DataQualityPanel` on mount to resume polling if the user navigated away during an active refresh.
+
+**Response:**
+```typescript
+{ job_id: number | null, status?: 'pending' | 'running' }
+```
 
 ### 7.3 GET `/api/stocks/[ticker]/refresh/[job_id]`
 
@@ -481,7 +497,30 @@ Populates `company_documents` table.
 
 - Add `corporate_events` and `document_links` as Layer 6 scrapers
 - After all scrapers complete, call `update_scores_for_ticker(ticker)` (single) or `update_all_scores()` (full run)
-- Write per-scraper success/fail result to `stock_refresh_requests` row if a request_id is provided
+- `--job-id ID` CLI flag links a run to a `stock_refresh_requests` row. When set (or auto-detected for single-ticker runs), each scraper call updates its `refresh_scraper_progress` row (`waiting → running → done/failed`) with `rows_added` and `duration_ms`. On completion, `stock_refresh_requests` is finalized with `status`, `finished_at`, after-scores, and `no_new_data`.
+- Auto-detection: if `--ticker BBRI` is given without `--job-id`, the script queries `stock_refresh_requests` for the latest `pending` or `running` job for that ticker and re-attaches to it automatically.
+
+### 8.5 GitHub Actions Workflow (`.github/workflows/scraper.yml`)
+
+The workflow has two triggers:
+
+**Scheduled (automatic):**
+
+| Schedule | Mode | Description |
+|---|---|---|
+| Weekdays 16:30 WIB (09:30 UTC) | `--daily` | Prices + money flow, after IDX market close |
+| Sunday 15:00 WIB (08:00 UTC) | `--weekly` | Stock universe refresh |
+| 1st of month 14:00 WIB (07:00 UTC) | `--quarterly` | Financials + company profiles |
+
+**`workflow_dispatch` (UI-triggered):**
+
+Accepts inputs `mode`, `ticker`, and `job_id`. Called by `POST /api/stocks/[ticker]/refresh` via the GitHub REST API. Runs on `ubuntu-latest`, installs Python deps from `python/requirements.txt`, and executes:
+
+```bash
+cd python && python run_all.py --{mode} --ticker {ticker} --job-id {job_id}
+```
+
+Requires GitHub Secrets: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`.
 
 ---
 
@@ -554,9 +593,9 @@ export interface RefreshJob {
 
 ## 10. Open Questions
 
-| # | Question | Default assumption |
+| # | Question | Resolution |
 |---|---|---|
-| OQ-1 | **Refresh execution model:** Vercel Functions can't spawn long Python processes. Options: (a) local dev only, (b) dedicated FastAPI endpoint on local machine, (c) Supabase Edge Function trigger. | For now: local dev only. POST /api refresh writes a request row and the user manually runs `python run_all.py --ticker {TICKER}`. Production path TBD. |
+| OQ-1 | **Refresh execution model:** Vercel Functions can't spawn long Python processes. | ✅ **Resolved** — GitHub Actions `workflow_dispatch`. POST /api/refresh creates the job row then calls the GitHub REST API to trigger a runner. Scheduled batch runs also use GitHub Actions cron. See §8.5. |
 | OQ-2 | **Score freshness:** Recompute scores live on every page load (query v_data_completeness) or only on scraper run? | Persist to `stocks` table on scraper run. Page load reads stored scores. |
 | OQ-3 | **Confidence score storage:** Compute in Python (more flexibility) or in SQL view? | Python, in `score_calculator.py`. SQL view is too rigid for sanity checks. |
 | OQ-4 | **Negative equity handling:** Several IDX stocks (especially banks) have edge cases. Flag or penalize? | Flag in confidence breakdown, do not penalize completeness. |
@@ -584,10 +623,14 @@ Phase 2 — Extended data + breakdown
   11. Add alternative sources panel (static content, shown when categories = 0)
 
 Phase 3 — Refresh flow
-  12. Add stock_refresh_requests table
-  13. POST /api/stocks/[ticker]/refresh + GET /api/stocks/[ticker]/refresh/[job_id]
-  14. Refresh UI flow (modal → progress log → result diff)
-  15. Resolve OQ-1 (execution model for production)
+  12. Add stock_refresh_requests + refresh_scraper_progress tables
+  13. POST /api/stocks/[ticker]/refresh (idempotent, triggers GitHub Actions)
+  14. GET /api/stocks/[ticker]/refresh (active job check, for UI resume-on-mount)
+  15. GET /api/stocks/[ticker]/refresh/[job_id] (polling endpoint)
+  16. Refresh UI flow (modal → live per-scraper progress log → score diff)
+  17. ✅ OQ-1 resolved — GitHub Actions workflow_dispatch (see §8.5)
+  18. run_all.py --job-id flag + auto-detection + _run_tracked / _finalize_job helpers
+  19. supabase_client.py refresh job helpers (get_pending_refresh_job, update_refresh_job, update_refresh_scraper_progress)
 ```
 
 ---

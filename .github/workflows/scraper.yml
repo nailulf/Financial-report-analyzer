@@ -1,0 +1,89 @@
+name: IDX Scraper
+
+on:
+  # ---------------------------------------------------------------------------
+  # Scheduled runs — automated batch updates
+  # IDX closes at 16:00 WIB (09:00 UTC). Scraper runs 30 min after close.
+  # ---------------------------------------------------------------------------
+  schedule:
+    - cron: '30 9 * * 1-5'   # Daily (Mon–Fri): prices + money flow
+    - cron: '0  8 * * 0'     # Weekly (Sunday): stock universe refresh
+    - cron: '0  7 1 * *'     # Monthly (1st): financials + company profiles
+
+  # ---------------------------------------------------------------------------
+  # Manual / UI-triggered runs — dispatched by the Next.js refresh API route
+  # ---------------------------------------------------------------------------
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run mode'
+        required: true
+        default: 'full'
+        type: choice
+        options: [daily, weekly, quarterly, full]
+      ticker:
+        description: 'Single ticker (e.g. BBRI). Leave blank for all stocks.'
+        required: false
+        default: ''
+      job_id:
+        description: 'stock_refresh_requests.id to link progress updates to.'
+        required: false
+        default: ''
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: python/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r python/requirements.txt
+
+      - name: Determine run args
+        id: args
+        run: |
+          # Scheduled events pick a mode based on which cron fired
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            HOUR="${{ github.event.schedule }}"
+            case "${{ github.event.schedule }}" in
+              "30 9 * * 1-5") MODE="daily" ;;
+              "0 8 * * 0")    MODE="weekly" ;;
+              "0 7 1 * *")    MODE="quarterly" ;;
+              *)               MODE="daily" ;;
+            esac
+            echo "mode=$MODE" >> $GITHUB_OUTPUT
+            echo "extra_args=--$MODE" >> $GITHUB_OUTPUT
+          else
+            # workflow_dispatch: use provided inputs
+            MODE="${{ inputs.mode }}"
+            TICKER="${{ inputs.ticker }}"
+            JOB_ID="${{ inputs.job_id }}"
+            EXTRA="--$MODE"
+            if [ -n "$TICKER" ]; then
+              EXTRA="$EXTRA --ticker $TICKER"
+            fi
+            if [ -n "$JOB_ID" ]; then
+              EXTRA="$EXTRA --job-id $JOB_ID"
+            fi
+            echo "mode=$MODE" >> $GITHUB_OUTPUT
+            echo "extra_args=$EXTRA" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run scraper
+        env:
+          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          cd python
+          echo "Running: python run_all.py ${{ steps.args.outputs.extra_args }}"
+          python run_all.py ${{ steps.args.outputs.extra_args }}

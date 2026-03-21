@@ -13,12 +13,13 @@ export async function getFinancialSeries(ticker: string): Promise<FinancialYear[
              total_debt, cash_and_equivalents, total_equity, dividends_paid`)
     .eq('ticker', ticker.toUpperCase())
     .eq('quarter', 0)
-    .order('year', { ascending: true })
-    .limit(7)
+    .order('year', { ascending: false })
+    .limit(10)
 
   if (error) return []
 
-  return (data as Financials[]).map((r) => ({
+  // Reverse so charts render oldest → newest (left to right)
+  return ((data as Financials[]).reverse()).map((r) => ({
     year: r.year,
     revenue: parseBigInt(r.revenue),
     gross_profit: parseBigInt(r.gross_profit),

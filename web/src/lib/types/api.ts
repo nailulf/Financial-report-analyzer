@@ -21,6 +21,7 @@ export interface ScreenerRow {
   net_margin: number | null
   dividend_yield: number | null
   completeness_score: number | null
+  confidence_score: number | null
 }
 
 export interface StockHeader {
@@ -126,6 +127,7 @@ export interface Shareholder {
   holder_type: string | null
   percentage: number | null
   shares_held: number | null
+  report_date: string | null   // 'YYYY-MM-DD' snapshot date; null for IDX API source
 }
 
 // Raw view row from v_data_completeness

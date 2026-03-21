@@ -46,7 +46,6 @@ export default async function MoneyFlowPage({ searchParams }: PageProps) {
   // Broker-specific range (independent — falls back to global range)
   const brokerFrom = broker_from ?? from
   const brokerTo   = broker_to   ?? to
-  const brokerRangeLabel = formatRangeLabel(brokerFrom, brokerTo)
 
   const [
     { buyers, sellers, isRangeMode },
@@ -110,14 +109,13 @@ export default async function MoneyFlowPage({ searchParams }: PageProps) {
         </div>
       )}
 
-      {/* Broker Activity — independent date range filter */}
+      {/* Broker Activity — independent date range filter (broker_from / broker_to params) */}
       <Suspense fallback={<ChartSkeleton height={300} />}>
         <BrokerActivitySection
           ticker={ticker?.toUpperCase()}
           date={date}
           from={brokerFrom}
           to={brokerTo}
-          rangeLabel={brokerRangeLabel}
         />
       </Suspense>
     </main>

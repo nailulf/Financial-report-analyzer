@@ -43,7 +43,8 @@ def _days_since_date(d: date | None) -> int | None:
 def _days_since_iso(iso: str | None) -> int | None:
     if not iso:
         return None
-    dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    from dateutil import parser as dateutil_parser
+    dt = dateutil_parser.isoparse(iso)
     return (datetime.now(timezone.utc) - dt).days
 
 

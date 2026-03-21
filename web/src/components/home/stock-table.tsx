@@ -75,6 +75,8 @@ export function StockTable({
             <SortHeader col="pbv_ratio"  label="P/BV"       {...shProps} />
             <SortHeader col="roe"        label="ROE"        {...shProps} />
             <SortHeader col="net_margin" label="Net Margin" {...shProps} />
+            <th className="text-right px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Completeness</th>
+            <th className="text-right px-4 py-3 text-xs font-semibold text-gray-500 uppercase tracking-wide">Confidence</th>
             <SortHeader col="market_cap" label="Mkt Cap"    {...shProps} />
           </tr>
         </thead>
@@ -118,6 +120,20 @@ export function StockTable({
                 row.net_margin != null                         ? 'text-red-500'   : 'text-gray-400'
               }`}>
                 {formatPercent(row.net_margin)}
+              </td>
+              <td className={`px-4 py-3 text-right font-medium ${
+                row.completeness_score != null && row.completeness_score >= 80 ? 'text-green-600' :
+                row.completeness_score != null && row.completeness_score >= 60 ? 'text-amber-600' :
+                row.completeness_score != null                                  ? 'text-red-500'   : 'text-gray-400'
+              }`}>
+                {row.completeness_score != null ? `${row.completeness_score}` : '—'}
+              </td>
+              <td className={`px-4 py-3 text-right font-medium ${
+                row.confidence_score != null && row.confidence_score >= 80 ? 'text-green-600' :
+                row.confidence_score != null && row.confidence_score >= 60 ? 'text-amber-600' :
+                row.confidence_score != null                                ? 'text-red-500'   : 'text-gray-400'
+              }`}>
+                {row.confidence_score != null ? `${row.confidence_score}` : '—'}
               </td>
               <td className="px-4 py-3 text-right text-gray-600">{formatIDRCompact(row.market_cap)}</td>
             </tr>

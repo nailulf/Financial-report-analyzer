@@ -18,6 +18,7 @@ export function Navbar() {
           <Link href="/" className="hover:text-gray-900 transition-colors">Screener</Link>
           <Link href="/money-flow" className="hover:text-gray-900 transition-colors">Money Flow</Link>
           <Link href="/compare" className="hover:text-gray-900 transition-colors">Compare</Link>
+          <Link href="/investors" className="hover:text-gray-900 transition-colors">Investors</Link>
         </nav>
       </div>
     </header>

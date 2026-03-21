@@ -1,3 +1,16 @@
+'use client'
+
+import { useState } from 'react'
+
+// Locale-independent date formatter — avoids SSR/client hydration mismatch
+const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+function fmtDate(iso: string, long = false): string {
+  const [y, m, d] = iso.split('-').map(Number)
+  const mon = long
+    ? ['January','February','March','April','May','June','July','August','September','October','November','December'][m-1]
+    : MONTHS[m-1]
+  return d ? `${d} ${mon} ${y}` : `${mon} ${y}`
+}
 import type { CompanyProfileData, Officer, Shareholder } from '@/lib/types/api'
 
 function roleOrder(role: string | null) {
@@ -30,13 +43,25 @@ interface Props {
   profile: CompanyProfileData | null
   officers: Officer[]
   shareholders: Shareholder[]
+  shareholderHistory?: Shareholder[][]  // grouped by report_date, newest first
 }
 
-export function CompanyProfileSection({ profile, officers, shareholders }: Props) {
+export function CompanyProfileSection({ profile, officers, shareholders, shareholderHistory = [] }: Props) {
   const hasAnyData = profile || officers.length > 0 || shareholders.length > 0
   if (!hasAnyData) return null
 
   const sortedOfficers = [...officers].sort((a, b) => roleOrder(a.role) - roleOrder(b.role))
+
+  // For history: derive available dates from the history prop
+  const historyDates = shareholderHistory.map((snap) => snap[0]?.report_date ?? null).filter(Boolean) as string[]
+  const [selectedDateIdx, setSelectedDateIdx] = useState(0)
+
+  // The displayed shareholders: if history exists, show selected snapshot; else use prop
+  const displayedShareholders = shareholderHistory.length > 0
+    ? (shareholderHistory[selectedDateIdx] ?? shareholders)
+    : shareholders
+
+  const snapshotDate = displayedShareholders[0]?.report_date ?? null
 
   return (
     <div className="space-y-6">
@@ -105,11 +130,34 @@ export function CompanyProfileSection({ profile, officers, shareholders }: Props
         )}
 
         {/* Shareholders */}
-        {shareholders.length > 0 && (
+        {displayedShareholders.length > 0 && (
           <div className="bg-white rounded-xl border border-gray-200 p-6">
-            <h2 className="text-sm font-semibold text-gray-700 mb-4">Major Shareholders</h2>
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-sm font-semibold text-gray-700">Major Shareholders ≥1%</h2>
+                {snapshotDate && (
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    As of {fmtDate(snapshotDate, true)}
+                  </p>
+                )}
+              </div>
+              {/* History selector — only shown if multiple snapshots exist */}
+              {historyDates.length > 1 && (
+                <select
+                  value={selectedDateIdx}
+                  onChange={(e) => setSelectedDateIdx(Number(e.target.value))}
+                  className="text-xs border border-gray-200 rounded px-2 py-1 text-gray-600 bg-white"
+                >
+                  {historyDates.map((d, i) => (
+                    <option key={d} value={i}>
+                      {fmtDate(d)}{i === 0 ? ' (latest)' : ''}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
             <div className="space-y-3">
-              {shareholders.map((s, i) => (
+              {displayedShareholders.map((s, i) => (
                 <div key={i} className="flex items-center gap-3">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between mb-0.5">

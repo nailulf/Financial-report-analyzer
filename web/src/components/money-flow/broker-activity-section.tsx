@@ -38,7 +38,6 @@ interface Props {
   date?: string
   from: string
   to: string
-  rangeLabel: string
 }
 
 // ── Range mode table (aggregated buy/sell/net per broker) ─────────────────────
@@ -143,7 +142,7 @@ function SingleDayTable({ rows }: { rows: Awaited<ReturnType<typeof getBrokerAct
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export async function BrokerActivitySection({ ticker, date, from, to, rangeLabel }: Props) {
+export async function BrokerActivitySection({ ticker, date, from, to }: Props) {
   const isMultiDay = from !== to
 
   if (!ticker) {
@@ -154,14 +153,12 @@ export async function BrokerActivitySection({ ticker, date, from, to, rangeLabel
             <h2 className="text-sm font-semibold text-gray-700">Broker Activity</h2>
             <p className="text-xs text-gray-400 mt-0.5">Per-stock broker transaction breakdown</p>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-blue-600 bg-blue-50 border border-blue-100 rounded px-2 py-1 font-medium">
-              {rangeLabel}
-            </span>
-            <BrokerSearchForm />
-          </div>
+          <BrokerSearchForm />
         </div>
-        <div className="py-10 text-center text-gray-400 text-sm">
+        <div className="mb-4">
+          <DateRangePicker from={from} to={to} fromParam="broker_from" toParam="broker_to" />
+        </div>
+        <div className="py-8 text-center text-gray-400 text-sm">
           Enter a ticker above to view broker activity for this period
         </div>
       </div>
@@ -175,7 +172,7 @@ export async function BrokerActivitySection({ ticker, date, from, to, rangeLabel
     const brokerData = await getBrokerActivityRange(upperTicker, from, to)
     return (
       <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <div className="flex items-start justify-between flex-wrap gap-4 mb-5">
+        <div className="flex items-start justify-between flex-wrap gap-4 mb-2">
           <div>
             <h2 className="text-sm font-semibold text-gray-700">
               Broker Activity —{' '}
@@ -187,12 +184,10 @@ export async function BrokerActivitySection({ ticker, date, from, to, rangeLabel
               Aggregated buy / sell / net — sorted by absolute net activity
             </p>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-blue-600 bg-blue-50 border border-blue-100 rounded px-2 py-1 font-medium">
-              {rangeLabel}
-            </span>
-            <BrokerSearchForm currentTicker={upperTicker} />
-          </div>
+          <BrokerSearchForm currentTicker={upperTicker} />
+        </div>
+        <div className="mb-5">
+          <DateRangePicker from={from} to={to} ticker={upperTicker} fromParam="broker_from" toParam="broker_to" />
         </div>
         <RangeTable rows={brokerData} />
       </div>
@@ -212,7 +207,7 @@ export async function BrokerActivitySection({ ticker, date, from, to, rangeLabel
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-6">
-      <div className="flex items-start justify-between flex-wrap gap-4 mb-4">
+      <div className="flex items-start justify-between flex-wrap gap-4 mb-2">
         <div>
           <h2 className="text-sm font-semibold text-gray-700">
             Broker Activity —{' '}
@@ -222,12 +217,10 @@ export async function BrokerActivitySection({ ticker, date, from, to, rangeLabel
           </h2>
           <p className="text-xs text-gray-400 mt-0.5">Top brokers by buy transaction value</p>
         </div>
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-blue-600 bg-blue-50 border border-blue-100 rounded px-2 py-1 font-medium">
-            {rangeLabel}
-          </span>
-          <BrokerSearchForm currentTicker={upperTicker} />
-        </div>
+        <BrokerSearchForm currentTicker={upperTicker} />
+      </div>
+      <div className="mb-4">
+        <DateRangePicker from={from} to={to} ticker={upperTicker} fromParam="broker_from" toParam="broker_to" />
       </div>
 
       {dates.length > 0 ? (

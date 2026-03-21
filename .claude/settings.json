@@ -16,7 +16,13 @@
       "Bash(venv/bin/pip install:*)",
       "Bash(venv/bin/python -c \"import yfinance, supabase, curl_cffi, rich, tenacity, dotenv; print\\(''All imports OK''\\)\")",
       "Bash(mkdir -p \"/Users/nailul.fadloil/Documents/Personal spaces/Financial-report-analyzer/web/src/app/api/stocks/[ticker]/refresh\")",
-      "Bash(mkdir -p \"/Users/nailul.fadloil/Documents/Personal spaces/Financial-report-analyzer/web/src/app/api/stocks/[ticker]/refresh/[job_id]\")"
+      "Bash(mkdir -p \"/Users/nailul.fadloil/Documents/Personal spaces/Financial-report-analyzer/web/src/app/api/stocks/[ticker]/refresh/[job_id]\")",
+      "Bash(head -20 grep -n \"^def run\\\\|tickers\\\\|raise\\\\|sys.exit\" \"/Users/nailul.fadloil/Documents/Personal spaces/Financial-report-analyzer/python/scrapers/corporate_events.py\")",
+      "Bash(head -20 grep -n \"NotImplemented\\\\|pass\\\\|TODO\\\\|raise\\\\|def run\" \"/Users/nailul.fadloil/Documents/Personal spaces/Financial-report-analyzer/python/scrapers/corporate_events.py\")",
+      "Read(//Users/nailul.fadloil/Documents/Personal\\\\ spaces/Financial-report-analyzer/python/**)",
+      "Read(//Users/nailul.fadloil/Documents/Personal\\\\ spaces/Financial-report-analyzer/python/scrapers/**)",
+      "Bash(python -c \":*)",
+      "Bash(python run_all.py --fallback-financials --sector finance --dry-run)"
     ],
     "additionalDirectories": [
       "/Users/nailul.fadloil/Documents/Personal spaces/Financial-report-analyzer/web/src/app/stock"

@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useState, useTransition, useEffect } from 'react'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 
 const BOARDS = ['Main', 'Development', 'Acceleration'] as const
@@ -36,6 +36,14 @@ export function ScreenerFilters() {
   const [open, setOpen] = useState(() => hasActiveFilters(readFilters(searchParams)))
   const [filters, setFilters] = useState<FilterState>(() => readFilters(searchParams))
   const [, startTransition] = useTransition()
+
+  // Sync local filter state when the URL changes externally (e.g. back navigation,
+  // sector pill click, or clear-filters from another component).
+  useEffect(() => {
+    const fromUrl = readFilters(searchParams)
+    setFilters(fromUrl)
+    if (hasActiveFilters(fromUrl)) setOpen(true)
+  }, [searchParams])
 
   function applyFilters() {
     const params = new URLSearchParams(searchParams.toString())

@@ -226,4 +226,6 @@ export interface VScreenerRow {
   pbv_ratio: number | null
   dividend_yield: number | null
   payout_ratio: number | null
+  completeness_score: number | null
+  confidence_score: number | null
 }

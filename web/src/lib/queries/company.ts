@@ -54,5 +54,55 @@ export async function getShareholders(ticker: string): Promise<Shareholder[]> {
     holder_type: r.holder_type ?? null,
     percentage: r.percentage != null ? Number(r.percentage) : null,
     shares_held: r.shares_held != null ? Number(r.shares_held) : null,
+    report_date: null,
   }))
+}
+
+export async function getMajorShareholders(ticker: string): Promise<Shareholder[]> {
+  const supabase = await createClient()
+  // Use the v_shareholders_major_latest view which returns only the latest snapshot
+  const { data, error } = await supabase
+    .from('v_shareholders_major_latest')
+    .select('holder_name, holder_type, percentage, shares_held, report_date')
+    .eq('ticker', ticker.toUpperCase())
+    .order('percentage', { ascending: false })
+
+  if (error) return []
+
+  return ((data as any[]) ?? []).map((r) => ({
+    holder_name: r.holder_name,
+    holder_type: r.holder_type ?? null,
+    percentage: r.percentage != null ? Number(r.percentage) : null,
+    shares_held: r.shares_held != null ? Number(r.shares_held) : null,
+    report_date: r.report_date ?? null,
+  }))
+}
+
+export async function getMajorShareholderHistory(ticker: string): Promise<Shareholder[][]> {
+  const supabase = await createClient()
+  // Returns all snapshots grouped by report_date, newest first
+  const { data, error } = await supabase
+    .from('shareholders_major')
+    .select('holder_name, holder_type, percentage, shares_held, report_date')
+    .eq('ticker', ticker.toUpperCase())
+    .order('report_date', { ascending: false })
+    .order('percentage', { ascending: false })
+
+  if (error) return []
+
+  // Group by report_date
+  const byDate = new Map<string, Shareholder[]>()
+  for (const r of (data as any[]) ?? []) {
+    const date = r.report_date as string
+    if (!byDate.has(date)) byDate.set(date, [])
+    byDate.get(date)!.push({
+      holder_name: r.holder_name,
+      holder_type: r.holder_type ?? null,
+      percentage: r.percentage != null ? Number(r.percentage) : null,
+      shares_held: r.shares_held != null ? Number(r.shares_held) : null,
+      report_date: date,
+    })
+  }
+
+  return Array.from(byDate.values())
 }

@@ -29,6 +29,10 @@ export function SectorFilter({ current }: { current?: string }) {
   const pathname = usePathname()
   const searchParams = useSearchParams()
 
+  // Use URL as source of truth for active state so the pill highlights
+  // immediately on click, before the server re-render delivers a new prop.
+  const activeSector = searchParams.get('sector') ?? current
+
   function setSector(sector: string | undefined) {
     const params = new URLSearchParams(searchParams.toString())
     if (sector) params.set('sector', sector)
@@ -42,7 +46,7 @@ export function SectorFilter({ current }: { current?: string }) {
       <button
         onClick={() => setSector(undefined)}
         className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-          !current ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+          !activeSector ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
         }`}
       >
         All
@@ -52,7 +56,7 @@ export function SectorFilter({ current }: { current?: string }) {
           key={value}
           onClick={() => setSector(value)}
           className={`px-3 py-1 rounded-full text-xs font-medium transition-colors whitespace-nowrap ${
-            isActiveSector(current, value) ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+            isActiveSector(activeSector, value) ? 'bg-blue-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
           }`}
         >
           {label}

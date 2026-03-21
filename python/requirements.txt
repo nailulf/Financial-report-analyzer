@@ -27,3 +27,8 @@ rich>=13.7.0              # Pretty tables and progress bars
 
 # Date handling
 python-dateutil>=2.8.2
+
+# PDF/Excel parsing (used by shareholders_pdf.py)
+openpyxl>=3.1.0           # Required by pandas for .xlsx reading
+pdfplumber>=0.10.0        # PDF table extraction (preferred)
+# tabula-py>=2.9.0        # Fallback PDF extractor — requires Java; install if pdfplumber fails

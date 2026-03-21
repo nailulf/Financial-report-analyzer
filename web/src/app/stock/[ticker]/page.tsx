@@ -2,7 +2,7 @@ import { notFound } from 'next/navigation'
 import { getStockHeader } from '@/lib/queries/stocks'
 import { getFinancialSeries, getLatestMetrics, getQuarterlySeries } from '@/lib/queries/financials'
 import { getPriceHistory } from '@/lib/queries/prices'
-import { getCompanyProfile, getOfficers, getShareholders } from '@/lib/queries/company'
+import { getCompanyProfile, getOfficers, getShareholders, getMajorShareholders, getMajorShareholderHistory } from '@/lib/queries/company'
 import { getDataQuality } from '@/lib/queries/completeness'
 import { computeCAGR } from '@/lib/calculations/cagr'
 import { computeHealthScores } from '@/lib/calculations/health-score'
@@ -31,7 +31,7 @@ export default async function StockPage({ params }: PageProps) {
   const { ticker: tickerParam } = await params
   const ticker = tickerParam.toUpperCase()
 
-  const [stock, metrics, series, quarterlyData, priceHistory, profile, officers, shareholders, dataQuality] =
+  const [stock, metrics, series, quarterlyData, priceHistory, profile, officers, shareholders, majorShareholders, majorShareholderHistory, dataQuality] =
     await Promise.all([
       getStockHeader(ticker),
       getLatestMetrics(ticker),
@@ -41,6 +41,8 @@ export default async function StockPage({ params }: PageProps) {
       getCompanyProfile(ticker),
       getOfficers(ticker),
       getShareholders(ticker),
+      getMajorShareholders(ticker),
+      getMajorShareholderHistory(ticker),
       getDataQuality(ticker),
     ])
 
@@ -111,7 +113,8 @@ export default async function StockPage({ params }: PageProps) {
       <CompanyProfileSection
         profile={profile}
         officers={officers}
-        shareholders={shareholders}
+        shareholders={majorShareholders.length > 0 ? majorShareholders : shareholders}
+        shareholderHistory={majorShareholderHistory}
       />
     </main>
   )

@@ -17,8 +17,8 @@ interface PageProps {
 export default async function HomePage({ searchParams }: PageProps) {
   const sp = await searchParams
   const page    = Math.max(1, Number(sp.page ?? 1))
-  const sortBy  = sp.sort ?? 'market_cap'
-  const sortDir = (sp.dir === 'asc' ? 'asc' : 'desc') as 'asc' | 'desc'
+  const sortBy  = sp.sort ?? 'ticker'
+  const sortDir = (sp.dir === 'asc' ? 'asc' : sp.dir === 'desc' ? 'desc' : sp.sort ? 'desc' : 'asc') as 'asc' | 'desc'
 
   const filters = {
     sector:       sp.sector,

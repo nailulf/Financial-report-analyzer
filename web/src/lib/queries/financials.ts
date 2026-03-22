@@ -42,29 +42,79 @@ export async function getFinancialSeries(ticker: string): Promise<FinancialYear[
   }))
 }
 
-export async function getQuarterlySeries(ticker: string): Promise<QuarterlyFinancial[]> {
-  const supabase = await createClient()
-  const { data, error } = await supabase
-    .from('financials')
-    .select('year, quarter, revenue, gross_profit, net_income, net_margin, roe, eps')
-    .eq('ticker', ticker.toUpperCase())
-    .neq('quarter', 0)
-    .order('year', { ascending: false })
-    .order('quarter', { ascending: false })
-    .limit(8)
+const FINANCIAL_COLS = `year, quarter,
+             revenue, gross_profit, net_income, eps,
+             gross_margin, operating_margin, net_margin,
+             roe, roa,
+             total_assets, total_equity, cash_and_equivalents,
+             total_debt, book_value_per_share,
+             operating_cash_flow, capex, free_cash_flow,
+             current_ratio, debt_to_equity,
+             net_debt, working_capital,
+             roce, interest_coverage,
+             lt_debt_to_equity, financial_leverage, debt_to_assets`
 
-  if (error) return []
-
-  return ((data as any[]) ?? []).map((r) => ({
+function mapFinancialRow(r: any): QuarterlyFinancial {
+  return {
     year: r.year,
     quarter: r.quarter,
     revenue: parseBigInt(r.revenue),
     gross_profit: parseBigInt(r.gross_profit),
     net_income: parseBigInt(r.net_income),
-    net_margin: r.net_margin,
-    roe: r.roe,
-    eps: r.eps,
-  }))
+    eps: r.eps ?? null,
+    gross_margin: r.gross_margin ?? null,
+    operating_margin: r.operating_margin ?? null,
+    net_margin: r.net_margin ?? null,
+    roe: r.roe ?? null,
+    roa: r.roa ?? null,
+    total_assets: parseBigInt(r.total_assets),
+    total_equity: parseBigInt(r.total_equity),
+    cash_and_equivalents: parseBigInt(r.cash_and_equivalents),
+    total_debt: parseBigInt(r.total_debt),
+    book_value_per_share: r.book_value_per_share ?? null,
+    operating_cash_flow: parseBigInt(r.operating_cash_flow),
+    capex: parseBigInt(r.capex),
+    free_cash_flow: parseBigInt(r.free_cash_flow),
+    current_ratio: r.current_ratio ?? null,
+    debt_to_equity: r.debt_to_equity ?? null,
+    net_debt: parseBigInt(r.net_debt),
+    working_capital: parseBigInt(r.working_capital),
+    roce: r.roce ?? null,
+    interest_coverage: r.interest_coverage ?? null,
+    lt_debt_to_equity: r.lt_debt_to_equity ?? null,
+    financial_leverage: r.financial_leverage ?? null,
+    debt_to_assets: r.debt_to_assets ?? null,
+  }
+}
+
+export async function getAnnualSeriesForTable(ticker: string): Promise<QuarterlyFinancial[]> {
+  const supabase = await createClient()
+  const { data, error } = await supabase
+    .from('financials')
+    .select(FINANCIAL_COLS)
+    .eq('ticker', ticker.toUpperCase())
+    .eq('quarter', 0)
+    .order('year', { ascending: false })
+    .limit(10)
+
+  if (error) return []
+  return ((data as any[]) ?? []).map(mapFinancialRow)
+}
+
+export async function getQuarterlySeries(ticker: string): Promise<QuarterlyFinancial[]> {
+  const supabase = await createClient()
+  // Columns marked (migration) are added in schema-v8 — gracefully absent until migration runs
+  const { data, error } = await supabase
+    .from('financials')
+    .select(FINANCIAL_COLS)
+    .eq('ticker', ticker.toUpperCase())
+    .neq('quarter', 0)
+    .order('year', { ascending: false })
+    .order('quarter', { ascending: false })
+    .limit(12)
+
+  if (error) return []
+  return ((data as any[]) ?? []).map(mapFinancialRow)
 }
 
 export async function getLatestMetrics(ticker: string): Promise<StockMetrics | null> {

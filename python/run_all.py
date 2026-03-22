@@ -253,7 +253,7 @@ def run_financials_fallback(
     only_missing: bool,
     dry_run: bool = False,
 ) -> None:
-    """Runs: financials_fallback (Stockbit + FMP multi-source backfill)"""
+    """Runs: financials_fallback (Stockbit backfill)"""
     _, _, _, ff = _import_enrichment_scrapers()
     console.rule("[bold magenta]FALLBACK: financials_fallback")
     _run_tracked(ff.run, "financials_fallback", None,
@@ -337,8 +337,7 @@ Examples:
   python run_all.py --fill-gaps --gap-limit 20         # process 20 stocks per run
   python run_all.py --fill-gaps --gap-category ratios prices  # specific gap types
   python run_all.py --fill-gaps --dry-run              # detect gaps, no writes
-  python run_all.py --fallback-financials              # Stockbit+FMP backfill (only missing)
-  python run_all.py --fallback-financials --fallback-source fmp   # FMP only
+  python run_all.py --fallback-financials              # Stockbit backfill (only missing)
   python run_all.py --fallback-financials --ticker BBRI --dry-run
         """,
     )
@@ -352,7 +351,7 @@ Examples:
     mode.add_argument("--enrich-ratios", action="store_true", help="Fill NULL ratio columns from stored raw data (no API calls)")
     mode.add_argument("--dividends", action="store_true", help="Fetch full dividend history from yfinance")
     mode.add_argument("--fill-gaps", action="store_true", help="Detect and fill data gaps for low-completeness stocks")
-    mode.add_argument("--fallback-financials", action="store_true", help="Backfill financial data from Stockbit + FMP where yfinance data is missing")
+    mode.add_argument("--fallback-financials", action="store_true", help="Backfill financial data from Stockbit where yfinance data is missing")
 
     # Scope modifiers
     parser.add_argument("--ticker", nargs="+", metavar="TICKER", help="Limit to specific tickers")
@@ -410,13 +409,6 @@ Examples:
         help="--fill-gaps / --enrich-ratios / --fallback-financials: detect issues but do not write to DB",
     )
     # Fallback financials options
-    parser.add_argument(
-        "--fallback-source",
-        choices=["stockbit", "fmp", "both"],
-        default="both",
-        metavar="SRC",
-        help="--fallback-financials: data source (stockbit, fmp, both — default: both)",
-    )
     parser.add_argument(
         "--fallback-all",
         action="store_true",
@@ -482,7 +474,7 @@ Examples:
             if args.fallback_financials:
                 run_financials_fallback(
                     tickers=tickers,
-                    source=args.fallback_source,
+                    source="stockbit",
                     only_missing=not args.fallback_all,
                     dry_run=args.dry_run,
                 )

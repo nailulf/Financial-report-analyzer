@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import type { DataQuality, QualityCategory, RefreshJob } from '@/lib/types/api'
+import type { DataQuality, QualityCategory, StockbitPreviewRow } from '@/lib/types/api'
 import { AlternativeSources } from '@/components/stock/alternative-sources'
 
 // ---------------------------------------------------------------------------
@@ -24,6 +24,15 @@ function relativeTime(iso: string | null): string {
   return `${months} month${months > 1 ? 's' : ''} ago`
 }
 
+function formatIDR(n: number | null | undefined): string {
+  if (n == null) return '-'
+  const abs = Math.abs(n)
+  if (abs >= 1e12) return `${(n / 1e12).toFixed(1)}T`
+  if (abs >= 1e9)  return `${(n / 1e9).toFixed(1)}B`
+  if (abs >= 1e6)  return `${(n / 1e6).toFixed(1)}M`
+  return n.toLocaleString('id-ID')
+}
+
 const CATEGORY_LABELS: Record<string, string> = {
   price_history:        'Price History',
   annual_coverage:      'Annual Financials Coverage',
@@ -38,17 +47,8 @@ const CATEGORY_LABELS: Record<string, string> = {
   derived_metrics:      'Derived Metrics',
 }
 
-const SCRAPER_LABELS: Record<string, string> = {
-  stock_universe:   'Stock Universe',
-  daily_prices:     'Daily Prices',
-  financials:       'Financials',
-  company_profiles: 'Company Profiles',
-  document_links:   'Document Links',
-  corporate_events: 'Corporate Events',
-}
-
 // ---------------------------------------------------------------------------
-// Sub-components
+// Sub-components (unchanged)
 // ---------------------------------------------------------------------------
 
 function ScoreBar({ score, max, barColor }: { score: number; max: number; barColor: string }) {
@@ -124,175 +124,414 @@ function CategoryRow({ name, cat }: { name: string; cat: QualityCategory }) {
 }
 
 // ---------------------------------------------------------------------------
-// Refresh helpers
+// Stockbit Refresh Modal
 // ---------------------------------------------------------------------------
 
-type RefreshPhase = 'idle' | 'confirm' | 'running' | 'done' | 'failed'
+type ModalPhase =
+  | 'token'     // Step 1: enter bearer token
+  | 'config'    // Step 2: select year range
+  | 'fetching'  // Loading: calling Stockbit API
+  | 'preview'   // Show data preview
+  | 'saving'    // Loading: upserting
+  | 'saved'     // Done
+  | 'error'     // Any error
 
-function ScraperStatusIcon({ status }: { status: string }) {
-  if (status === 'done')    return <span className="text-green-500">✓</span>
-  if (status === 'failed')  return <span className="text-red-500">✗</span>
-  if (status === 'running') return <span className="text-blue-400 animate-pulse">⟳</span>
-  return <span className="text-gray-300">○</span>
-}
+const CURRENT_YEAR = new Date().getFullYear()
+const YEAR_OPTIONS = Array.from({ length: CURRENT_YEAR - 2014 }, (_, i) => 2015 + i)
 
-function ScoreDiff({
-  label,
-  before,
-  after,
-}: {
-  label: string
-  before: number | null
-  after: number | null
-}) {
-  if (before == null || after == null) return null
-  const delta = after - before
-  const color = delta > 0 ? 'text-green-600' : delta < 0 ? 'text-red-500' : 'text-gray-400'
-  const sign  = delta > 0 ? '+' : ''
-  return (
-    <div className="flex items-center justify-between text-sm">
-      <span className="text-gray-600">{label}</span>
-      <span className="tabular-nums">
-        <span className="text-gray-500">{before}</span>
-        <span className="text-gray-300 mx-1">→</span>
-        <span className="font-semibold text-gray-700">{after}</span>
-        {delta !== 0 && (
-          <span className={`ml-1.5 text-xs font-medium ${color}`}>
-            ({sign}{delta})
-          </span>
-        )}
-      </span>
-    </div>
-  )
-}
-
-function ConfirmModal({
+function StockbitRefreshModal({
   ticker,
-  onConfirm,
-  onCancel,
+  onClose,
 }: {
   ticker: string
-  onConfirm: () => void
-  onCancel: () => void
+  onClose: () => void
 }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
-      <div className="bg-white rounded-xl border border-gray-200 shadow-xl max-w-sm w-full mx-4 p-6">
-        <h3 className="text-sm font-semibold text-gray-800 mb-2">Refresh data for {ticker}?</h3>
-        <p className="text-xs text-gray-500 leading-relaxed mb-5">
-          This will trigger a scraper run via GitHub Actions. All data sources will be
-          re-fetched and scores recalculated. Takes ~2–5 minutes.
-        </p>
-        <div className="flex gap-2 justify-end">
-          <button
-            onClick={onCancel}
-            className="px-3 py-1.5 text-xs text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={onConfirm}
-            className="px-3 py-1.5 text-xs text-white bg-blue-500 rounded-lg hover:bg-blue-600 transition-colors"
-          >
-            Start Refresh
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
+  const [phase, setPhase] = useState<ModalPhase>('token')
+  const [token, setToken]           = useState('')
+  const [yearFrom, setYearFrom]     = useState(CURRENT_YEAR - 5)
+  const [yearTo, setYearTo]         = useState(CURRENT_YEAR)
+  const [rows, setRows]             = useState<StockbitPreviewRow[]>([])
+  const [upsertedCount, setUpsertedCount] = useState(0)
+  const [errorMsg, setErrorMsg]     = useState('')
 
-// ---------------------------------------------------------------------------
-// Refresh status block (running / done / failed)
-// ---------------------------------------------------------------------------
+  const handleFetch = useCallback(async () => {
+    if (!token.trim()) return
+    setPhase('fetching')
+    setErrorMsg('')
+    try {
+      const res = await fetch(`/api/stocks/${ticker}/stockbit/fetch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bearer_token: token.trim(), year_from: yearFrom, year_to: yearTo }),
+      })
+      const body = await res.json() as { rows?: StockbitPreviewRow[]; error?: string }
+      if (!res.ok || body.error) {
+        setErrorMsg(body.error ?? `HTTP ${res.status}`)
+        setPhase('error')
+        return
+      }
+      setRows(body.rows ?? [])
+      setPhase('preview')
+    } catch (e: unknown) {
+      setErrorMsg(e instanceof Error ? e.message : 'Network error')
+      setPhase('error')
+    }
+  }, [ticker, token, yearFrom, yearTo])
 
-function RefreshStatusBlock({
-  phase,
-  job,
-  submitError,
-  ticker,
-  missingCategories,
-}: {
-  phase: RefreshPhase
-  job: RefreshJob | null
-  submitError: string | null
-  ticker: string
-  missingCategories: string[]
-}) {
-  if (submitError) {
-    return (
-      <div className="border-t border-gray-100 px-5 py-4">
-        <p className="text-xs text-red-500">{submitError}</p>
-      </div>
-    )
-  }
-
-  if (!job && phase === 'running') {
-    return (
-      <div className="border-t border-gray-100 px-5 py-4">
-        <p className="text-xs text-gray-400 animate-pulse">Creating refresh job…</p>
-      </div>
-    )
-  }
-
-  if (!job) return null
-
-  const isDone   = phase === 'done'
-  const isFailed = phase === 'failed'
+  const handleSave = useCallback(async () => {
+    setPhase('saving')
+    try {
+      const res = await fetch(`/api/stocks/${ticker}/stockbit/upsert`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rows }),
+      })
+      const body = await res.json() as { upserted?: number; error?: string }
+      if (!res.ok || body.error) {
+        setErrorMsg(body.error ?? `HTTP ${res.status}`)
+        setPhase('error')
+        return
+      }
+      setUpsertedCount(body.upserted ?? rows.length)
+      setPhase('saved')
+    } catch (e: unknown) {
+      setErrorMsg(e instanceof Error ? e.message : 'Network error')
+      setPhase('error')
+    }
+  }, [ticker, rows])
 
   return (
-    <div className="border-t border-gray-100 px-5 py-4 space-y-3">
-      {/* Per-scraper progress log */}
-      <div className="space-y-1.5">
-        {job.progress.map((p) => (
-          <div key={p.scraper} className="flex items-center gap-2 text-xs">
-            <ScraperStatusIcon status={p.status} />
-            <span className={p.status === 'waiting' ? 'text-gray-300' : 'text-gray-600'}>
-              {SCRAPER_LABELS[p.scraper] ?? p.scraper}
-            </span>
-            {p.status === 'running' && (
-              <span className="text-blue-400">running…</span>
-            )}
-            {p.status === 'done' && p.rows_added != null && (
-              <span className="text-gray-400">+{p.rows_added} rows</span>
-            )}
-            {p.status === 'failed' && p.error_msg && (
-              <span className="text-red-400 truncate max-w-[180px]" title={p.error_msg}>
-                {p.error_msg}
-              </span>
-            )}
-          </div>
-        ))}
-      </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
+      <div className="bg-white rounded-xl border border-gray-200 shadow-xl w-full max-w-lg flex flex-col max-h-[90vh]">
 
-      {/* Success with score diff */}
-      {isDone && !job.no_new_data && (
-        <div className="pt-2 border-t border-gray-50 space-y-1.5">
-          <p className="text-xs font-medium text-green-600">✓ Refresh complete. Scores updated.</p>
-          <ScoreDiff label="Completeness" before={job.completeness_before} after={job.completeness_after} />
-          <ScoreDiff label="Confidence"   before={job.confidence_before}   after={job.confidence_after}   />
-          <p className="text-xs text-gray-400 pt-1">Reload the page to see updated data.</p>
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 shrink-0">
+          <h3 className="text-sm font-semibold text-gray-800">
+            Refresh from Stockbit — <span className="text-blue-600">{ticker}</span>
+          </h3>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 text-lg leading-none transition-colors"
+            aria-label="Close"
+          >
+            ×
+          </button>
         </div>
-      )}
 
-      {/* No new data — show alternative sources */}
-      {isDone && job.no_new_data && (
-        <div className="pt-2 border-t border-gray-50">
-          <p className="text-xs text-gray-500 mb-3">
-            ℹ No new data found since last run. The scraper returned the same data as before.
-          </p>
-          {missingCategories.length > 0 && (
-            <AlternativeSources missingCategories={missingCategories} ticker={ticker} />
+        {/* Body */}
+        <div className="overflow-y-auto flex-1 px-5 py-4">
+
+          {/* Step 1: Token */}
+          {phase === 'token' && (
+            <div className="space-y-4">
+              <p className="text-xs text-gray-500 leading-relaxed">
+                Get your token from{' '}
+                <span className="font-medium text-gray-600">stockbit.com</span>:
+              </p>
+              <ol className="text-xs text-gray-500 space-y-1 list-decimal pl-4">
+                <li>Open stockbit.com and log in</li>
+                <li>DevTools → Network → any <code className="bg-gray-100 px-1 rounded">api.stockbit.com</code> request</li>
+                <li>Headers → <span className="font-medium text-gray-600">Authorization</span></li>
+                <li>Copy the value <span className="font-medium text-red-500">after</span> <code className="bg-gray-100 px-1 rounded">Bearer </code> — just the token itself</li>
+              </ol>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-gray-600">Bearer Token</label>
+                <input
+                  type="password"
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  placeholder="eyJhbGciOiJSUzI1NiIs..."
+                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-700 placeholder-gray-300 focus:outline-none focus:ring-1 focus:ring-blue-400 font-mono"
+                  onKeyDown={(e) => e.key === 'Enter' && token.trim() && setPhase('config')}
+                  autoFocus
+                />
+              </div>
+            </div>
+          )}
+
+          {/* Step 2: Config */}
+          {phase === 'config' && (
+            <div className="space-y-4">
+              <p className="text-xs text-gray-500">
+                Select the year range to fetch financial data for. Annual + quarterly rows will be included.
+              </p>
+              <div className="flex items-center gap-3">
+                <div className="space-y-1 flex-1">
+                  <label className="text-xs font-medium text-gray-600">From year</label>
+                  <select
+                    value={yearFrom}
+                    onChange={(e) => setYearFrom(parseInt(e.target.value, 10))}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-xs text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                  >
+                    {YEAR_OPTIONS.map((y) => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
+                </div>
+                <span className="text-gray-400 text-xs mt-4">→</span>
+                <div className="space-y-1 flex-1">
+                  <label className="text-xs font-medium text-gray-600">To year</label>
+                  <select
+                    value={yearTo}
+                    onChange={(e) => setYearTo(parseInt(e.target.value, 10))}
+                    className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-xs text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                  >
+                    {YEAR_OPTIONS.map((y) => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="bg-gray-50 rounded-lg px-3 py-2 text-xs text-gray-500 border border-gray-100">
+                <span className="font-medium text-gray-600">Metrics fetched:</span> Revenue, Net Income, EPS (all
+                periods) + current ratios/margins/balance sheet (most recent annual row)
+              </div>
+            </div>
+          )}
+
+          {/* Loading: fetching */}
+          {phase === 'fetching' && (
+            <div className="flex flex-col items-center justify-center py-8 gap-3">
+              <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+              <p className="text-xs text-gray-500">Fetching data from Stockbit…</p>
+            </div>
+          )}
+
+          {/* Preview */}
+          {phase === 'preview' && (() => {
+            const snapshotRow = rows.find((r) => r.quarter === 0)
+            const snapshotGroups: { label: string; items: { label: string; value: string }[] }[] = [
+              {
+                label: 'Income Statement',
+                items: [
+                  { label: 'Revenue (TTM)',    value: formatIDR(snapshotRow?.revenue) },
+                  { label: 'Gross Profit',     value: formatIDR(snapshotRow?.gross_profit) },
+                  { label: 'Net Income (TTM)', value: formatIDR(snapshotRow?.net_income) },
+                  { label: 'EPS (TTM)',        value: snapshotRow?.eps != null ? snapshotRow.eps.toFixed(2) : '-' },
+                ],
+              },
+              {
+                label: 'Balance Sheet',
+                items: [
+                  { label: 'Total Assets',      value: formatIDR(snapshotRow?.total_assets) },
+                  { label: 'Total Liabilities', value: formatIDR(snapshotRow?.total_liabilities) },
+                  { label: 'Total Equity',      value: formatIDR(snapshotRow?.total_equity) },
+                  { label: 'Total Debt',        value: formatIDR(snapshotRow?.total_debt) },
+                  { label: 'Cash',              value: formatIDR(snapshotRow?.cash_and_equivalents) },
+                  { label: 'Net Debt',          value: formatIDR(snapshotRow?.net_debt) },
+                  { label: 'BVPS',              value: snapshotRow?.book_value_per_share != null ? snapshotRow.book_value_per_share.toFixed(0) : '-' },
+                ],
+              },
+              {
+                label: 'Cash Flow',
+                items: [
+                  { label: 'Operating CF',     value: formatIDR(snapshotRow?.operating_cash_flow) },
+                  { label: 'CapEx',            value: formatIDR(snapshotRow?.capex) },
+                  { label: 'Free Cash Flow',   value: formatIDR(snapshotRow?.free_cash_flow) },
+                  { label: 'Investing CF',     value: formatIDR(snapshotRow?.investing_cash_flow) },
+                  { label: 'Financing CF',     value: formatIDR(snapshotRow?.financing_cash_flow) },
+                ],
+              },
+              {
+                label: 'Profitability',
+                items: [
+                  { label: 'Gross Margin',     value: snapshotRow?.gross_margin != null ? `${snapshotRow.gross_margin.toFixed(1)}%` : '-' },
+                  { label: 'Operating Margin', value: snapshotRow?.operating_margin != null ? `${snapshotRow.operating_margin.toFixed(1)}%` : '-' },
+                  { label: 'Net Margin',       value: snapshotRow?.net_margin != null ? `${snapshotRow.net_margin.toFixed(1)}%` : '-' },
+                  { label: 'ROE',              value: snapshotRow?.roe != null ? `${snapshotRow.roe.toFixed(1)}%` : '-' },
+                  { label: 'ROA',              value: snapshotRow?.roa != null ? `${snapshotRow.roa.toFixed(1)}%` : '-' },
+                  { label: 'ROCE',             value: snapshotRow?.roce != null ? `${snapshotRow.roce.toFixed(1)}%` : '-' },
+                  { label: 'ROIC',             value: snapshotRow?.roic != null ? `${snapshotRow.roic.toFixed(1)}%` : '-' },
+                ],
+              },
+              {
+                label: 'Management Effectiveness',
+                items: [
+                  { label: 'Asset Turnover',     value: snapshotRow?.asset_turnover != null ? snapshotRow.asset_turnover.toFixed(2) : '-' },
+                  { label: 'Inventory Turnover', value: snapshotRow?.inventory_turnover != null ? snapshotRow.inventory_turnover.toFixed(2) : '-' },
+                  { label: 'Interest Coverage',  value: snapshotRow?.interest_coverage != null ? snapshotRow.interest_coverage.toFixed(2) : '-' },
+                ],
+              },
+              {
+                label: 'Assets & Debts',
+                items: [
+                  { label: 'Current Ratio',     value: snapshotRow?.current_ratio != null ? snapshotRow.current_ratio.toFixed(2) : '-' },
+                  { label: 'Quick Ratio',       value: snapshotRow?.quick_ratio != null ? snapshotRow.quick_ratio.toFixed(2) : '-' },
+                  { label: 'D/E',               value: snapshotRow?.debt_to_equity != null ? snapshotRow.debt_to_equity.toFixed(2) : '-' },
+                  { label: 'LT D/E',            value: snapshotRow?.lt_debt_to_equity != null ? snapshotRow.lt_debt_to_equity.toFixed(2) : '-' },
+                  { label: 'Debt/Assets',       value: snapshotRow?.debt_to_assets != null ? snapshotRow.debt_to_assets.toFixed(2) : '-' },
+                  { label: 'Fin. Leverage',     value: snapshotRow?.financial_leverage != null ? snapshotRow.financial_leverage.toFixed(2) : '-' },
+                ],
+              },
+            ]
+
+            return (
+              <div className="space-y-4">
+                {/* Summary */}
+                <p className="text-xs text-gray-500">
+                  <span className="font-medium text-gray-700">{rows.length} rows</span> ready to save —{' '}
+                  {rows.filter((r) => r.quarter === 0).length} annual,{' '}
+                  {rows.filter((r) => r.quarter > 0).length} quarterly.
+                  Snapshot metrics merged into most recent annual row.
+                </p>
+
+                {/* History table */}
+                <div>
+                  <p className="text-xs font-medium text-gray-600 mb-1.5">Historical Series</p>
+                  <div className="overflow-x-auto rounded-lg border border-gray-100">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="bg-gray-50 border-b border-gray-100">
+                          {['Year', 'Q', 'Revenue', 'Net Income', 'EPS'].map((h) => (
+                            <th key={h} className={`py-2 px-3 font-medium text-gray-500 ${h === 'Year' || h === 'Q' ? 'text-left' : 'text-right'}`}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map((r) => (
+                          <tr key={`${r.year}_${r.quarter}`} className="border-b border-gray-50 last:border-0 hover:bg-gray-50">
+                            <td className="py-1.5 px-3 text-gray-700 tabular-nums">{r.year}</td>
+                            <td className="py-1.5 px-3 text-gray-400">{r.quarter === 0 ? 'FY' : `Q${r.quarter}`}</td>
+                            <td className="py-1.5 px-3 text-right text-gray-600 tabular-nums">{formatIDR(r.revenue)}</td>
+                            <td className="py-1.5 px-3 text-right text-gray-600 tabular-nums">{formatIDR(r.net_income)}</td>
+                            <td className="py-1.5 px-3 text-right text-gray-600 tabular-nums">{r.eps != null ? r.eps.toFixed(2) : '-'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Snapshot metrics grid */}
+                {snapshotRow && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-600 mb-1.5">
+                      Current Snapshot — {snapshotRow.year} FY
+                    </p>
+                    <div className="space-y-3">
+                      {snapshotGroups.map((group) => (
+                        <div key={group.label} className="rounded-lg border border-gray-100 overflow-hidden">
+                          <div className="bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-500 border-b border-gray-100">
+                            {group.label}
+                          </div>
+                          <div className="grid grid-cols-2 divide-x divide-gray-50">
+                            {group.items.map((item) => (
+                              <div key={item.label} className="px-3 py-1.5 flex items-center justify-between gap-2 border-b border-gray-50">
+                                <span className="text-xs text-gray-400">{item.label}</span>
+                                <span className="text-xs font-medium text-gray-700 tabular-nums">{item.value}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })()}
+
+          {/* Loading: saving */}
+          {phase === 'saving' && (
+            <div className="flex flex-col items-center justify-center py-8 gap-3">
+              <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+              <p className="text-xs text-gray-500">Saving {rows.length} rows to database…</p>
+            </div>
+          )}
+
+          {/* Done */}
+          {phase === 'saved' && (
+            <div className="flex flex-col items-center justify-center py-8 gap-2 text-center">
+              <div className="w-10 h-10 rounded-full bg-green-50 flex items-center justify-center text-green-500 text-lg">
+                ✓
+              </div>
+              <p className="text-sm font-medium text-gray-700">
+                {upsertedCount} rows saved successfully
+              </p>
+              <p className="text-xs text-gray-400">Reload the page to see updated charts.</p>
+            </div>
+          )}
+
+          {/* Error */}
+          {phase === 'error' && (
+            <div className="flex flex-col items-center justify-center py-6 gap-3 text-center">
+              <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center text-red-400 text-lg">
+                ✗
+              </div>
+              <p className="text-xs text-red-500 max-w-xs">{errorMsg}</p>
+            </div>
           )}
         </div>
-      )}
 
-      {/* Failed */}
-      {isFailed && job.error_message && (
-        <div className="pt-2 border-t border-gray-50">
-          <p className="text-xs text-red-500">✗ Refresh failed: {job.error_message}</p>
+        {/* Footer actions */}
+        <div className="px-5 py-4 border-t border-gray-100 flex justify-between items-center shrink-0">
+          {/* Back navigation */}
+          <div>
+            {phase === 'config' && (
+              <button
+                onClick={() => setPhase('token')}
+                className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                ← Back
+              </button>
+            )}
+            {phase === 'preview' && (
+              <button
+                onClick={() => setPhase('config')}
+                className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                ← Back
+              </button>
+            )}
+            {phase === 'error' && (
+              <button
+                onClick={() => setPhase(rows.length > 0 ? 'preview' : 'config')}
+                className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                ← Back
+              </button>
+            )}
+          </div>
+
+          {/* Primary CTA */}
+          <div className="flex gap-2">
+            {(phase === 'saved') && (
+              <button
+                onClick={onClose}
+                className="px-4 py-1.5 text-xs text-white bg-blue-500 rounded-lg hover:bg-blue-600 transition-colors"
+              >
+                Done
+              </button>
+            )}
+            {phase === 'token' && (
+              <button
+                disabled={!token.trim()}
+                onClick={() => setPhase('config')}
+                className="px-4 py-1.5 text-xs text-white bg-blue-500 rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Next →
+              </button>
+            )}
+            {phase === 'config' && (
+              <button
+                disabled={yearFrom > yearTo}
+                onClick={handleFetch}
+                className="px-4 py-1.5 text-xs text-white bg-blue-500 rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                Fetch Preview
+              </button>
+            )}
+            {phase === 'preview' && (
+              <button
+                onClick={handleSave}
+                className="px-4 py-1.5 text-xs text-white bg-green-500 rounded-lg hover:bg-green-600 transition-colors"
+              >
+                Save to Database ({rows.length} rows)
+              </button>
+            )}
+          </div>
         </div>
-      )}
+      </div>
     </div>
   )
 }
@@ -306,99 +545,21 @@ interface DataQualityPanelProps {
   ticker: string
 }
 
-const POLL_INTERVAL_MS = 3000
-
 export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
-  const [expanded,    setExpanded]    = useState(false)
-  const [phase,       setPhase]       = useState<RefreshPhase>('idle')
-  const [job,         setJob]         = useState<RefreshJob | null>(null)
-  const [submitError, setSubmitError] = useState<string | null>(null)
-  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  const poll = useCallback(async (id: number) => {
-    try {
-      const res = await fetch(`/api/stocks/${ticker}/refresh/${id}`)
-      if (!res.ok) return
-      const j: RefreshJob = await res.json()
-      setJob(j)
-      if (j.status === 'done' || j.status === 'failed') {
-        setPhase(j.status)
-        return
-      }
-      pollRef.current = setTimeout(() => poll(id), POLL_INTERVAL_MS)
-    } catch {
-      pollRef.current = setTimeout(() => poll(id), POLL_INTERVAL_MS)
-    }
-  }, [ticker])
-
-  // On mount: resume polling if there's already an active job for this ticker
-  useEffect(() => {
-    let cancelled = false
-    async function resumeIfActive() {
-      try {
-        const res = await fetch(`/api/stocks/${ticker}/refresh`)
-        if (!res.ok || cancelled) return
-        const { job_id } = await res.json() as { job_id: number | null }
-        if (!job_id) return
-        const statusRes = await fetch(`/api/stocks/${ticker}/refresh/${job_id}`)
-        if (!statusRes.ok || cancelled) return
-        const j: RefreshJob = await statusRes.json()
-        if (j.status === 'pending' || j.status === 'running') {
-          setPhase('running')
-          setJob(j)
-          pollRef.current = setTimeout(() => poll(job_id), POLL_INTERVAL_MS)
-        }
-      } catch { /* no active job — stay idle */ }
-    }
-    resumeIfActive()
-    return () => {
-      cancelled = true
-      if (pollRef.current) clearTimeout(pollRef.current)
-    }
-  }, [ticker, poll])
-
-  const startRefresh = useCallback(async () => {
-    setPhase('running')
-    setSubmitError(null)
-    setJob(null)
-    try {
-      const res = await fetch(`/api/stocks/${ticker}/refresh`, { method: 'POST' })
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}))
-        setSubmitError((body as { error?: string }).error ?? 'Failed to start refresh')
-        setPhase('failed')
-        return
-      }
-      const { job_id } = await res.json() as { job_id: number }
-      pollRef.current = setTimeout(() => poll(job_id), POLL_INTERVAL_MS)
-    } catch {
-      setSubmitError('Network error — could not start refresh')
-      setPhase('failed')
-    }
-  }, [ticker, poll])
-
-  const resetRefresh = () => {
-    if (pollRef.current) clearTimeout(pollRef.current)
-    setPhase('idle')
-    setJob(null)
-    setSubmitError(null)
-  }
+  const [expanded,      setExpanded]      = useState(false)
+  const [modalOpen,     setModalOpen]     = useState(false)
 
   if (!data) return null
 
   const { completeness_score, confidence_score, scores_updated_at, last_scraped_at, missing_categories } = data
-  const timestamp  = scores_updated_at ?? last_scraped_at
-  const hasMissing = missing_categories.length > 0
-  const isLowCompleteness = completeness_score < 50
+  const timestamp          = scores_updated_at ?? last_scraped_at
+  const hasMissing         = missing_categories.length > 0
+  const isLowCompleteness  = completeness_score < 50
 
   return (
     <>
-      {phase === 'confirm' && (
-        <ConfirmModal
-          ticker={ticker}
-          onConfirm={() => { setPhase('idle'); startRefresh() }}
-          onCancel={() => setPhase('idle')}
-        />
+      {modalOpen && (
+        <StockbitRefreshModal ticker={ticker} onClose={() => setModalOpen(false)} />
       )}
 
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -424,48 +585,24 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
               {timestamp ? `Updated ${relativeTime(timestamp)}` : 'Never updated'}
             </span>
             <div className="flex items-center gap-2">
-              {hasMissing && phase === 'idle' && (
+              {hasMissing && (
                 <span className="text-xs text-amber-500">
                   {missing_categories.length} categor{missing_categories.length === 1 ? 'y' : 'ies'} missing
                 </span>
               )}
-              {phase === 'idle' && (
-                <button
-                  onClick={() => setPhase('confirm')}
-                  className={`text-xs px-2.5 py-1 rounded-lg border transition-colors ${
-                    isLowCompleteness
-                      ? 'border-amber-300 text-amber-600 hover:bg-amber-50'
-                      : 'border-gray-200 text-gray-500 hover:bg-gray-50'
-                  }`}
-                >
-                  ↺ Refresh Data
-                </button>
-              )}
-              {phase === 'running' && (
-                <span className="text-xs text-blue-500 animate-pulse">Refreshing…</span>
-              )}
-              {(phase === 'done' || phase === 'failed') && (
-                <button
-                  onClick={resetRefresh}
-                  className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
-                >
-                  ✕ Dismiss
-                </button>
-              )}
+              <button
+                onClick={() => setModalOpen(true)}
+                className={`text-xs px-2.5 py-1 rounded-lg border transition-colors ${
+                  isLowCompleteness
+                    ? 'border-amber-300 text-amber-600 hover:bg-amber-50'
+                    : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                }`}
+              >
+                ↺ Refresh Data
+              </button>
             </div>
           </div>
         </div>
-
-        {/* Refresh progress / result panel */}
-        {phase !== 'idle' && phase !== 'confirm' && (
-          <RefreshStatusBlock
-            phase={phase}
-            job={job}
-            submitError={submitError}
-            ticker={ticker}
-            missingCategories={missing_categories}
-          />
-        )}
 
         {/* Expanded breakdown */}
         {expanded && (
@@ -489,9 +626,9 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
             {confidence_score == null && (
               <div className="px-5 pb-4">
                 <p className="text-xs text-gray-400 bg-gray-50 rounded px-3 py-2 border border-gray-100">
-                  Confidence score has not been computed yet. Use the{' '}
+                  Confidence score has not been computed yet. Use{' '}
                   <span className="font-medium text-gray-500">↺ Refresh Data</span>{' '}
-                  button above to trigger a full scraper run.
+                  to pull data from Stockbit.
                 </p>
               </div>
             )}

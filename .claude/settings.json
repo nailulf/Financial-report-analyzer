@@ -22,10 +22,24 @@
       "Read(//Users/nailul.fadloil/Documents/Personal\\\\ spaces/Financial-report-analyzer/python/**)",
       "Read(//Users/nailul.fadloil/Documents/Personal\\\\ spaces/Financial-report-analyzer/python/scrapers/**)",
       "Bash(python -c \":*)",
-      "Bash(python run_all.py --fallback-financials --sector finance --dry-run)"
+      "Bash(python run_all.py --fallback-financials --sector finance --dry-run)",
+      "Read(//Users/nailul.fadloil/Documents/Personal\\\\ spaces/Financial-report-analyzer/web/src/app/api/stocks/\\\\[ticker\\\\]/refresh/**)",
+      "Read(//Users/nailul.fadloil/Documents/Personal\\\\ spaces/Financial-report-analyzer/web/src/app/api/stocks/\\\\[ticker\\\\]/refresh/\\\\[job_id\\\\]/**)",
+      "Read(//Users/nailul.fadloil/Documents/Personal\\\\ spaces/Financial-report-analyzer/web/src/app/stock/\\\\[ticker\\\\]/**)",
+      "Read(//Users/nailul.fadloil/Documents/Personal\\\\ spaces/Financial-report-analyzer/web/src/components/stock/**)",
+      "Read(//tmp/**)",
+      "Read(//private/tmp/**)",
+      "Bash(cat EOF DIRECTORY TREE — Financial Report Analyzer EOF __NEW_LINE_83c9c4c90e0a481e__ cd '/Users/nailul.fadloil/Documents/Personal spaces/Financial-report-analyzer' __NEW_LINE_83c9c4c90e0a481e__ echo ':*)",
+      "Bash(head -20 __NEW_LINE_83c9c4c90e0a481e__ echo ':*)",
+      "Bash(sort __NEW_LINE_83c9c4c90e0a481e__ echo ':*)",
+      "Bash(node -e \"const {execSync}=require\\(''child_process''\\);console.log\\(execSync\\(''python3 --version 2>&1 || python --version 2>&1''\\).toString\\(\\).trim\\(\\)\\)\")",
+      "Bash(python3 utils/stockbit_fetch_cli.py --help)",
+      "Bash(python3 -c \"import curl_cffi; print\\(''OK''\\)\")",
+      "Bash(source ../.venv/bin/activate)"
     ],
     "additionalDirectories": [
-      "/Users/nailul.fadloil/Documents/Personal spaces/Financial-report-analyzer/web/src/app/stock"
+      "/Users/nailul.fadloil/Documents/Personal spaces/Financial-report-analyzer/web/src/app/stock",
+      "/Users/nailul.fadloil/Documents/Personal spaces/Financial-report-analyzer/web/src/app/api/stocks/[ticker]/stockbit"
     ]
   }
 }

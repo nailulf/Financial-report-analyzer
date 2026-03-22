@@ -99,12 +99,38 @@ export interface PricePoint {
 export interface QuarterlyFinancial {
   year: number
   quarter: number
+  // Income Statement
   revenue: number | null
   gross_profit: number | null
   net_income: number | null
-  net_margin: number | null
-  roe: number | null
   eps: number | null
+  // Margins
+  gross_margin: number | null
+  operating_margin: number | null
+  net_margin: number | null
+  // Returns
+  roe: number | null
+  roa: number | null
+  roce: number | null
+  interest_coverage: number | null
+  // Balance Sheet
+  total_assets: number | null
+  total_equity: number | null
+  cash_and_equivalents: number | null
+  net_debt: number | null
+  total_debt: number | null
+  working_capital: number | null
+  book_value_per_share: number | null
+  // Cash Flow
+  operating_cash_flow: number | null
+  capex: number | null
+  free_cash_flow: number | null
+  // Solvency
+  current_ratio: number | null
+  debt_to_equity: number | null
+  lt_debt_to_equity: number | null
+  financial_leverage: number | null
+  debt_to_assets: number | null
 }
 
 export interface CompanyProfileData {
@@ -216,6 +242,65 @@ export interface RefreshJob {
   progress: RefreshScraperProgress[]
   error_message: string | null
   finished_at: string | null
+}
+
+// Stockbit-sourced financial row used in preview & upsert
+export interface StockbitPreviewRow {
+  ticker: string
+  year: number
+  quarter: number  // 0 = annual, 1–4 = quarterly
+  // ── Income Statement (historical + snapshot TTM) ──────────────────────────
+  revenue: number | null
+  net_income: number | null
+  eps: number | null
+  gross_profit?: number | null
+  operating_income?: number | null
+  // ── Balance Sheet (snapshot latest quarter) ───────────────────────────────
+  total_assets?: number | null
+  total_liabilities?: number | null
+  total_equity?: number | null
+  total_debt?: number | null
+  cash_and_equivalents?: number | null
+  working_capital?: number | null
+  long_term_debt?: number | null
+  short_term_debt?: number | null
+  net_debt?: number | null
+  book_value_per_share?: number | null
+  // ── Cash Flow (snapshot TTM) ──────────────────────────────────────────────
+  operating_cash_flow?: number | null
+  investing_cash_flow?: number | null
+  financing_cash_flow?: number | null
+  capex?: number | null
+  free_cash_flow?: number | null
+  // ── Profitability (snapshot latest quarter) ───────────────────────────────
+  gross_margin?: number | null
+  operating_margin?: number | null
+  net_margin?: number | null
+  // ── Management Effectiveness (snapshot TTM) ───────────────────────────────
+  roe?: number | null
+  roa?: number | null
+  roce?: number | null
+  roic?: number | null
+  asset_turnover?: number | null
+  inventory_turnover?: number | null
+  interest_coverage?: number | null
+  // ── Solvency / Assets & Debts ─────────────────────────────────────────────
+  current_ratio?: number | null
+  quick_ratio?: number | null
+  debt_to_equity?: number | null
+  lt_debt_to_equity?: number | null
+  total_liabilities_to_equity?: number | null
+  debt_to_assets?: number | null
+  financial_leverage?: number | null
+  // ── Valuation ─────────────────────────────────────────────────────────────
+  pe_ratio?: number | null
+  pbv_ratio?: number | null
+  ps_ratio?: number | null
+  ev_ebitda?: number | null
+  earnings_yield?: number | null
+  // ── Dividend ──────────────────────────────────────────────────────────────
+  dividend_yield?: number | null
+  payout_ratio?: number | null
 }
 
 export interface ScraperJobStatus {

@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation'
 import { getStockHeader } from '@/lib/queries/stocks'
-import { getFinancialSeries, getLatestMetrics, getQuarterlySeries } from '@/lib/queries/financials'
+import { getFinancialSeries, getLatestMetrics, getQuarterlySeries, getAnnualSeriesForTable } from '@/lib/queries/financials'
 import { getPriceHistory } from '@/lib/queries/prices'
 import { getCompanyProfile, getOfficers, getShareholders, getMajorShareholders, getMajorShareholderHistory } from '@/lib/queries/company'
 import { getDataQuality } from '@/lib/queries/completeness'
@@ -31,12 +31,13 @@ export default async function StockPage({ params }: PageProps) {
   const { ticker: tickerParam } = await params
   const ticker = tickerParam.toUpperCase()
 
-  const [stock, metrics, series, quarterlyData, priceHistory, profile, officers, shareholders, majorShareholders, majorShareholderHistory, dataQuality] =
+  const [stock, metrics, series, quarterlyData, annualTableData, priceHistory, profile, officers, shareholders, majorShareholders, majorShareholderHistory, dataQuality] =
     await Promise.all([
       getStockHeader(ticker),
       getLatestMetrics(ticker),
       getFinancialSeries(ticker),
       getQuarterlySeries(ticker),
+      getAnnualSeriesForTable(ticker),
       getPriceHistory(ticker),
       getCompanyProfile(ticker),
       getOfficers(ticker),
@@ -106,8 +107,10 @@ export default async function StockPage({ params }: PageProps) {
         defaultGrowthRate={defaultGrowth}
       />
 
-      {/* Quarterly financials */}
-      {quarterlyData.length > 0 && <QuarterlyTable data={quarterlyData} />}
+      {/* Quarterly / Annual financials */}
+      {(quarterlyData.length > 0 || annualTableData.length > 0) && (
+        <QuarterlyTable quarterlyData={quarterlyData} annualData={annualTableData} />
+      )}
 
       {/* Company profile */}
       <CompanyProfileSection

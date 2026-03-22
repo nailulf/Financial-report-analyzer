@@ -1,33 +1,20 @@
 from __future__ import annotations
 
 """
-financials_fallback.py — Multi-source financial data backfill with normalization.
+financials_fallback.py — Stockbit-based financial data backfill with normalization.
 
 Runs AFTER financials.py (yfinance primary). For each ticker that still has
-missing or incomplete financial data, tries:
+missing or incomplete financial data, fetches from Stockbit keystats:
+  - Current snapshot: TTM ratios, margins, balance sheet, cash flow figures
+    → applied to the most recent annual row (quarter=0)
+  - Historical revenue/net_income/eps per year+quarter (up to 10 years)
 
-  1. FMP (Financial Modeling Prep) — full IS/BS/CF statements for annual + quarterly
-  2. Stockbit — full statements when STOCKBIT_BEARER_TOKEN is set in .env;
-                TTM ratios only (public endpoint) when no token is present.
-
-Both sources are normalized to the same canonical schema as financials.py.
 The merge strategy fills only NULL fields — existing yfinance data is NEVER
 overwritten. Source tracking is updated to reflect which source(s) contributed.
-
-Normalization notes:
-  FMP:      period "FY" → quarter=0, "Q1"-"Q4" → quarter=1-4
-            ratios returned as 0–1 fractions → stored as percentages × 100
-            values in actual IDR (no scaling)
-
-  Stockbit: full statements (IS+BS+CF) when Bearer token is configured
-            TTM ratios only (pe, pbv, roe, roa, net_margin, etc.) when no token
-            Applied to the most recent annual row (quarter=0)
 
 Run:
     cd python && python -m scrapers.financials_fallback
     cd python && python -m scrapers.financials_fallback --ticker BBRI
-    cd python && python -m scrapers.financials_fallback --source fmp
-    cd python && python -m scrapers.financials_fallback --source stockbit
     cd python && python -m scrapers.financials_fallback --only-missing
     cd python && python -m scrapers.financials_fallback --dry-run
 """
@@ -44,116 +31,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.helpers import RunResult, setup_logging, safe_int, safe_float, compute_ratio
 from utils.supabase_client import get_client, bulk_upsert, fetch_column, start_run, finish_run
-from config import FMP_ANNUAL_LIMIT, FMP_QUARTERLY_LIMIT
-
 logger = logging.getLogger(__name__)
 
-SourceType = Literal["stockbit", "fmp", "both"]
-
-
-# ===========================================================================
-# FMP field aliases → canonical schema
-# ===========================================================================
-
-def _normalize_fmp_period(item: dict) -> tuple[int, int]:
-    """Map FMP period string to (year, quarter). FY → 0, Q1-Q4 → 1-4."""
-    period = item.get("period", "FY")
-    year = int(item.get("calendarYear") or item.get("date", "2000-01-01")[:4])
-    q_map = {"Q1": 1, "Q2": 2, "Q3": 3, "Q4": 4, "FY": 0}
-    return year, q_map.get(period, 0)
-
-
-def _normalize_fmp_row(
-    income: dict,
-    balance: dict,
-    cashflow: dict,
-) -> dict | None:
-    """
-    Merge FMP income + balance + cash flow items (same period) into one
-    canonical financials row dict.
-
-    FMP ratios (grossProfitRatio etc.) are fractions (0.354 = 35.4%).
-    We multiply by 100 to match our percentage storage convention.
-    """
-    if not income:
-        return None
-
-    year, quarter = _normalize_fmp_period(income)
-    ticker = income.get("symbol", "").replace(".JK", "").upper()
-    if not ticker:
-        return None
-
-    ocf   = safe_int(cashflow.get("operatingCashFlow") or cashflow.get("netCashProvidedByOperatingActivities"))
-    capex = safe_int(cashflow.get("capitalExpenditure"))  # typically negative
-    fcf   = safe_int(cashflow.get("freeCashFlow"))
-
-    # FMP ratios are 0–1, convert to percentages
-    def _pct(key: str, src: dict) -> float | None:
-        v = safe_float(src.get(key))
-        return round(v * 100, 4) if v is not None else None
-
-    row: dict = {
-        "ticker":            ticker,
-        "year":              year,
-        "quarter":           quarter,
-        "period_end":        income.get("date"),
-        # Income
-        "revenue":           safe_int(income.get("revenue")),
-        "cost_of_revenue":   safe_int(income.get("costOfRevenue")),
-        "gross_profit":      safe_int(income.get("grossProfit")),
-        "operating_expense": safe_int(income.get("operatingExpenses")),
-        "operating_income":  safe_int(income.get("operatingIncome")),
-        "interest_expense":  safe_int(income.get("interestExpense")),
-        "income_before_tax": safe_int(income.get("incomeBeforeTax")),
-        "tax_expense":       safe_int(income.get("incomeTaxExpense")),
-        "net_income":        safe_int(income.get("netIncome")),
-        "eps":               safe_float(income.get("eps") or income.get("epsdiluted")),
-        # Balance
-        "total_assets":          safe_int(balance.get("totalAssets")),
-        "current_assets":        safe_int(balance.get("totalCurrentAssets")),
-        "total_liabilities":     safe_int(balance.get("totalLiabilities")),
-        "current_liabilities":   safe_int(balance.get("totalCurrentLiabilities")),
-        "total_equity":          safe_int(balance.get("totalStockholdersEquity") or balance.get("totalEquity")),
-        "total_debt":            safe_int(balance.get("totalDebt")),
-        "cash_and_equivalents":  safe_int(balance.get("cashAndCashEquivalents")),
-        "book_value_per_share":  safe_float(balance.get("bookValuePerShare")),
-        # Cash flow
-        "operating_cash_flow":   ocf,
-        "capex":                 capex,
-        "free_cash_flow":        fcf,
-        "dividends_paid":        safe_int(cashflow.get("dividendsPaid")),
-        # Ratios directly from FMP (convert 0–1 to %)
-        "gross_margin":     _pct("grossProfitRatio", income),
-        "operating_margin": _pct("operatingIncomeRatio", income),
-        "net_margin":       _pct("netIncomeRatio", income),
-        # Derived ratios (balance-based — compute here since FMP provides raw)
-        "roe":           compute_ratio(
-                            safe_int(income.get("netIncome")),
-                            safe_int(balance.get("totalStockholdersEquity") or balance.get("totalEquity")),
-                            scale=100,
-                         ),
-        "roa":           compute_ratio(
-                            safe_int(income.get("netIncome")),
-                            safe_int(balance.get("totalAssets")),
-                            scale=100,
-                         ),
-        "current_ratio": compute_ratio(
-                            safe_int(balance.get("totalCurrentAssets")),
-                            safe_int(balance.get("totalCurrentLiabilities")),
-                         ),
-        "debt_to_equity": compute_ratio(
-                            safe_int(balance.get("totalDebt")),
-                            safe_int(balance.get("totalStockholdersEquity") or balance.get("totalEquity")),
-                          ),
-        "source": "fmp",
-        "last_updated": datetime.now(timezone.utc).isoformat(),
-    }
-
-    # Skip rows with no useful content
-    if all(row.get(f) is None for f in ["revenue", "total_assets", "net_income"]):
-        return None
-
-    return row
+SourceType = Literal["stockbit"]
 
 
 # ===========================================================================
@@ -393,7 +273,7 @@ def _merge(existing: dict | None, incoming: dict, incoming_source: str) -> dict 
 
 
 # ===========================================================================
-# Period alignment helpers — match FMP/Stockbit rows to DB rows
+# Period alignment helpers
 # ===========================================================================
 
 def _index_by_period(rows: list[dict]) -> dict[tuple[int, int], dict]:
@@ -416,16 +296,10 @@ def _align_statements(
     Returns list of (income, balance, cashflow) tuples for each period
     that has at least an income row.
     """
-    # For FMP: all rows have date/calendarYear/period already
-    # For Stockbit: rows have year/quarter fields
-    # We index each list by whichever period key is present.
+    # Index each list by (year, quarter).
 
     def _period_key(row: dict) -> tuple[int, int]:
-        """Extract (year, quarter) from a row regardless of source format."""
-        # Try FMP format
-        if "period" in row and "calendarYear" in row:
-            return _normalize_fmp_period(row)
-        # Try Stockbit format
+        """Extract (year, quarter) from a row."""
         if "year" in row:
             return _normalize_stockbit_period(row)
         return (0, 0)
@@ -446,37 +320,6 @@ def _align_statements(
 # ===========================================================================
 # Source fetch helpers
 # ===========================================================================
-
-def _fetch_fmp(
-    ticker: str,
-    periods: list[str],
-    limits: dict[str, int],
-) -> list[dict]:
-    """
-    Fetch and normalize FMP data for one ticker.
-    Returns list of canonical row dicts (one per period).
-    periods: ['annual', 'quarter'] or subset.
-    """
-    from utils.fmp_client import FMPClient
-    client = FMPClient()
-    rows: list[dict] = []
-
-    for period in periods:
-        limit = limits.get(period, 5)
-        fmp_period = "quarter" if period == "quarterly" else "annual"
-        try:
-            income, balance, cashflow = client.get_all_statements(ticker, period=fmp_period, limit=limit)
-        except Exception as e:
-            logger.warning("FMP fetch failed for %s (%s): %s", ticker, period, e)
-            continue
-
-        aligned = _align_statements(income, balance, cashflow)
-        for inc, bal, cf in aligned:
-            row = _normalize_fmp_row(inc, bal, cf)
-            if row:
-                rows.append(row)
-
-    return rows
 
 
 _TTM_RATIO_ALIASES: dict[str, str] = {
@@ -715,14 +558,6 @@ def _process_ticker(
         except Exception as e:
             logger.info("Stockbit keystats unavailable for %s: %s", ticker, e)
 
-    if source in ("fmp", "both"):
-        try:
-            fmp_rows = _fetch_fmp(ticker, periods, limits)
-            fallback_rows.extend(fmp_rows)
-            logger.info("%s: FMP → %d rows", ticker, len(fmp_rows))
-        except EnvironmentError as e:
-            logger.debug("FMP unavailable: %s", e)
-
     if not fallback_rows:
         return 0, 0, "no_data"
 
@@ -730,8 +565,7 @@ def _process_ticker(
     to_upsert: list[dict] = []
     rows_updated = 0
 
-    # De-duplicate fallback rows by (year, quarter) — Stockbit wins over FMP
-    # (listed first, so its rows appear first in fallback_rows)
+    # De-duplicate fallback rows by (year, quarter)
     seen_periods: dict[tuple[int, int], dict] = {}
     for row in fallback_rows:
         key = (row["year"], row["quarter"])
@@ -780,18 +614,18 @@ def _process_ticker(
 
 def run(
     tickers: list[str] | None = None,
-    source: SourceType = "both",
+    source: SourceType = "stockbit",
     only_missing: bool = True,
     annual: bool = True,
     quarterly: bool = True,
     dry_run: bool = False,
 ) -> RunResult:
     """
-    Backfill financial data from Stockbit and/or FMP for incomplete tickers.
+    Backfill financial data from Stockbit for incomplete tickers.
 
     Args:
         tickers:      Limit to these tickers. None = all active stocks.
-        source:       'stockbit', 'fmp', or 'both'.
+        source:       Data source — currently only 'stockbit'.
         only_missing: If True, skip tickers that already have complete annual
                       + quarterly data. Speeds up incremental runs significantly.
         annual:       Fetch annual periods.
@@ -827,10 +661,7 @@ def run(
     if quarterly:
         periods.append("quarterly")
 
-    limits = {
-        "annual":    FMP_ANNUAL_LIMIT,
-        "quarterly": FMP_QUARTERLY_LIMIT,
-    }
+    limits = {"annual": 10, "quarterly": 8}
 
     logger.info(
         "Financials fallback: %d tickers, source=%s, periods=%s%s%s",
@@ -909,13 +740,11 @@ def run(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Financial data fallback — Stockbit + FMP backfill for incomplete IDX stocks",
+        description="Financial data fallback — Stockbit backfill for incomplete IDX stocks",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python -m scrapers.financials_fallback                   # all stocks, both sources
-  python -m scrapers.financials_fallback --source fmp      # FMP only
-  python -m scrapers.financials_fallback --source stockbit # Stockbit only
+  python -m scrapers.financials_fallback                   # all stocks
   python -m scrapers.financials_fallback --ticker BBRI ASII
   python -m scrapers.financials_fallback --only-missing    # skip already-complete tickers
   python -m scrapers.financials_fallback --annual-only     # skip quarterly
@@ -923,12 +752,6 @@ Examples:
         """,
     )
     parser.add_argument("--ticker", nargs="+", help="Limit to specific tickers")
-    parser.add_argument(
-        "--source",
-        choices=["stockbit", "fmp", "both"],
-        default="both",
-        help="Data source(s) to use (default: both)",
-    )
     parser.add_argument(
         "--only-missing",
         action="store_true",
@@ -949,7 +772,7 @@ Examples:
     setup_logging("financials_fallback")
     run(
         tickers=args.ticker,
-        source=args.source,
+        source="stockbit",
         only_missing=args.only_missing,
         annual=not args.quarterly_only,
         quarterly=not args.annual_only,

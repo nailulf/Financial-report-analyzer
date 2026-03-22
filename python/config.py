@@ -35,15 +35,6 @@ def require_supabase() -> None:
 # Optional data sources
 TWELVE_DATA_API_KEY: str = os.getenv("TWELVE_DATA_API_KEY", "")
 
-# Financial Modeling Prep (FMP) — https://financialmodelingprep.com/developer/docs
-# Free tier: 250 requests/day. Set FMP_API_KEY in .env to enable.
-FMP_API_KEY: str = os.getenv("FMP_API_KEY", "")
-# Conservative rate: 10 req/min on free tier (6s gap = safe headroom)
-RATE_LIMIT_FMP_SECONDS: float = float(os.getenv("RATE_LIMIT_FMP_SECONDS", "6.0"))
-# How many annual/quarterly periods to fetch per ticker
-FMP_ANNUAL_LIMIT: int = int(os.getenv("FMP_ANNUAL_LIMIT", "5"))
-FMP_QUARTERLY_LIMIT: int = int(os.getenv("FMP_QUARTERLY_LIMIT", "8"))
-
 # Stockbit (unofficial) — https://stockbit.com
 # Login via username/password is no longer supported (requires WebSocket 2FA).
 # Instead, copy the Bearer token directly from your browser/app session:

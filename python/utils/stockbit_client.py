@@ -226,7 +226,7 @@ class StockbitClient:
             }
 
         Useful for: enriching stocks.market_cap, stocks.listed_shares,
-        and back-filling recent pe_ratio / pbv_ratio / roe when FMP
+        and back-filling recent pe_ratio / pbv_ratio / roe when
         doesn't have the latest quarter yet.
         """
         try:

@@ -7,15 +7,13 @@ Stockbit (https://stockbit.com) is Indonesia's largest retail stock platform.
 It provides IDX fundamental data, financial reports, and ratios with good
 coverage of small/mid-cap stocks that yfinance sometimes misses.
 
-Authentication status (March 2026):
-    Stockbit's login API requires WebSocket-based session keys + 2FA,
-    which cannot be automated via a simple HTTP POST.
-
-    Instead, copy a Bearer token directly from your browser session:
-        1. Open stockbit.com in Chrome and log in
-        2. Open DevTools → Network → any API request → Headers → Authorization
-        3. Copy the token value (without "Bearer ") into .env as STOCKBIT_BEARER_TOKEN
-    Token typically lasts 30 days. Re-copy when requests start returning 401.
+Authentication (March 2026):
+    Stockbit's login API requires WebSocket 2FA — no automated login.
+    Token lifecycle is managed by utils/token_manager.py:
+      - Cached in ~/.stockbit_token (auto-prompted when missing/expired)
+      - JWT expiry is decoded and checked before each session
+      - On 401, cached token is cleared and next run re-prompts
+      - Falls back to STOCKBIT_BEARER_TOKEN env var for CI/non-interactive
 
     With a valid token, all endpoints are accessible:
         fundamental/basicinfo/{ticker}          — profile + market data (public)
@@ -45,7 +43,8 @@ from typing import Any
 from curl_cffi import requests as cffi_requests
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
-from config import STOCKBIT_BEARER_TOKEN, RATE_LIMIT_STOCKBIT_SECONDS
+from config import RATE_LIMIT_STOCKBIT_SECONDS
+from utils.token_manager import get_stockbit_token, clear_cached_token
 
 logger = logging.getLogger(__name__)
 
@@ -97,10 +96,10 @@ class StockbitClient:
     the main pipeline when endpoints are unavailable.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, prompt_for_token: bool = True) -> None:
         self._session = cffi_requests.Session(impersonate="chrome120")
         self._last_at: float = 0.0
-        self._token: str | None = STOCKBIT_BEARER_TOKEN or None
+        self._token: str | None = get_stockbit_token(prompt=prompt_for_token)
         if self._token:
             logger.debug("Stockbit: Bearer token loaded — authenticated endpoints available")
         else:
@@ -172,9 +171,11 @@ class StockbitClient:
                 resp = resp2
             elif resp.status_code == 401:
                 logger.warning(
-                    "Stockbit Exodus 401 — token may have expired. "
-                    "Re-copy from DevTools → Network → Authorization into STOCKBIT_BEARER_TOKEN"
+                    "Stockbit Exodus 401 — token expired. "
+                    "Run any scraper again to be prompted for a new token."
                 )
+                clear_cached_token()
+                self._token = None
 
         resp.raise_for_status()
         return resp.json()
@@ -196,9 +197,11 @@ class StockbitClient:
         self._last_at = time.time()
         if resp.status_code == 401 and self._token:
             logger.warning(
-                "Stockbit 401 Unauthorized — token may have expired. "
-                "Re-copy from browser DevTools into STOCKBIT_BEARER_TOKEN in .env"
+                "Stockbit 401 Unauthorized — token expired. "
+                "Run any scraper again to be prompted for a new token."
             )
+            clear_cached_token()
+            self._token = None
         resp.raise_for_status()
         return resp.json()
 

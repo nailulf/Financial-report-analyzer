@@ -1,30 +1,51 @@
 import type { StockHeader as StockHeaderType } from '@/lib/types/api'
-import { Badge } from '@/components/ui/badge'
 import { formatIDRCompact } from '@/lib/calculations/formatters'
 
 export function StockHeader({ stock }: { stock: StockHeaderType }) {
   return (
-    <div className="mb-6">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <div className="flex items-center gap-3 mb-1">
-            <h1 className="text-3xl font-bold text-gray-900 font-mono">{stock.ticker}</h1>
-            {stock.is_lq45 && <Badge variant="amber">LQ45</Badge>}
-            {stock.is_idx30 && <Badge variant="purple">IDX30</Badge>}
-            {stock.status !== 'Active' && <Badge variant="red">{stock.status}</Badge>}
-          </div>
-          <p className="text-lg text-gray-600">{stock.name}</p>
+    <div className="py-8 flex items-start justify-between gap-6 flex-wrap">
+      {/* Left: Ticker + Name + Classification */}
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-3 mb-3 flex-wrap">
+          <span className="inline-flex items-center px-3 py-1.5 rounded-xl bg-[#C8F0D8] text-[#3D8A5A] text-sm font-bold font-mono tracking-widest">
+            {stock.ticker}
+          </span>
+          {stock.is_lq45 && (
+            <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-amber-100 text-amber-700 text-xs font-semibold">LQ45</span>
+          )}
+          {stock.is_idx30 && (
+            <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-purple-100 text-purple-700 text-xs font-semibold">IDX30</span>
+          )}
+          {stock.status !== 'Active' && (
+            <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-red-100 text-red-700 text-xs font-semibold">{stock.status}</span>
+          )}
         </div>
-        <div className="text-right">
-          {stock.sector && <Badge variant="blue">{stock.sector}</Badge>}
-          {stock.subsector && <p className="text-xs text-gray-400 mt-1">{stock.subsector}</p>}
-          {stock.board && <p className="text-xs text-gray-400">{stock.board} Board</p>}
+        <h1 className="text-2xl font-semibold text-[#1A1918] leading-snug mb-2">
+          {stock.name}
+        </h1>
+        <div className="flex items-center gap-2 flex-wrap">
+          {stock.sector && (
+            <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-[#EDECEA] text-[#6D6C6A] text-xs font-medium">
+              {stock.sector}
+            </span>
+          )}
+          {stock.subsector && (
+            <span className="text-xs text-[#9C9B99]">{stock.subsector}</span>
+          )}
+          {stock.board && (
+            <span className="text-xs text-[#9C9B99]">· {stock.board} Board</span>
+          )}
         </div>
       </div>
+
+      {/* Right: Market Cap */}
       {stock.market_cap && (
-        <p className="text-sm text-gray-500 mt-2">
-          Market Cap: <span className="font-medium text-gray-700">{formatIDRCompact(stock.market_cap)}</span>
-        </p>
+        <div className="shrink-0 text-right">
+          <p className="text-xs text-[#9C9B99] uppercase tracking-wide mb-1">Market Cap</p>
+          <p className="text-2xl font-bold font-mono text-[#1A1918]">
+            {formatIDRCompact(stock.market_cap)}
+          </p>
+        </div>
       )}
     </div>
   )

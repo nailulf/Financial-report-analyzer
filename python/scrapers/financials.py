@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 """
-financials.py — Layer 3 scraper
+financials.py — yfinance financial data (secondary source)
 
 Populates the `financials` table with income statement, balance sheet,
-cash flow data, and computed ratios.
+cash flow data, and computed ratios from yfinance.
 
-Primary source: yfinance (annual + quarterly, ~4-5 years)
-Design note: IDX API financial report PDFs/XBRL are a richer but harder
-source. The IDXClient.get_financial_report_list() method is wired up
-for future extension — see _fetch_from_idx() stub below.
+Source priority: Stockbit (primary, run first) > yfinance (this file, fills gaps)
 
-Source priority: yfinance > IDX (extend by implementing _fetch_from_idx)
+When Stockbit data already exists for a (ticker, year, quarter), yfinance
+only fills NULL fields — it never overwrites existing Stockbit values.
+When no row exists yet, yfinance writes the full row.
 
 Run:
     cd python && python -m scrapers.financials
@@ -33,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import RATE_LIMIT_YFINANCE_SECONDS, YFINANCE_BATCH_SIZE
 from utils.helpers import RunResult, setup_logging, safe_float, safe_int, compute_ratio
-from utils.supabase_client import bulk_upsert, fetch_column, fetch_one, start_run, finish_run
+from utils.supabase_client import bulk_upsert, fetch_column, fetch_one, get_client, start_run, finish_run
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +286,76 @@ def _fetch_from_idx(ticker: str, year: int, quarter: int) -> list[dict]:
 
 
 # ------------------------------------------------------------------
+# Merge helpers — yfinance fills NULLs only when Stockbit data exists
+# ------------------------------------------------------------------
+
+_IDENTITY_FIELDS = {"ticker", "year", "quarter"}
+
+_FILLABLE_FIELDS = {
+    "period_end",
+    "revenue", "cost_of_revenue", "gross_profit", "operating_expense",
+    "operating_income", "interest_expense", "income_before_tax",
+    "tax_expense", "net_income", "eps",
+    "total_assets", "current_assets", "total_liabilities", "current_liabilities",
+    "total_equity", "total_debt", "cash_and_equivalents", "book_value_per_share",
+    "operating_cash_flow", "capex", "free_cash_flow", "dividends_paid",
+    "gross_margin", "operating_margin", "net_margin",
+    "roe", "roa", "current_ratio", "debt_to_equity",
+    "pe_ratio", "pbv_ratio", "dividend_yield", "payout_ratio",
+}
+
+
+def _get_existing_rows(ticker: str) -> dict[tuple[int, int], dict]:
+    """Fetch existing financials rows for ticker, indexed by (year, quarter)."""
+    db = get_client()
+    fields = ",".join(["ticker", "year", "quarter", "source"] + sorted(_FILLABLE_FIELDS))
+    resp = db.table("financials").select(fields).eq("ticker", ticker).execute()
+    return {(r["year"], r["quarter"]): r for r in (resp.data or [])}
+
+
+def _merge_with_existing(
+    rows: list[dict],
+    existing: dict[tuple[int, int], dict],
+) -> list[dict]:
+    """
+    Merge yfinance rows with existing DB rows (typically from Stockbit).
+    - New periods: write full yfinance row
+    - Existing periods: only fill NULL fields, never overwrite
+    """
+    merged: list[dict] = []
+    for row in rows:
+        key = (row["year"], row["quarter"])
+        db_row = existing.get(key)
+
+        if db_row is None:
+            # No existing data — write full row
+            merged.append(row)
+            continue
+
+        # Existing row — only fill NULLs
+        updates: dict = {}
+        for field in _FILLABLE_FIELDS:
+            if db_row.get(field) is None and row.get(field) is not None:
+                updates[field] = row[field]
+
+        if not updates:
+            continue  # nothing new from yfinance
+
+        # Update source tracking
+        current_source = db_row.get("source") or "unknown"
+        if "yfinance" not in current_source:
+            updates["source"] = f"{current_source}+yfinance"
+
+        updates["last_updated"] = row.get("last_updated")
+        updates["ticker"] = row["ticker"]
+        updates["year"] = row["year"]
+        updates["quarter"] = row["quarter"]
+        merged.append(updates)
+
+    return merged
+
+
+# ------------------------------------------------------------------
 # Main scraper
 # ------------------------------------------------------------------
 
@@ -336,6 +405,14 @@ def run(
 
             # Enrich with market ratios using stored market_cap
             _enrich_market_ratios(rows, ticker)
+
+            # Merge: only fill NULLs when Stockbit data already exists
+            existing = _get_existing_rows(ticker)
+            rows = _merge_with_existing(rows, existing)
+
+            if not rows:
+                result.skip(ticker, "yfinance data redundant (Stockbit already complete)")
+                continue
 
             # Upsert immediately — don't buffer all tickers in memory
             bulk_upsert("financials", rows, on_conflict="ticker,year,quarter")

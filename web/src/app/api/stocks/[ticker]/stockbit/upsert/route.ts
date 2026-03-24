@@ -52,6 +52,23 @@ export async function POST(
   })
 
   const supabase = await createClient()
+
+  // Remove stale current-year annual rows — Stockbit labels TTM data as the
+  // current calendar year (e.g. "12M26"), which creates a fake annual row.
+  // The Python fetch now blocks these, but any previously saved row must be
+  // deleted so it no longer appears in charts.
+  const currentYear = new Date().getFullYear()
+  const { error: deleteError } = await supabase
+    .from('financials')
+    .delete()
+    .eq('ticker', ticker.toUpperCase())
+    .eq('quarter', 0)
+    .eq('year', currentYear)
+
+  if (deleteError) {
+    return NextResponse.json({ error: deleteError.message }, { status: 500 })
+  }
+
   const { error, count } = await supabase
     .from('financials')
     .upsert(upsertRows, { onConflict: 'ticker,year,quarter', count: 'exact' })

@@ -21,10 +21,15 @@ Errors are printed to stderr and the script exits with code 1.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import sys
 from html.parser import HTMLParser
 from typing import Any
+
+# Completed fiscal years only — Stockbit labels the TTM column with the current
+# calendar year (e.g. "12M26"), which is NOT a real FY and must be excluded.
+_CURRENT_YEAR: int = datetime.date.today().year
 
 
 # ── DB column sets ────────────────────────────────────────────────────────────
@@ -418,12 +423,19 @@ def main() -> None:
 
     # ── Merge into unified period dict ────────────────────────────────────────
     period_data: dict[str, dict[str, Any]] = {}
+    completed_annual_years: set[int] = set()
+    for source in (is_q, bs_q, cf_q):
+        for fields in source.values():
+            if fields.get("quarter") == 4:
+                completed_annual_years.add(fields["year"])
 
     def merge_into(source: dict[str, dict[str, Any]]) -> None:
         for pk, fields in source.items():
             yr  = fields["year"]
             q   = fields["quarter"]
             if not (year_from <= yr <= year_to):
+                continue
+            if q == 0 and yr >= _CURRENT_YEAR and yr not in completed_annual_years:
                 continue
             if pk not in period_data:
                 period_data[pk] = {"ticker": ticker, "year": yr, "quarter": q}
@@ -450,6 +462,28 @@ def main() -> None:
             for col in bs_annual_cols:
                 if col in q4:
                     ann.setdefault(col, q4[col])
+
+    # ── Derive annual IS items from quarterly sum when IS annual is incomplete ──
+    # Stockbit's IS annual HTML sometimes omits Gross Profit (and other P&L lines)
+    # for the most recent year even when quarterly data is complete.  Summing all
+    # four single-quarter rows gives the correct annual total.  Require all 4
+    # quarters to avoid presenting a partial annual figure.
+    is_sum_cols = {"revenue", "gross_profit", "operating_income", "net_income"}
+    for yr in range(year_from, year_to + 1):
+        ann_pk = f"{yr}_0"
+        if ann_pk not in period_data:
+            continue
+        ann = period_data[ann_pk]
+        for col in is_sum_cols:
+            if ann.get(col) is not None:
+                continue  # already populated from IS annual
+            q_vals = [
+                period_data.get(f"{yr}_{q}", {}).get(col)
+                for q in range(1, 5)
+            ]
+            q_vals_filled = [v for v in q_vals if v is not None]
+            if len(q_vals_filled) == 4:  # only sum when all 4 quarters exist
+                ann[col] = sum(q_vals_filled)
 
     # ── Derive annual CF from summing quarterly CF ────────────────────────────
     cf_sum_cols = {"operating_cash_flow", "capex", "free_cash_flow",

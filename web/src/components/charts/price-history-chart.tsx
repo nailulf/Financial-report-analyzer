@@ -45,8 +45,8 @@ export function PriceHistoryChart({ data, ticker }: Props) {
   if (!mounted) return <ChartSkeleton height={320} />
   if (data.length === 0) {
     return (
-      <div className="h-40 flex items-center justify-center text-gray-400 text-sm">
-        No price data available. Run the daily_prices scraper first.
+      <div className="bg-white rounded-2xl border border-[#E5E4E1] shadow-[0_2px_12px_rgba(26,25,24,0.06)] p-6 flex items-center justify-center h-40">
+        <p className="text-sm text-[#9C9B99]">No price data available. Run the daily_prices scraper first.</p>
       </div>
     )
   }
@@ -67,12 +67,12 @@ export function PriceHistoryChart({ data, ticker }: Props) {
   const tickCount = sliced.length > 100 ? 6 : 4
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6">
-      <div className="flex items-start justify-between mb-4 flex-wrap gap-3">
+    <div className="bg-white rounded-2xl border border-[#E5E4E1] shadow-[0_2px_12px_rgba(26,25,24,0.06)] p-6">
+      <div className="flex items-start justify-between mb-5 flex-wrap gap-3">
         <div>
-          <h2 className="text-sm font-semibold text-gray-700">Price History</h2>
+          <h2 className="text-sm font-semibold text-[#1A1918]">Price History</h2>
           {pctChange != null && (
-            <p className={`text-xs mt-0.5 font-medium ${isPositive ? 'text-green-600' : 'text-red-500'}`}>
+            <p className={`text-xs mt-0.5 font-medium ${isPositive ? 'text-[#3D8A5A]' : 'text-red-500'}`}>
               {isPositive ? '+' : ''}{pctChange.toFixed(2)}% over period
             </p>
           )}
@@ -82,10 +82,10 @@ export function PriceHistoryChart({ data, ticker }: Props) {
             <button
               key={label}
               onClick={() => setPeriod(days)}
-              className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${
+              className={`px-3 py-1 text-xs rounded-lg font-medium transition-colors ${
                 period === days
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+                  ? 'bg-[#3D8A5A] text-white'
+                  : 'bg-[#EDECEA] text-[#6D6C6A] hover:bg-[#E5E4E1]'
               }`}
             >
               {label}
@@ -99,15 +99,15 @@ export function PriceHistoryChart({ data, ticker }: Props) {
         <AreaChart data={sliced} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
           <defs>
             <linearGradient id="priceGradient" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#3B82F6" stopOpacity={0.15} />
-              <stop offset="95%" stopColor="#3B82F6" stopOpacity={0} />
+              <stop offset="5%" stopColor="#3D8A5A" stopOpacity={0.15} />
+              <stop offset="95%" stopColor="#3D8A5A" stopOpacity={0} />
             </linearGradient>
           </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+          <CartesianGrid strokeDasharray="3 3" stroke="#F5F4F1" vertical={false} />
           <XAxis
             dataKey="date"
             tickFormatter={formatDate}
-            tick={{ fontSize: 10, fill: '#9CA3AF' }}
+            tick={{ fontSize: 10, fill: '#9C9B99' }}
             tickLine={false}
             axisLine={false}
             interval="preserveStartEnd"
@@ -116,7 +116,7 @@ export function PriceHistoryChart({ data, ticker }: Props) {
           <YAxis
             domain={[yMin, yMax]}
             tickFormatter={(v) => `${(v / 1000).toFixed(0)}K`}
-            tick={{ fontSize: 10, fill: '#9CA3AF' }}
+            tick={{ fontSize: 10, fill: '#9C9B99' }}
             tickLine={false}
             axisLine={false}
             width={44}
@@ -124,16 +124,16 @@ export function PriceHistoryChart({ data, ticker }: Props) {
           <Tooltip
             formatter={(value: number) => [formatPrice(value), 'Close']}
             labelFormatter={formatDate}
-            contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #E5E7EB' }}
+            contentStyle={{ fontSize: 12, borderRadius: 12, border: '1px solid #E5E4E1', background: '#fff', color: '#1A1918' }}
           />
           <Area
             type="monotone"
             dataKey="close"
-            stroke="#3B82F6"
+            stroke="#3D8A5A"
             strokeWidth={1.5}
             fill="url(#priceGradient)"
             dot={false}
-            activeDot={{ r: 4, fill: '#3B82F6' }}
+            activeDot={{ r: 4, fill: '#3D8A5A' }}
             connectNulls
           />
         </AreaChart>
@@ -147,12 +147,12 @@ export function PriceHistoryChart({ data, ticker }: Props) {
           <Tooltip
             formatter={(value: number) => [formatVolume(value), 'Volume']}
             labelFormatter={formatDate}
-            contentStyle={{ fontSize: 11, borderRadius: 8, border: '1px solid #E5E7EB' }}
+            contentStyle={{ fontSize: 11, borderRadius: 12, border: '1px solid #E5E4E1', background: '#fff' }}
           />
-          <Bar dataKey="volume" fill="#CBD5E1" radius={[1, 1, 0, 0]} />
+          <Bar dataKey="volume" fill="#EDECEA" radius={[2, 2, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>
-      <p className="text-xs text-gray-400 mt-1">Volume</p>
+      <p className="text-xs text-[#9C9B99] mt-1">Volume ({ticker})</p>
     </div>
   )
 }

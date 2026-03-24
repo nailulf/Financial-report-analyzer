@@ -39,7 +39,7 @@ export function TradingViewChart({ ticker }: TradingViewChartProps) {
         theme: 'light',
         style: '1',           // candlestick
         locale: 'en',
-        toolbar_bg: '#f8f9fa',
+        toolbar_bg: '#F5F4F1',
         enable_publishing: false,
         allow_symbol_change: false,
         save_image: false,
@@ -59,20 +59,20 @@ export function TradingViewChart({ ticker }: TradingViewChartProps) {
 
   if (!mounted) {
     return (
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
-          <div className="h-4 w-24 bg-gray-200 rounded animate-pulse" />
+      <div className="bg-white rounded-2xl border border-[#E5E4E1] shadow-[0_2px_12px_rgba(26,25,24,0.06)] overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-[#E5E4E1]">
+          <div className="h-4 w-24 bg-[#EDECEA] rounded animate-pulse" />
         </div>
-        <div className="h-[500px] bg-gray-100 animate-pulse" />
+        <div className="h-[500px] bg-[#F5F4F1] animate-pulse" />
       </div>
     )
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
-        <h2 className="text-base font-semibold text-gray-800">Live Chart</h2>
-        <span className="text-xs text-gray-400">Powered by TradingView</span>
+    <div className="bg-white rounded-2xl border border-[#E5E4E1] shadow-[0_2px_12px_rgba(26,25,24,0.06)] overflow-hidden">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-[#E5E4E1]">
+        <h2 className="text-sm font-semibold text-[#1A1918]">Live Chart</h2>
+        <span className="text-xs text-[#9C9B99]">Powered by TradingView</span>
       </div>
       <div
         ref={containerRef}

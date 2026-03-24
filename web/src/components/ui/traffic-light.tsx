@@ -9,14 +9,14 @@ const DOT = {
   green:  'bg-green-500',
   yellow: 'bg-amber-400',
   red:    'bg-red-500',
-  na:     'bg-gray-300',
+  na:     'bg-[#E5E4E1]',
 }
 
 const TEXT = {
   green:  'text-green-700',
   yellow: 'text-amber-600',
   red:    'text-red-600',
-  na:     'text-gray-400',
+  na:     'text-[#9C9B99]',
 }
 
 const LABEL = {

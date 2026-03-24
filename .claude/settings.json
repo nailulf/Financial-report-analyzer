@@ -35,7 +35,8 @@
       "Bash(node -e \"const {execSync}=require\\(''child_process''\\);console.log\\(execSync\\(''python3 --version 2>&1 || python --version 2>&1''\\).toString\\(\\).trim\\(\\)\\)\")",
       "Bash(python3 utils/stockbit_fetch_cli.py --help)",
       "Bash(python3 -c \"import curl_cffi; print\\(''OK''\\)\")",
-      "Bash(source ../.venv/bin/activate)"
+      "Bash(source ../.venv/bin/activate)",
+      "Bash(python run_all.py --quarterly --ticker RATU BREN INPP PORT MIDI CPRO MKNT MBAP PMJS)"
     ],
     "additionalDirectories": [
       "/Users/nailul.fadloil/Documents/Personal spaces/Financial-report-analyzer/web/src/app/stock",

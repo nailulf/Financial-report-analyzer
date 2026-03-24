@@ -30,7 +30,9 @@ function formatIDR(n: number | null | undefined): string {
   if (abs >= 1e12) return `${(n / 1e12).toFixed(1)}T`
   if (abs >= 1e9)  return `${(n / 1e9).toFixed(1)}B`
   if (abs >= 1e6)  return `${(n / 1e6).toFixed(1)}M`
-  return n.toLocaleString('id-ID')
+  const sign = n < 0 ? '-' : ''
+  const withSep = String(Math.round(abs)).replace(/\B(?=(\d{3})+(?!\d))/g, '.')
+  return `${sign}${withSep}`
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -54,7 +56,7 @@ const CATEGORY_LABELS: Record<string, string> = {
 function ScoreBar({ score, max, barColor }: { score: number; max: number; barColor: string }) {
   const pct = max > 0 ? Math.round((score / max) * 100) : 0
   return (
-    <div className="h-1.5 w-full bg-gray-100 rounded-full overflow-hidden">
+    <div className="h-1.5 w-full bg-[#EDECEA] rounded-full overflow-hidden">
       <div className={`h-full rounded-full transition-all ${barColor}`} style={{ width: `${pct}%` }} />
     </div>
   )
@@ -75,10 +77,10 @@ function ScoreLine({
     return (
       <div className="space-y-1">
         <div className="flex items-center justify-between text-sm">
-          <span className="text-gray-500">{label}</span>
-          <span className="text-gray-400 text-xs">Not computed yet</span>
+          <span className="text-[#6D6C6A]">{label}</span>
+          <span className="text-[#9C9B99] text-xs">Not computed yet</span>
         </div>
-        <div className="h-1.5 w-full bg-gray-100 rounded-full" />
+        <div className="h-1.5 w-full bg-[#EDECEA] rounded-full" />
       </div>
     )
   }
@@ -87,10 +89,10 @@ function ScoreLine({
   return (
     <div className="space-y-1">
       <div className="flex items-center justify-between text-sm">
-        <span className="text-gray-600">{label}</span>
+        <span className="text-[#6D6C6A]">{label}</span>
         <div className="flex items-center gap-2">
           {showFraction && (
-            <span className="text-xs text-gray-400">{score} / {max}</span>
+            <span className="text-xs text-[#9C9B99]">{score} / {max}</span>
           )}
           <span className={`font-semibold tabular-nums ${textColor}`}>{score}</span>
           <span className={`text-xs ${textColor}`}>{bandLabel}</span>
@@ -106,17 +108,17 @@ function CategoryRow({ name, cat }: { name: string; cat: QualityCategory }) {
   const { barColor } = scoreBand(pct)
 
   return (
-    <tr className="border-b border-gray-50 last:border-0">
-      <td className="py-2 pr-4 text-sm text-gray-700 whitespace-nowrap">
+    <tr className="border-b border-[#E5E4E1] last:border-0">
+      <td className="py-2 pr-4 text-sm text-[#1A1918] whitespace-nowrap">
         {CATEGORY_LABELS[name] ?? name}
       </td>
       <td className="py-2 pr-3 w-32">
         <ScoreBar score={cat.score} max={cat.max} barColor={barColor} />
       </td>
-      <td className="py-2 text-right text-sm tabular-nums text-gray-500 whitespace-nowrap">
+      <td className="py-2 text-right text-sm tabular-nums text-[#6D6C6A] whitespace-nowrap">
         {cat.score} / {cat.max}
       </td>
-      <td className="py-2 pl-4 text-xs text-gray-400 hidden sm:table-cell">
+      <td className="py-2 pl-4 text-xs text-[#9C9B99] hidden sm:table-cell">
         {cat.detail}
       </td>
     </tr>
@@ -137,6 +139,10 @@ type ModalPhase =
   | 'error'     // Any error
 
 const CURRENT_YEAR = new Date().getFullYear()
+// Annual financial data for the current year isn't complete until year-end.
+// Default year_to to the previous year so the TTM-labeled-as-current-year
+// annual row from Stockbit doesn't get included.
+const DEFAULT_YEAR_TO = CURRENT_YEAR - 1
 const YEAR_OPTIONS = Array.from({ length: CURRENT_YEAR - 2014 }, (_, i) => 2015 + i)
 
 function StockbitRefreshModal({
@@ -149,7 +155,7 @@ function StockbitRefreshModal({
   const [phase, setPhase] = useState<ModalPhase>('token')
   const [token, setToken]           = useState('')
   const [yearFrom, setYearFrom]     = useState(CURRENT_YEAR - 5)
-  const [yearTo, setYearTo]         = useState(CURRENT_YEAR)
+  const [yearTo, setYearTo]         = useState(DEFAULT_YEAR_TO)
   const [rows, setRows]             = useState<StockbitPreviewRow[]>([])
   const [upsertedCount, setUpsertedCount] = useState(0)
   const [errorMsg, setErrorMsg]     = useState('')
@@ -202,16 +208,16 @@ function StockbitRefreshModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
-      <div className="bg-white rounded-xl border border-gray-200 shadow-xl w-full max-w-lg flex flex-col max-h-[90vh]">
+      <div className="bg-white rounded-2xl border border-[#E5E4E1] shadow-[0_4px_24px_rgba(26,25,24,0.12)] w-full max-w-lg flex flex-col max-h-[90vh]">
 
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100 shrink-0">
-          <h3 className="text-sm font-semibold text-gray-800">
-            Refresh from Stockbit — <span className="text-blue-600">{ticker}</span>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-[#E5E4E1] shrink-0">
+          <h3 className="text-sm font-semibold text-[#1A1918]">
+            Refresh from Stockbit — <span className="text-[#3D8A5A]">{ticker}</span>
           </h3>
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 text-lg leading-none transition-colors"
+            className="text-[#9C9B99] hover:text-[#6D6C6A] text-lg leading-none transition-colors"
             aria-label="Close"
           >
             ×
@@ -224,24 +230,24 @@ function StockbitRefreshModal({
           {/* Step 1: Token */}
           {phase === 'token' && (
             <div className="space-y-4">
-              <p className="text-xs text-gray-500 leading-relaxed">
+              <p className="text-xs text-[#6D6C6A] leading-relaxed">
                 Get your token from{' '}
-                <span className="font-medium text-gray-600">stockbit.com</span>:
+                <span className="font-medium text-[#1A1918]">stockbit.com</span>:
               </p>
-              <ol className="text-xs text-gray-500 space-y-1 list-decimal pl-4">
+              <ol className="text-xs text-[#6D6C6A] space-y-1 list-decimal pl-4">
                 <li>Open stockbit.com and log in</li>
-                <li>DevTools → Network → any <code className="bg-gray-100 px-1 rounded">api.stockbit.com</code> request</li>
-                <li>Headers → <span className="font-medium text-gray-600">Authorization</span></li>
-                <li>Copy the value <span className="font-medium text-red-500">after</span> <code className="bg-gray-100 px-1 rounded">Bearer </code> — just the token itself</li>
+                <li>DevTools → Network → any <code className="bg-[#EDECEA] px-1 rounded">api.stockbit.com</code> request</li>
+                <li>Headers → <span className="font-medium text-[#1A1918]">Authorization</span></li>
+                <li>Copy the value <span className="font-medium text-red-500">after</span> <code className="bg-[#EDECEA] px-1 rounded">Bearer </code> — just the token itself</li>
               </ol>
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-gray-600">Bearer Token</label>
+                <label className="text-xs font-medium text-[#6D6C6A]">Bearer Token</label>
                 <input
                   type="password"
                   value={token}
                   onChange={(e) => setToken(e.target.value)}
                   placeholder="eyJhbGciOiJSUzI1NiIs..."
-                  className="w-full border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-700 placeholder-gray-300 focus:outline-none focus:ring-1 focus:ring-blue-400 font-mono"
+                  className="w-full border border-[#E5E4E1] rounded-lg px-3 py-2 text-xs text-[#1A1918] placeholder-[#9C9B99] focus:outline-none focus:ring-1 focus:ring-[#3D8A5A] font-mono"
                   onKeyDown={(e) => e.key === 'Enter' && token.trim() && setPhase('config')}
                   autoFocus
                 />
@@ -252,29 +258,29 @@ function StockbitRefreshModal({
           {/* Step 2: Config */}
           {phase === 'config' && (
             <div className="space-y-4">
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-[#6D6C6A]">
                 Select the year range to fetch financial data for. Annual + quarterly rows will be included.
               </p>
               <div className="flex items-center gap-3">
                 <div className="space-y-1 flex-1">
-                  <label className="text-xs font-medium text-gray-600">From year</label>
+                  <label className="text-xs font-medium text-[#6D6C6A]">From year</label>
                   <select
                     value={yearFrom}
                     onChange={(e) => setYearFrom(parseInt(e.target.value, 10))}
-                    className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-xs text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                    className="w-full border border-[#E5E4E1] rounded-lg px-3 py-1.5 text-xs text-[#1A1918] focus:outline-none focus:ring-1 focus:ring-[#3D8A5A]"
                   >
                     {YEAR_OPTIONS.map((y) => (
                       <option key={y} value={y}>{y}</option>
                     ))}
                   </select>
                 </div>
-                <span className="text-gray-400 text-xs mt-4">→</span>
+                <span className="text-[#9C9B99] text-xs mt-4">→</span>
                 <div className="space-y-1 flex-1">
-                  <label className="text-xs font-medium text-gray-600">To year</label>
+                  <label className="text-xs font-medium text-[#6D6C6A]">To year</label>
                   <select
                     value={yearTo}
                     onChange={(e) => setYearTo(parseInt(e.target.value, 10))}
-                    className="w-full border border-gray-200 rounded-lg px-3 py-1.5 text-xs text-gray-700 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                    className="w-full border border-[#E5E4E1] rounded-lg px-3 py-1.5 text-xs text-[#1A1918] focus:outline-none focus:ring-1 focus:ring-[#3D8A5A]"
                   >
                     {YEAR_OPTIONS.map((y) => (
                       <option key={y} value={y}>{y}</option>
@@ -282,8 +288,8 @@ function StockbitRefreshModal({
                   </select>
                 </div>
               </div>
-              <div className="bg-gray-50 rounded-lg px-3 py-2 text-xs text-gray-500 border border-gray-100">
-                <span className="font-medium text-gray-600">Metrics fetched:</span> Revenue, Net Income, EPS (all
+              <div className="bg-[#F5F4F1] rounded-lg px-3 py-2 text-xs text-[#6D6C6A] border border-[#E5E4E1]">
+                <span className="font-medium text-[#1A1918]">Metrics fetched:</span> Revenue, Net Income, EPS (all
                 periods) + current ratios/margins/balance sheet (most recent annual row)
               </div>
             </div>
@@ -292,8 +298,8 @@ function StockbitRefreshModal({
           {/* Loading: fetching */}
           {phase === 'fetching' && (
             <div className="flex flex-col items-center justify-center py-8 gap-3">
-              <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-              <p className="text-xs text-gray-500">Fetching data from Stockbit…</p>
+              <div className="w-6 h-6 border-2 border-[#3D8A5A] border-t-transparent rounded-full animate-spin" />
+              <p className="text-xs text-[#6D6C6A]">Fetching data from Stockbit…</p>
             </div>
           )}
 
@@ -368,8 +374,8 @@ function StockbitRefreshModal({
             return (
               <div className="space-y-4">
                 {/* Summary */}
-                <p className="text-xs text-gray-500">
-                  <span className="font-medium text-gray-700">{rows.length} rows</span> ready to save —{' '}
+                <p className="text-xs text-[#6D6C6A]">
+                  <span className="font-medium text-[#1A1918]">{rows.length} rows</span> ready to save —{' '}
                   {rows.filter((r) => r.quarter === 0).length} annual,{' '}
                   {rows.filter((r) => r.quarter > 0).length} quarterly.
                   Snapshot metrics merged into most recent annual row.
@@ -377,24 +383,24 @@ function StockbitRefreshModal({
 
                 {/* History table */}
                 <div>
-                  <p className="text-xs font-medium text-gray-600 mb-1.5">Historical Series</p>
-                  <div className="overflow-x-auto rounded-lg border border-gray-100">
+                  <p className="text-xs font-medium text-[#6D6C6A] mb-1.5">Historical Series</p>
+                  <div className="overflow-x-auto rounded-lg border border-[#E5E4E1]">
                     <table className="w-full text-xs">
                       <thead>
-                        <tr className="bg-gray-50 border-b border-gray-100">
+                        <tr className="bg-[#F5F4F1] border-b border-[#E5E4E1]">
                           {['Year', 'Q', 'Revenue', 'Net Income', 'EPS'].map((h) => (
-                            <th key={h} className={`py-2 px-3 font-medium text-gray-500 ${h === 'Year' || h === 'Q' ? 'text-left' : 'text-right'}`}>{h}</th>
+                            <th key={h} className={`py-2 px-3 font-medium text-[#9C9B99] ${h === 'Year' || h === 'Q' ? 'text-left' : 'text-right'}`}>{h}</th>
                           ))}
                         </tr>
                       </thead>
                       <tbody>
                         {rows.map((r) => (
-                          <tr key={`${r.year}_${r.quarter}`} className="border-b border-gray-50 last:border-0 hover:bg-gray-50">
-                            <td className="py-1.5 px-3 text-gray-700 tabular-nums">{r.year}</td>
-                            <td className="py-1.5 px-3 text-gray-400">{r.quarter === 0 ? 'FY' : `Q${r.quarter}`}</td>
-                            <td className="py-1.5 px-3 text-right text-gray-600 tabular-nums">{formatIDR(r.revenue)}</td>
-                            <td className="py-1.5 px-3 text-right text-gray-600 tabular-nums">{formatIDR(r.net_income)}</td>
-                            <td className="py-1.5 px-3 text-right text-gray-600 tabular-nums">{r.eps != null ? r.eps.toFixed(2) : '-'}</td>
+                          <tr key={`${r.year}_${r.quarter}`} className="border-b border-[#E5E4E1] last:border-0 hover:bg-[#F5F4F1]">
+                            <td className="py-1.5 px-3 text-[#1A1918] tabular-nums">{r.year}</td>
+                            <td className="py-1.5 px-3 text-[#9C9B99]">{r.quarter === 0 ? 'FY' : `Q${r.quarter}`}</td>
+                            <td className="py-1.5 px-3 text-right text-[#6D6C6A] tabular-nums">{formatIDR(r.revenue)}</td>
+                            <td className="py-1.5 px-3 text-right text-[#6D6C6A] tabular-nums">{formatIDR(r.net_income)}</td>
+                            <td className="py-1.5 px-3 text-right text-[#6D6C6A] tabular-nums">{r.eps != null ? r.eps.toFixed(2) : '-'}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -405,20 +411,20 @@ function StockbitRefreshModal({
                 {/* Snapshot metrics grid */}
                 {snapshotRow && (
                   <div>
-                    <p className="text-xs font-medium text-gray-600 mb-1.5">
+                    <p className="text-xs font-medium text-[#6D6C6A] mb-1.5">
                       Current Snapshot — {snapshotRow.year} FY
                     </p>
                     <div className="space-y-3">
                       {snapshotGroups.map((group) => (
-                        <div key={group.label} className="rounded-lg border border-gray-100 overflow-hidden">
-                          <div className="bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-500 border-b border-gray-100">
+                        <div key={group.label} className="rounded-lg border border-[#E5E4E1] overflow-hidden">
+                          <div className="bg-[#F5F4F1] px-3 py-1.5 text-xs font-medium text-[#9C9B99] border-b border-[#E5E4E1]">
                             {group.label}
                           </div>
-                          <div className="grid grid-cols-2 divide-x divide-gray-50">
+                          <div className="grid grid-cols-2 divide-x divide-[#E5E4E1]">
                             {group.items.map((item) => (
-                              <div key={item.label} className="px-3 py-1.5 flex items-center justify-between gap-2 border-b border-gray-50">
-                                <span className="text-xs text-gray-400">{item.label}</span>
-                                <span className="text-xs font-medium text-gray-700 tabular-nums">{item.value}</span>
+                              <div key={item.label} className="px-3 py-1.5 flex items-center justify-between gap-2 border-b border-[#E5E4E1]">
+                                <span className="text-xs text-[#9C9B99]">{item.label}</span>
+                                <span className="text-xs font-medium text-[#1A1918] tabular-nums">{item.value}</span>
                               </div>
                             ))}
                           </div>
@@ -434,21 +440,21 @@ function StockbitRefreshModal({
           {/* Loading: saving */}
           {phase === 'saving' && (
             <div className="flex flex-col items-center justify-center py-8 gap-3">
-              <div className="w-6 h-6 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
-              <p className="text-xs text-gray-500">Saving {rows.length} rows to database…</p>
+              <div className="w-6 h-6 border-2 border-[#3D8A5A] border-t-transparent rounded-full animate-spin" />
+              <p className="text-xs text-[#6D6C6A]">Saving {rows.length} rows to database…</p>
             </div>
           )}
 
           {/* Done */}
           {phase === 'saved' && (
             <div className="flex flex-col items-center justify-center py-8 gap-2 text-center">
-              <div className="w-10 h-10 rounded-full bg-green-50 flex items-center justify-center text-green-500 text-lg">
+              <div className="w-10 h-10 rounded-full bg-[#C8F0D8] flex items-center justify-center text-[#3D8A5A] text-lg">
                 ✓
               </div>
-              <p className="text-sm font-medium text-gray-700">
+              <p className="text-sm font-medium text-[#1A1918]">
                 {upsertedCount} rows saved successfully
               </p>
-              <p className="text-xs text-gray-400">Reload the page to see updated charts.</p>
+              <p className="text-xs text-[#9C9B99]">Reload the page to see updated charts.</p>
             </div>
           )}
 
@@ -464,13 +470,13 @@ function StockbitRefreshModal({
         </div>
 
         {/* Footer actions */}
-        <div className="px-5 py-4 border-t border-gray-100 flex justify-between items-center shrink-0">
+        <div className="px-5 py-4 border-t border-[#E5E4E1] flex justify-between items-center shrink-0">
           {/* Back navigation */}
           <div>
             {phase === 'config' && (
               <button
                 onClick={() => setPhase('token')}
-                className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                className="text-xs text-[#9C9B99] hover:text-[#6D6C6A] transition-colors"
               >
                 ← Back
               </button>
@@ -478,7 +484,7 @@ function StockbitRefreshModal({
             {phase === 'preview' && (
               <button
                 onClick={() => setPhase('config')}
-                className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                className="text-xs text-[#9C9B99] hover:text-[#6D6C6A] transition-colors"
               >
                 ← Back
               </button>
@@ -486,7 +492,7 @@ function StockbitRefreshModal({
             {phase === 'error' && (
               <button
                 onClick={() => setPhase(rows.length > 0 ? 'preview' : 'config')}
-                className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                className="text-xs text-[#9C9B99] hover:text-[#6D6C6A] transition-colors"
               >
                 ← Back
               </button>
@@ -498,7 +504,7 @@ function StockbitRefreshModal({
             {(phase === 'saved') && (
               <button
                 onClick={onClose}
-                className="px-4 py-1.5 text-xs text-white bg-blue-500 rounded-lg hover:bg-blue-600 transition-colors"
+                className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors"
               >
                 Done
               </button>
@@ -507,7 +513,7 @@ function StockbitRefreshModal({
               <button
                 disabled={!token.trim()}
                 onClick={() => setPhase('config')}
-                className="px-4 py-1.5 text-xs text-white bg-blue-500 rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Next →
               </button>
@@ -516,7 +522,7 @@ function StockbitRefreshModal({
               <button
                 disabled={yearFrom > yearTo}
                 onClick={handleFetch}
-                className="px-4 py-1.5 text-xs text-white bg-blue-500 rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Fetch Preview
               </button>
@@ -524,7 +530,7 @@ function StockbitRefreshModal({
             {phase === 'preview' && (
               <button
                 onClick={handleSave}
-                className="px-4 py-1.5 text-xs text-white bg-green-500 rounded-lg hover:bg-green-600 transition-colors"
+                className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors"
               >
                 Save to Database ({rows.length} rows)
               </button>
@@ -562,13 +568,13 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
         <StockbitRefreshModal ticker={ticker} onClose={() => setModalOpen(false)} />
       )}
 
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+      <div className="bg-white rounded-2xl border border-[#E5E4E1] shadow-[0_2px_12px_rgba(26,25,24,0.06)] overflow-hidden">
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-100">
-          <h2 className="text-sm font-semibold text-gray-700">Data Quality</h2>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-[#E5E4E1]">
+          <h2 className="text-sm font-semibold text-[#1A1918]">Data Quality</h2>
           <button
             onClick={() => setExpanded((v) => !v)}
-            className="text-xs text-blue-500 hover:text-blue-700 transition-colors"
+            className="text-xs text-[#3D8A5A] hover:text-[#2d6b45] transition-colors"
           >
             {expanded ? 'Hide details ↑' : 'Show details ↓'}
           </button>
@@ -581,7 +587,7 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
 
           {/* Footer row */}
           <div className="flex items-center justify-between pt-1">
-            <span className="text-xs text-gray-400">
+            <span className="text-xs text-[#9C9B99]">
               {timestamp ? `Updated ${relativeTime(timestamp)}` : 'Never updated'}
             </span>
             <div className="flex items-center gap-2">
@@ -595,7 +601,7 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
                 className={`text-xs px-2.5 py-1 rounded-lg border transition-colors ${
                   isLowCompleteness
                     ? 'border-amber-300 text-amber-600 hover:bg-amber-50'
-                    : 'border-gray-200 text-gray-500 hover:bg-gray-50'
+                    : 'border-[#E5E4E1] text-[#6D6C6A] hover:bg-[#F5F4F1]'
                 }`}
               >
                 ↺ Refresh Data
@@ -606,11 +612,11 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
 
         {/* Expanded breakdown */}
         {expanded && (
-          <div className="border-t border-gray-100">
+          <div className="border-t border-[#E5E4E1]">
             <div className="px-5 py-4">
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
+              <p className="text-xs font-semibold text-[#9C9B99] uppercase tracking-wide mb-3">
                 Completeness Breakdown
-                <span className="ml-1.5 font-normal text-gray-400 normal-case">
+                <span className="ml-1.5 font-normal text-[#9C9B99] normal-case">
                   ({completeness_score} / 100 pts)
                 </span>
               </p>
@@ -625,9 +631,9 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
 
             {confidence_score == null && (
               <div className="px-5 pb-4">
-                <p className="text-xs text-gray-400 bg-gray-50 rounded px-3 py-2 border border-gray-100">
+                <p className="text-xs text-[#9C9B99] bg-[#F5F4F1] rounded px-3 py-2 border border-[#E5E4E1]">
                   Confidence score has not been computed yet. Use{' '}
-                  <span className="font-medium text-gray-500">↺ Refresh Data</span>{' '}
+                  <span className="font-medium text-[#6D6C6A]">↺ Refresh Data</span>{' '}
                   to pull data from Stockbit.
                 </p>
               </div>

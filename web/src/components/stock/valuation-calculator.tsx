@@ -2,23 +2,23 @@
 
 import { useState } from 'react'
 import { computeGrahamNumber, computeDCF } from '@/lib/calculations/valuation'
-import { formatIDRCompact } from '@/lib/calculations/formatters'
+import { formatIDRCompact, fmtNumID } from '@/lib/calculations/formatters'
 
 interface Props {
   eps: number | null
   bvps: number | null
   fcf: number | null
   currentPrice: number | null
-  shares: number | null            // shares outstanding (estimated)
-  defaultGrowthRate: number        // suggested from revenue CAGR
+  shares: number | null
+  defaultGrowthRate: number
 }
 
 function VerdictBadge({ verdict }: { verdict: string }) {
   const styles: Record<string, string> = {
-    'undervalued':   'bg-green-100 text-green-700',
+    'undervalued':   'bg-[#C8F0D8] text-[#3D8A5A]',
     'fairly-valued': 'bg-amber-100 text-amber-700',
     'overvalued':    'bg-red-100 text-red-600',
-    'na':            'bg-gray-100 text-gray-500',
+    'na':            'bg-[#EDECEA] text-[#9C9B99]',
   }
   const labels: Record<string, string> = {
     'undervalued':   'Undervalued',
@@ -27,7 +27,7 @@ function VerdictBadge({ verdict }: { verdict: string }) {
     'na':            'N/A',
   }
   return (
-    <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${styles[verdict] ?? styles.na}`}>
+    <span className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${styles[verdict] ?? styles.na}`}>
       {labels[verdict] ?? '—'}
     </span>
   )
@@ -39,15 +39,15 @@ function MoSBar({ mos }: { mos: number | null }) {
   const isPositive = mos >= 0
   return (
     <div className="mt-2">
-      <div className="flex justify-between text-xs text-gray-400 mb-0.5">
+      <div className="flex justify-between text-xs text-[#9C9B99] mb-0.5">
         <span>Overvalued</span>
         <span>Undervalued</span>
       </div>
-      <div className="h-2 bg-gray-100 rounded-full overflow-hidden relative">
-        <div className="absolute inset-y-0 left-1/2 w-px bg-gray-300 z-10" />
+      <div className="h-2 bg-[#EDECEA] rounded-full overflow-hidden relative">
+        <div className="absolute inset-y-0 left-1/2 w-px bg-[#E5E4E1] z-10" />
         {isPositive ? (
           <div
-            className="absolute inset-y-0 bg-green-400 rounded-full"
+            className="absolute inset-y-0 bg-[#3D8A5A] rounded-full"
             style={{ left: '50%', width: `${(clamped / 2).toFixed(1)}%` }}
           />
         ) : (
@@ -57,7 +57,7 @@ function MoSBar({ mos }: { mos: number | null }) {
           />
         )}
       </div>
-      <p className={`text-sm font-semibold mt-1 ${isPositive ? 'text-green-600' : 'text-red-500'}`}>
+      <p className={`text-sm font-semibold mt-1 ${isPositive ? 'text-[#3D8A5A]' : 'text-red-500'}`}>
         {mos > 0 ? '+' : ''}{mos.toFixed(1)}% margin of safety
       </p>
     </div>
@@ -73,8 +73,8 @@ function SliderInput({
   return (
     <div>
       <div className="flex justify-between items-center mb-1">
-        <label className="text-xs text-gray-500">{label}</label>
-        <span className="text-xs font-medium text-gray-700">{value}{unit}</span>
+        <label className="text-xs text-[#6D6C6A]">{label}</label>
+        <span className="text-xs font-semibold text-[#1A1918] font-mono">{value}{unit}</span>
       </div>
       <input
         type="range"
@@ -83,9 +83,9 @@ function SliderInput({
         step={step}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
-        className="w-full h-1.5 bg-gray-200 rounded-full appearance-none cursor-pointer accent-blue-600"
+        className="w-full h-1.5 bg-[#EDECEA] rounded-full appearance-none cursor-pointer accent-[#3D8A5A]"
       />
-      <div className="flex justify-between text-xs text-gray-300 mt-0.5">
+      <div className="flex justify-between text-xs text-[#9C9B99] mt-0.5">
         <span>{min}{unit}</span>
         <span>{max}{unit}</span>
       </div>
@@ -109,74 +109,74 @@ export function ValuationCalculator({ eps, bvps, fcf, currentPrice, shares, defa
   if (!hasAnyData) return null
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6">
-      <div className="mb-5">
-        <h2 className="text-sm font-semibold text-gray-700">Valuation</h2>
-        <p className="text-xs text-gray-400 mt-0.5">Estimates only — not financial advice</p>
+    <div className="bg-white rounded-2xl border border-[#E5E4E1] shadow-[0_2px_12px_rgba(26,25,24,0.06)] p-6">
+      <div className="mb-6">
+        <h2 className="text-sm font-semibold text-[#1A1918]">Valuation Models</h2>
+        <p className="text-xs text-[#9C9B99] mt-0.5">Estimates only — not financial advice</p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Graham Number */}
-        <div className="p-4 bg-gray-50 rounded-xl border border-gray-100">
+        <div className="p-5 bg-[#F5F4F1] rounded-xl border border-[#E5E4E1]">
           <div className="flex items-center justify-between mb-3">
             <div>
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Graham Number</p>
-              <p className="text-xs text-gray-400">√(22.5 × EPS × BVPS)</p>
+              <p className="text-xs font-semibold text-[#9C9B99] uppercase tracking-wide">Graham Number</p>
+              <p className="text-xs text-[#9C9B99]">√(22.5 × EPS × BVPS)</p>
             </div>
             {graham.verdict !== 'na' && <VerdictBadge verdict={graham.verdict} />}
           </div>
 
           {graham.grahamNumber ? (
             <>
-              <p className="text-2xl font-bold text-gray-900 font-mono">
-                Rp{graham.grahamNumber.toLocaleString('id-ID', { maximumFractionDigits: 0 })}
+              <p className="text-2xl font-bold text-[#1A1918] font-mono">
+                Rp{fmtNumID(Math.round(graham.grahamNumber))}
               </p>
               {currentPrice && (
-                <p className="text-xs text-gray-500 mt-1">
-                  Current: Rp{currentPrice.toLocaleString('id-ID')}
+                <p className="text-xs text-[#9C9B99] mt-1">
+                  Current: Rp{fmtNumID(currentPrice)}
                 </p>
               )}
               <MoSBar mos={graham.marginOfSafety} />
 
-              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-500">
-                <div>EPS: <span className="font-mono text-gray-700">{eps != null ? eps.toFixed(2) : '—'}</span></div>
-                <div>BVPS: <span className="font-mono text-gray-700">{bvps != null ? bvps.toFixed(2) : '—'}</span></div>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-[#6D6C6A]">
+                <div>EPS: <span className="font-mono text-[#1A1918]">{eps != null ? eps.toFixed(2) : '—'}</span></div>
+                <div>BVPS: <span className="font-mono text-[#1A1918]">{bvps != null ? bvps.toFixed(2) : '—'}</span></div>
               </div>
             </>
           ) : (
-            <p className="text-sm text-gray-400 mt-2">
+            <p className="text-sm text-[#9C9B99] mt-2">
               Requires positive EPS and Book Value per Share.
             </p>
           )}
         </div>
 
         {/* DCF */}
-        <div className="p-4 bg-gray-50 rounded-xl border border-gray-100">
+        <div className="p-5 bg-[#F5F4F1] rounded-xl border border-[#E5E4E1]">
           <div className="flex items-center justify-between mb-3">
             <div>
-              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">DCF (10-Year)</p>
-              <p className="text-xs text-gray-400">Discounted Free Cash Flow</p>
+              <p className="text-xs font-semibold text-[#9C9B99] uppercase tracking-wide">DCF (10-Year)</p>
+              <p className="text-xs text-[#9C9B99]">Discounted Free Cash Flow</p>
             </div>
             {dcfResult && dcfResult.verdict !== 'na' && <VerdictBadge verdict={dcfResult.verdict} />}
           </div>
 
           {dcfResult && dcfResult.intrinsicValuePerShare ? (
             <>
-              <p className="text-2xl font-bold text-gray-900 font-mono">
-                Rp{dcfResult.intrinsicValuePerShare.toLocaleString('id-ID', { maximumFractionDigits: 0 })}
+              <p className="text-2xl font-bold text-[#1A1918] font-mono">
+                Rp{fmtNumID(Math.round(dcfResult.intrinsicValuePerShare))}
               </p>
               {currentPrice && (
-                <p className="text-xs text-gray-500 mt-1">
-                  Current: Rp{currentPrice.toLocaleString('id-ID')}
+                <p className="text-xs text-[#9C9B99] mt-1">
+                  Current: Rp{fmtNumID(currentPrice)}
                 </p>
               )}
               <MoSBar mos={dcfResult.marginOfSafety} />
 
-              <div className="mt-3 text-xs text-gray-500">
-                Total PV: <span className="font-mono text-gray-700">{formatIDRCompact(dcfResult.totalPV)}</span>
+              <div className="mt-3 text-xs text-[#6D6C6A]">
+                Total PV: <span className="font-mono text-[#1A1918]">{formatIDRCompact(dcfResult.totalPV)}</span>
               </div>
 
-              <div className="mt-4 space-y-3 pt-4 border-t border-gray-200">
+              <div className="mt-4 space-y-3 pt-4 border-t border-[#E5E4E1]">
                 <SliderInput
                   label="Growth Rate (10-yr)"
                   value={growthRate}
@@ -198,11 +198,11 @@ export function ValuationCalculator({ eps, bvps, fcf, currentPrice, shares, defa
               </div>
             </>
           ) : fcf && fcf <= 0 ? (
-            <p className="text-sm text-gray-400 mt-2">
+            <p className="text-sm text-[#9C9B99] mt-2">
               DCF requires positive Free Cash Flow. Latest FCF: {formatIDRCompact(fcf)}
             </p>
           ) : (
-            <p className="text-sm text-gray-400 mt-2">
+            <p className="text-sm text-[#9C9B99] mt-2">
               Free Cash Flow data not available.
             </p>
           )}

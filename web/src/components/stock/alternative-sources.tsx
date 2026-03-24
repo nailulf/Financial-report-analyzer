@@ -134,10 +134,10 @@ export function AlternativeSources({ missingCategories, ticker }: AlternativeSou
   if (!relevant.length) return null
 
   return (
-    <div className="border-t border-gray-100 px-5 py-4">
-      <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
+    <div className="border-t border-[#E5E4E1] px-5 py-4">
+      <p className="text-xs font-semibold text-[#9C9B99] uppercase tracking-wide mb-3">
         Alternative Sources
-        <span className="ml-1.5 font-normal text-gray-400 normal-case">
+        <span className="ml-1.5 font-normal text-[#9C9B99] normal-case">
           — for categories with no data
         </span>
       </p>
@@ -147,7 +147,7 @@ export function AlternativeSources({ missingCategories, ticker }: AlternativeSou
           const catLabel = CAT_LABELS[cat] ?? cat
           return (
             <div key={cat}>
-              <p className="text-xs font-medium text-gray-600 mb-1.5">{catLabel}</p>
+              <p className="text-xs font-medium text-[#6D6C6A] mb-1.5">{catLabel}</p>
               <div className="space-y-1.5">
                 {sources.map((src) => {
                   const url = src.url.replace('{TICKER}', ticker)
@@ -157,11 +157,11 @@ export function AlternativeSources({ missingCategories, ticker }: AlternativeSou
                         href={url}
                         target="_blank"
                         rel="noopener noreferrer"
-                        className="text-blue-500 hover:text-blue-700 hover:underline font-medium shrink-0"
+                        className="text-[#3D8A5A] hover:text-[#2d6b45] hover:underline font-medium shrink-0"
                       >
                         {src.label} ↗
                       </a>
-                      <span className="text-gray-400">{src.instruction}</span>
+                      <span className="text-[#9C9B99]">{src.instruction}</span>
                     </div>
                   )
                 })}

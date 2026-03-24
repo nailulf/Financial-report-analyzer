@@ -2,6 +2,9 @@
 .env
 .env.local
 
+# Stockbit token cache (managed by token_manager.py)
+.stockbit_token
+
 # Python
 __pycache__/
 *.pyc

@@ -12,8 +12,8 @@ function colLabel(r: QuarterlyFinancial, mode: 'quarterly' | 'annual') {
 }
 
 function growthColor(current: number | null, prev: number | null): string {
-  if (current == null || prev == null || prev === 0) return 'text-gray-700'
-  return current > prev ? 'text-green-600' : 'text-red-500'
+  if (current == null || prev == null || prev === 0) return 'text-[#1A1918]'
+  return current > prev ? 'text-[#3D8A5A]' : 'text-red-500'
 }
 
 function growthBadge(current: number | null, prev: number | null): string {
@@ -123,26 +123,26 @@ export function QuarterlyTable({ quarterlyData, annualData }: Props) {
 
   if (rows.length === 0 && quarterlyData.length === 0 && annualData.length === 0) {
     return (
-      <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <h2 className="text-sm font-semibold text-gray-700 mb-3">Financials</h2>
-        <p className="text-sm text-gray-400">No financial data available.</p>
+      <div className="bg-white rounded-2xl border border-[#E5E4E1] shadow-[0_2px_12px_rgba(26,25,24,0.06)] p-6">
+        <h2 className="text-sm font-semibold text-[#1A1918] mb-3">Financials</h2>
+        <p className="text-sm text-[#9C9B99]">No financial data available.</p>
       </div>
     )
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 p-6">
+    <div className="bg-white rounded-2xl border border-[#E5E4E1] shadow-[0_2px_12px_rgba(26,25,24,0.06)] p-6">
       {/* Header + toggle */}
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-sm font-semibold text-gray-700">Financials</h2>
-        <div className="flex rounded-lg border border-gray-200 overflow-hidden text-xs font-medium">
+      <div className="flex items-center justify-between mb-5">
+        <h2 className="text-sm font-semibold text-[#1A1918]">Financial Highlights</h2>
+        <div className="flex rounded-xl border border-[#E5E4E1] overflow-hidden text-xs font-medium">
           <button
             onClick={() => setMode('quarterly')}
             disabled={quarterlyData.length === 0}
             className={`px-3 py-1.5 transition-colors ${
               mode === 'quarterly'
-                ? 'bg-blue-600 text-white'
-                : 'text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed'
+                ? 'bg-[#3D8A5A] text-white'
+                : 'text-[#6D6C6A] hover:bg-[#F5F4F1] disabled:opacity-40 disabled:cursor-not-allowed'
             }`}
           >
             Quarterly
@@ -150,10 +150,10 @@ export function QuarterlyTable({ quarterlyData, annualData }: Props) {
           <button
             onClick={() => setMode('annual')}
             disabled={annualData.length === 0}
-            className={`px-3 py-1.5 border-l border-gray-200 transition-colors ${
+            className={`px-3 py-1.5 border-l border-[#E5E4E1] transition-colors ${
               mode === 'annual'
-                ? 'bg-blue-600 text-white'
-                : 'text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed'
+                ? 'bg-[#3D8A5A] text-white'
+                : 'text-[#6D6C6A] hover:bg-[#F5F4F1] disabled:opacity-40 disabled:cursor-not-allowed'
             }`}
           >
             Annual
@@ -162,19 +162,19 @@ export function QuarterlyTable({ quarterlyData, annualData }: Props) {
       </div>
 
       {rows.length === 0 ? (
-        <p className="text-sm text-gray-400">No {mode} data available.</p>
+        <p className="text-sm text-[#9C9B99]">No {mode} data available.</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-gray-200">
-                <th className="text-left py-2 pr-6 font-medium text-gray-400 whitespace-nowrap w-36">
+              <tr className="border-b border-[#E5E4E1]">
+                <th className="text-left py-2 pr-6 font-medium text-[#9C9B99] whitespace-nowrap w-36">
                   Metric
                 </th>
                 {rows.map((r) => (
                   <th
                     key={`${r.year}-${r.quarter}`}
-                    className="text-right py-2 px-3 font-semibold text-gray-700 whitespace-nowrap"
+                    className="text-right py-2 px-3 font-semibold text-[#1A1918] whitespace-nowrap font-mono"
                   >
                     {colLabel(r, mode)}
                   </th>
@@ -183,10 +183,10 @@ export function QuarterlyTable({ quarterlyData, annualData }: Props) {
             </thead>
             <tbody>
               {SECTIONS.flatMap((section) => [
-                <tr key={`${section.title}__hdr`} className="bg-gray-50">
+                <tr key={`${section.title}__hdr`} className="bg-[#F5F4F1]">
                   <td
                     colSpan={rows.length + 1}
-                    className="py-1.5 px-0 text-xs font-semibold text-gray-500 uppercase tracking-wide"
+                    className="py-1.5 px-0 text-xs font-semibold text-[#9C9B99] uppercase tracking-wide"
                   >
                     {section.title}
                   </td>
@@ -194,13 +194,13 @@ export function QuarterlyTable({ quarterlyData, annualData }: Props) {
                 ...section.metrics.map((metric) => (
                   <tr
                     key={`${section.title}__${metric.label}`}
-                    className="border-b border-gray-50 hover:bg-gray-50/50"
+                    className="border-b border-[#F5F4F1] hover:bg-[#F5F4F1]/60"
                   >
-                    <td className="py-2 pr-6 text-gray-500 whitespace-nowrap">{metric.label}</td>
+                    <td className="py-2 pr-6 text-[#6D6C6A] whitespace-nowrap">{metric.label}</td>
                     {rows.map((r, i) => {
                       const val   = metric.fn(r)
                       const prev  = metric.fn(rows[i + 1] ?? ({} as QuarterlyFinancial))
-                      const color = metric.growth ? growthColor(val, prev) : 'text-gray-700'
+                      const color = metric.growth ? growthColor(val, prev) : 'text-[#1A1918]'
                       const badge = metric.growth ? growthBadge(val, prev) : ''
                       return (
                         <td

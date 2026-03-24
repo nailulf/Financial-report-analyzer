@@ -36,12 +36,10 @@ def require_supabase() -> None:
 TWELVE_DATA_API_KEY: str = os.getenv("TWELVE_DATA_API_KEY", "")
 
 # Stockbit (unofficial) — https://stockbit.com
-# Login via username/password is no longer supported (requires WebSocket 2FA).
-# Instead, copy the Bearer token directly from your browser/app session:
-#   1. Open stockbit.com in Chrome, log in
-#   2. Open DevTools → Network → any API request → Headers → Authorization
-#   3. Copy the token value (without "Bearer ") into .env
-# Token typically lasts 30 days. Re-copy when requests start failing 401.
+# Token is managed by utils/token_manager.py:
+#   - Cached in ~/.stockbit_token (auto-prompted when missing/expired)
+#   - Falls back to STOCKBIT_BEARER_TOKEN env var for backward compat / CI
+# See `python -c "from utils.token_manager import get_stockbit_token; get_stockbit_token()"` to set up.
 STOCKBIT_BEARER_TOKEN: str = os.getenv("STOCKBIT_BEARER_TOKEN", "")
 RATE_LIMIT_STOCKBIT_SECONDS: float = float(os.getenv("RATE_LIMIT_STOCKBIT_SECONDS", "0.8"))
 

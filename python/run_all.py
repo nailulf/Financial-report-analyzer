@@ -217,10 +217,13 @@ def run_weekly(tickers: list[str] | None, job_id: int | None = None) -> None:
 
 
 def run_quarterly(tickers: list[str] | None, period: str, job_id: int | None = None) -> None:
-    """Runs: financials → company_profiles → document_links → corporate_events → scores"""
+    """Runs: stockbit (primary) → yfinance (fill gaps) → company_profiles → docs → events → scores"""
     _, _, fin, cp, _ = _import_scrapers()
     dl, ce = _import_phase2_scrapers()
-    console.rule("[bold yellow]QUARTERLY: financials")
+    _, _, _, ff = _import_enrichment_scrapers()
+    console.rule("[bold yellow]QUARTERLY: financials (Stockbit — primary)")
+    _run_tracked(ff.run, "financials_fallback", job_id, tickers=tickers, source="stockbit", only_missing=False)
+    console.rule("[bold yellow]QUARTERLY: financials (yfinance — fill gaps)")
     _run_tracked(fin.run, "financials", job_id, tickers=tickers, period=period)
     console.rule("[bold yellow]QUARTERLY: company_profiles")
     _run_tracked(cp.run, "company_profiles", job_id, tickers=tickers)
@@ -253,9 +256,9 @@ def run_financials_fallback(
     only_missing: bool,
     dry_run: bool = False,
 ) -> None:
-    """Runs: financials_fallback (Stockbit backfill)"""
+    """Runs: financials from Stockbit (standalone)"""
     _, _, _, ff = _import_enrichment_scrapers()
-    console.rule("[bold magenta]FALLBACK: financials_fallback")
+    console.rule("[bold magenta]STOCKBIT: financials")
     _run_tracked(ff.run, "financials_fallback", None,
                  tickers=tickers, source=source, only_missing=only_missing, dry_run=dry_run)
     if not dry_run:
@@ -285,9 +288,12 @@ def run_full(tickers: list[str] | None, period: str, days: int, job_id: int | No
     """Runs everything in dependency order. Scores updated once at the end."""
     su, dp, fin, cp, mf = _import_scrapers()
     dl, ce = _import_phase2_scrapers()
+    _, _, _, ff = _import_enrichment_scrapers()
     console.rule("[bold green]WEEKLY: stock_universe")
     _run_tracked(su.run, "stock_universe", job_id, tickers=tickers)
-    console.rule("[bold yellow]QUARTERLY: financials")
+    console.rule("[bold yellow]QUARTERLY: financials (Stockbit — primary)")
+    _run_tracked(ff.run, "financials_fallback", job_id, tickers=tickers, source="stockbit", only_missing=False)
+    console.rule("[bold yellow]QUARTERLY: financials (yfinance — fill gaps)")
     _run_tracked(fin.run, "financials", job_id, tickers=tickers, period=period)
     console.rule("[bold yellow]QUARTERLY: company_profiles")
     _run_tracked(cp.run, "company_profiles", job_id, tickers=tickers)
@@ -351,7 +357,7 @@ Examples:
     mode.add_argument("--enrich-ratios", action="store_true", help="Fill NULL ratio columns from stored raw data (no API calls)")
     mode.add_argument("--dividends", action="store_true", help="Fetch full dividend history from yfinance")
     mode.add_argument("--fill-gaps", action="store_true", help="Detect and fill data gaps for low-completeness stocks")
-    mode.add_argument("--fallback-financials", action="store_true", help="Backfill financial data from Stockbit where yfinance data is missing")
+    mode.add_argument("--fallback-financials", action="store_true", help="Run Stockbit financials standalone (primary source, fills all tickers)")
 
     # Scope modifiers
     parser.add_argument("--ticker", nargs="+", metavar="TICKER", help="Limit to specific tickers")

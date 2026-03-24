@@ -1,9 +1,24 @@
+/**
+ * Deterministic Indonesian number formatter — avoids SSR/client hydration
+ * mismatch caused by Intl.NumberFormat / toLocaleString locale differences
+ * between Node.js and browser.
+ *
+ * Uses `.` as thousand separator (Indonesian convention).
+ */
+export function fmtNumID(n: number, fractionDigits = 0): string {
+  const fixed = Math.abs(n).toFixed(fractionDigits)
+  const [intPart, decPart] = fixed.split('.')
+  const withSep = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, '.')
+  const sign = n < 0 ? '-' : ''
+  return decPart ? `${sign}${withSep},${decPart}` : `${sign}${withSep}`
+}
+
 // IDR formatter — handles string (BIGINT from Supabase), number, or null
 export function formatIDR(value: string | number | null | undefined): string {
   if (value === null || value === undefined) return '—'
   const n = Number(value)
   if (isNaN(n)) return '—'
-  return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', maximumFractionDigits: 0 }).format(n)
+  return `Rp ${fmtNumID(Math.round(n))}`
 }
 
 // Compact IDR: 1.2T, 500M, 50Jt

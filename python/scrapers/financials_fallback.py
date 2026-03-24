@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 """
-financials_fallback.py — Stockbit-based financial data backfill with normalization.
+financials_fallback.py — Stockbit-based financial data (PRIMARY source).
 
-Runs AFTER financials.py (yfinance primary). For each ticker that still has
-missing or incomplete financial data, fetches from Stockbit keystats:
+Fetches financial data from Stockbit keystats & statement endpoints:
   - Current snapshot: TTM ratios, margins, balance sheet, cash flow figures
     → applied to the most recent annual row (quarter=0)
   - Historical revenue/net_income/eps per year+quarter (up to 10 years)
+  - Full IS/BS/CF statements when a bearer token is available
 
-The merge strategy fills only NULL fields — existing yfinance data is NEVER
-overwritten. Source tracking is updated to reflect which source(s) contributed.
+Source priority: Stockbit (this file) > yfinance (financials.py fills gaps).
+
+When run in the pipeline (--quarterly / --full), this runs FIRST.
+yfinance then fills any remaining NULL fields. The merge strategy ensures
+existing data is never overwritten by a secondary source.
+
+Requires a Stockbit bearer token for full statement endpoints.
+Token is managed by utils/token_manager.py — you'll be prompted
+interactively when the token is missing or expired.
 
 Run:
     cd python && python -m scrapers.financials_fallback
@@ -260,7 +267,7 @@ def _merge(existing: dict | None, incoming: dict, incoming_source: str) -> dict 
         return None  # nothing new to add
 
     # Update source to reflect multi-source contribution
-    current_source = existing.get("source", "unknown")
+    current_source = existing.get("source") or "unknown"
     if incoming_source not in current_source:
         updates["source"] = f"{current_source}+{incoming_source}"
 
@@ -578,8 +585,8 @@ def _process_ticker(
                 if existing_fallback.get(field) is None and row.get(field) is not None:
                     existing_fallback[field] = row[field]
             # Update source to reflect both contributed
-            src_a = existing_fallback.get("source", "")
-            src_b = row.get("source", "")
+            src_a = existing_fallback.get("source") or ""
+            src_b = row.get("source") or ""
             if src_b and src_b not in src_a:
                 existing_fallback["source"] = f"{src_a}+{src_b}"
 

@@ -28,7 +28,7 @@ import { ShareholdersWidget }       from './widgets/ShareholdersWidget'
 import { SentimentWidget }          from './widgets/SentimentWidget'
 import { SectorOutlookWidget }      from './widgets/SectorOutlookWidget'
 import { ProductsWidget }           from './widgets/ProductsWidget'
-import { FinancialChartsWidget }    from './widgets/FinancialChartsWidget'
+import { FinancialStatementsWidget } from './widgets/FinancialStatementsWidget'
 import { GrowthHealthWidget }       from './widgets/GrowthHealthWidget'
 import { FinancialHighlightsWidget } from './widgets/FinancialHighlightsWidget'
 import { ValuationWidget }          from './widgets/ValuationWidget'
@@ -128,7 +128,7 @@ export function StockPageClient({
         subtitle="Tren pendapatan, tingkat pertumbuhan, kesehatan keuangan, segmen bisnis, dan riwayat dividen"
       />
       <div className="flex flex-col gap-0">
-        <FinancialChartsWidget series={series} />
+        <FinancialStatementsWidget annual={annualTable} quarterly={quarterly} />
         <GrowthHealthWidget cagr={cagr} health={health} />
         <FinancialHighlightsWidget quarterly={quarterly} annual={annualTable} />
         <ProductsWidget />

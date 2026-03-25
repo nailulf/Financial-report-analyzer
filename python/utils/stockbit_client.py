@@ -522,6 +522,76 @@ class StockbitClient:
         return current, history
 
     # ------------------------------------------------------------------
+    # Findata-view — full HTML financial statements (same as web UI)
+    # ------------------------------------------------------------------
+
+    @retry(
+        retry=retry_if_exception_type(Exception),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        reraise=True,
+    )
+    def get_findata_html(
+        self,
+        ticker: str,
+        report_type: int,
+        statement_type: int,
+    ) -> str:
+        """
+        Fetch findata-view HTML from exodus.stockbit.com.
+
+        This is the same endpoint the Stockbit web UI uses to render
+        financial statement tables. Returns rich HTML with all line items.
+
+        Args:
+            ticker:         IDX ticker code (e.g. 'BBRI')
+            report_type:    1=Income Statement, 2=Balance Sheet, 3=Cash Flow
+            statement_type: 1=Quarterly, 2=Annual (12M periods)
+
+        Returns:
+            Raw HTML string of the financial table, or "" on failure.
+        """
+        if not self._token:
+            logger.debug("Stockbit findata-view skipped — no token")
+            return ""
+
+        self._wait()
+        url = f"{_EXODUS_BASE}/findata-view/company/financial"
+        params = {
+            "symbol": ticker,
+            "data_type": 1,
+            "report_type": report_type,
+            "statement_type": statement_type,
+        }
+        session = cffi_requests.Session(impersonate="chrome120")
+        headers = {
+            "Accept": "application/json",
+            "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Origin": "https://stockbit.com",
+            "Referer": "https://stockbit.com/",
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Authorization": f"Bearer {self._token}",
+        }
+        logger.debug("Stockbit findata-view GET report_type=%d statement_type=%d ticker=%s",
+                      report_type, statement_type, ticker)
+        resp = session.get(url, headers=headers, params=params, timeout=20)
+        self._last_at = time.time()
+
+        if resp.status_code == 401:
+            logger.warning("Stockbit findata-view 401 — token expired.")
+            clear_cached_token()
+            self._token = None
+            return ""
+
+        resp.raise_for_status()
+        data = resp.json()
+        return (data.get("data") or {}).get("html_report") or ""
+
+    # ------------------------------------------------------------------
     # Authenticated endpoints — require STOCKBIT_BEARER_TOKEN
     # ------------------------------------------------------------------
 

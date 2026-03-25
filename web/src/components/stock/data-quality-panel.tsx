@@ -14,8 +14,10 @@ function scoreBand(score: number): { label: string; textColor: string; barColor:
   return              { label: 'Thin',    textColor: 'text-red-500',   barColor: 'bg-red-500'   }
 }
 
-function relativeTime(iso: string | null): string {
+/** SSR-safe: returns static placeholder until client-side hydration. */
+function relativeTime(iso: string | null, isMounted: boolean): string {
   if (!iso) return 'never'
+  if (!isMounted) return '—'
   const diffDays = Math.floor((Date.now() - new Date(iso).getTime()) / 86_400_000)
   if (diffDays === 0) return 'today'
   if (diffDays === 1) return '1 day ago'
@@ -138,7 +140,8 @@ type ModalPhase =
   | 'saved'     // Done
   | 'error'     // Any error
 
-const CURRENT_YEAR = new Date().getFullYear()
+// Use a fixed year constant to avoid SSR/client hydration mismatch at year boundary
+const CURRENT_YEAR = 2026
 // Annual financial data for the current year isn't complete until year-end.
 // Default year_to to the previous year so the TTM-labeled-as-current-year
 // annual row from Stockbit doesn't get included.
@@ -554,6 +557,8 @@ interface DataQualityPanelProps {
 export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
   const [expanded,      setExpanded]      = useState(false)
   const [modalOpen,     setModalOpen]     = useState(false)
+  const [isMounted,     setIsMounted]     = useState(false)
+  useEffect(() => setIsMounted(true), [])
 
   if (!data) return null
 
@@ -588,7 +593,7 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
           {/* Footer row */}
           <div className="flex items-center justify-between pt-1">
             <span className="text-xs text-[#9C9B99]">
-              {timestamp ? `Updated ${relativeTime(timestamp)}` : 'Never updated'}
+              {timestamp ? `Updated ${relativeTime(timestamp, isMounted)}` : 'Never updated'}
             </span>
             <div className="flex items-center gap-2">
               {hasMissing && (

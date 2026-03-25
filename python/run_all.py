@@ -216,15 +216,16 @@ def run_weekly(tickers: list[str] | None, job_id: int | None = None) -> None:
     _update_scores(tickers)
 
 
-def run_quarterly(tickers: list[str] | None, period: str, job_id: int | None = None) -> None:
-    """Runs: stockbit (primary) → yfinance (fill gaps) → company_profiles → docs → events → scores"""
-    _, _, fin, cp, _ = _import_scrapers()
+def run_quarterly(tickers: list[str] | None, period: str, job_id: int | None = None,
+                   year_from: int | None = None, year_to: int | None = None) -> None:
+    """Runs: stockbit financials → company_profiles → docs → events → scores"""
+    _, _, _, cp, _ = _import_scrapers()
     dl, ce = _import_phase2_scrapers()
     _, _, _, ff = _import_enrichment_scrapers()
-    console.rule("[bold yellow]QUARTERLY: financials (Stockbit — primary)")
-    _run_tracked(ff.run, "financials_fallback", job_id, tickers=tickers, source="stockbit", only_missing=False)
-    console.rule("[bold yellow]QUARTERLY: financials (yfinance — fill gaps)")
-    _run_tracked(fin.run, "financials", job_id, tickers=tickers, period=period)
+    console.rule("[bold yellow]QUARTERLY: financials (Stockbit)")
+    _run_tracked(ff.run, "financials_fallback", job_id,
+                 tickers=tickers, source="stockbit", only_missing=False,
+                 year_from=year_from, year_to=year_to)
     console.rule("[bold yellow]QUARTERLY: company_profiles")
     _run_tracked(cp.run, "company_profiles", job_id, tickers=tickers)
     console.rule("[bold yellow]QUARTERLY: document_links")
@@ -255,12 +256,15 @@ def run_financials_fallback(
     source: str,
     only_missing: bool,
     dry_run: bool = False,
+    year_from: int | None = None,
+    year_to: int | None = None,
 ) -> None:
     """Runs: financials from Stockbit (standalone)"""
     _, _, _, ff = _import_enrichment_scrapers()
     console.rule("[bold magenta]STOCKBIT: financials")
     _run_tracked(ff.run, "financials_fallback", None,
-                 tickers=tickers, source=source, only_missing=only_missing, dry_run=dry_run)
+                 tickers=tickers, source=source, only_missing=only_missing, dry_run=dry_run,
+                 year_from=year_from, year_to=year_to)
     if not dry_run:
         _update_scores(tickers)
 
@@ -284,17 +288,18 @@ def run_fill_gaps(
     )
 
 
-def run_full(tickers: list[str] | None, period: str, days: int, job_id: int | None = None) -> None:
+def run_full(tickers: list[str] | None, period: str, days: int, job_id: int | None = None,
+             year_from: int | None = None, year_to: int | None = None) -> None:
     """Runs everything in dependency order. Scores updated once at the end."""
-    su, dp, fin, cp, mf = _import_scrapers()
+    su, dp, _, cp, mf = _import_scrapers()
     dl, ce = _import_phase2_scrapers()
     _, _, _, ff = _import_enrichment_scrapers()
     console.rule("[bold green]WEEKLY: stock_universe")
     _run_tracked(su.run, "stock_universe", job_id, tickers=tickers)
-    console.rule("[bold yellow]QUARTERLY: financials (Stockbit — primary)")
-    _run_tracked(ff.run, "financials_fallback", job_id, tickers=tickers, source="stockbit", only_missing=False)
-    console.rule("[bold yellow]QUARTERLY: financials (yfinance — fill gaps)")
-    _run_tracked(fin.run, "financials", job_id, tickers=tickers, period=period)
+    console.rule("[bold yellow]QUARTERLY: financials (Stockbit)")
+    _run_tracked(ff.run, "financials_fallback", job_id,
+                 tickers=tickers, source="stockbit", only_missing=False,
+                 year_from=year_from, year_to=year_to)
     console.rule("[bold yellow]QUARTERLY: company_profiles")
     _run_tracked(cp.run, "company_profiles", job_id, tickers=tickers)
     console.rule("[bold yellow]QUARTERLY: document_links")
@@ -420,6 +425,21 @@ Examples:
         action="store_true",
         help="--fallback-financials: process all tickers even if data exists (default: only missing)",
     )
+    # Year range (applies to --quarterly, --full, --fallback-financials)
+    parser.add_argument(
+        "--year-from",
+        type=int,
+        default=None,
+        metavar="YEAR",
+        help="Earliest fiscal year to fetch from Stockbit (default: current_year - 10)",
+    )
+    parser.add_argument(
+        "--year-to",
+        type=int,
+        default=None,
+        metavar="YEAR",
+        help="Latest fiscal year to fetch from Stockbit (default: current_year)",
+    )
 
     args = parser.parse_args()
 
@@ -457,12 +477,14 @@ Examples:
 
     try:
         if args.full:
-            run_full(tickers, args.period, args.days, job_id=job_id)
+            run_full(tickers, args.period, args.days, job_id=job_id,
+                     year_from=args.year_from, year_to=args.year_to)
         else:
             if args.weekly:
                 run_weekly(tickers, job_id=job_id)
             if args.quarterly:
-                run_quarterly(tickers, args.period, job_id=job_id)
+                run_quarterly(tickers, args.period, job_id=job_id,
+                              year_from=args.year_from, year_to=args.year_to)
             if args.daily:
                 run_daily(tickers, args.days, job_id=job_id)
             if args.enrich_ratios:
@@ -483,6 +505,8 @@ Examples:
                     source="stockbit",
                     only_missing=not args.fallback_all,
                     dry_run=args.dry_run,
+                    year_from=args.year_from,
+                    year_to=args.year_to,
                 )
     except KeyboardInterrupt:
         if job_id and tickers and len(tickers) == 1:

@@ -234,14 +234,30 @@ _IMMUTABLE_FIELDS = {"ticker", "year", "quarter"}
 # Fields we actively try to fill via fallback
 _FILLABLE_FIELDS = {
     "period_end",
+    # Income Statement
     "revenue", "cost_of_revenue", "gross_profit", "operating_expense",
     "operating_income", "interest_expense", "income_before_tax",
     "tax_expense", "net_income", "eps",
+    # Balance Sheet
     "total_assets", "current_assets", "total_liabilities", "current_liabilities",
     "total_equity", "total_debt", "cash_and_equivalents", "book_value_per_share",
+    "short_term_debt", "long_term_debt", "net_debt", "working_capital",
+    # Cash Flow
     "operating_cash_flow", "capex", "free_cash_flow", "dividends_paid",
+    "investing_cash_flow", "financing_cash_flow",
+    # Profitability
     "gross_margin", "operating_margin", "net_margin",
-    "roe", "roa", "current_ratio", "debt_to_equity",
+    # Returns & efficiency
+    "roe", "roa", "roce", "roic",
+    "interest_coverage", "asset_turnover", "inventory_turnover",
+    # Solvency
+    "current_ratio", "debt_to_equity",
+    "lt_debt_to_equity", "financial_leverage", "debt_to_assets",
+    "total_liabilities_to_equity",
+    # Valuation
+    "pe_ratio", "pbv_ratio", "ps_ratio", "ev_ebitda", "earnings_yield",
+    # Dividend
+    "dividend_yield", "payout_ratio",
 }
 
 
@@ -516,103 +532,84 @@ def _process_ticker(
     only_missing: bool,
     dry_run: bool,
     stockbit_client=None,
+    year_from: int | None = None,
+    year_to: int | None = None,
 ) -> tuple[int, int, str]:
     """
-    Run fallback for one ticker.
+    Fetch and upsert financial data for one ticker from Stockbit.
     Returns (rows_checked, rows_updated, reason).
 
     reason is one of:
-      "ok"           — at least one field was filled
-      "complete"     — data fetched but all fields already populated
+      "ok"           — data fetched and upserted
       "no_data"      — source(s) returned no usable rows
-      "skipped"      — skipped by only_missing filter (already has annual+quarterly)
+      "skipped"      — skipped by only_missing filter
     """
-    existing = _get_existing_rows(db_client, ticker)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    allowed = _FILLABLE_FIELDS | _IMMUTABLE_FIELDS | {"source", "last_updated"}
 
-    # If only_missing: skip only when all fillable fields are already populated
-    # (core data alone is not enough — could still be missing gross_profit, eps, ratios, etc.)
-    if only_missing and existing:
-        has_annual = any(q == 0 and _has_core_data(r) for (_, q), r in existing.items())
-        has_quarterly = any(q > 0 and _has_core_data(r) for (_, q), r in existing.items())
-        if has_annual and has_quarterly:
-            # Check if any fillable field is actually NULL across existing rows
-            has_any_null = any(
-                r.get(field) is None
-                for r in existing.values()
-                for field in _FILLABLE_FIELDS
-            )
-            if not has_any_null:
-                logger.debug("%s: all fields populated — skipping (use --all to override)", ticker)
-                return 0, 0, "skipped"
-            logger.debug(
-                "%s: has annual+quarterly core data but some fields are NULL — proceeding with fallback",
-                ticker,
-            )
+    # ── only_missing: quick check if we should skip this ticker ─────────
+    if only_missing:
+        existing = _get_existing_rows(db_client, ticker)
+        if existing:
+            has_annual = any(q == 0 and _has_core_data(r) for (_, q), r in existing.items())
+            has_quarterly = any(q > 0 and _has_core_data(r) for (_, q), r in existing.items())
+            if has_annual and has_quarterly:
+                has_any_null = any(
+                    r.get(field) is None
+                    for r in existing.values()
+                    for field in _FILLABLE_FIELDS
+                )
+                if not has_any_null:
+                    logger.debug("%s: all fields populated — skipping (use --all to override)", ticker)
+                    return 0, 0, "skipped"
 
-    # Fetch from requested sources
-    fallback_rows: list[dict] = []
+    # ── Fetch from Stockbit ─────────────────────────────────────────────
+    upsert_rows: list[dict] = []
 
     if source in ("stockbit", "both"):
-        # Keystats endpoint: returns current snapshot (ratios, margins, TTM figures)
-        # + historical revenue/net_income/eps per year+quarter (up to 10 years).
-        try:
-            sb_rows = _fetch_stockbit(ticker, client=stockbit_client)
-            if sb_rows:
-                fallback_rows.extend(sb_rows)
-                logger.info("%s: Stockbit keystats → %d period rows", ticker, len(sb_rows))
-            else:
-                logger.info("%s: Stockbit keystats returned no data", ticker)
-        except Exception as e:
-            logger.info("Stockbit keystats unavailable for %s: %s", ticker, e)
+        # Try findata-view first (full HTML statements — same as web UI refresh)
+        if stockbit_client and stockbit_client.is_authenticated:
+            try:
+                import datetime as _dt
+                from utils.stockbit_fetch_cli import fetch_full_financials
+                _yr_to = year_to or _dt.date.today().year
+                _yr_from = year_from or (_yr_to - 10)
+                fd_rows, _ = fetch_full_financials(
+                    ticker, year_from=_yr_from, year_to=_yr_to, client=stockbit_client,
+                )
+                if fd_rows:
+                    for r in fd_rows:
+                        r["source"] = "stockbit"
+                        r["last_updated"] = now_iso
+                        # Strip fields that don't exist in the DB
+                        for k in list(r.keys()):
+                            if k not in allowed:
+                                del r[k]
+                    upsert_rows.extend(fd_rows)
+                    logger.info("%s: Stockbit findata-view → %d period rows", ticker, len(fd_rows))
+            except Exception as e:
+                logger.warning("%s: Stockbit findata-view failed, falling back to keystats: %s", ticker, e)
 
-    if not fallback_rows:
+        # Fall back to keystats-only if findata didn't produce rows
+        if not upsert_rows:
+            try:
+                sb_rows = _fetch_stockbit(ticker, client=stockbit_client)
+                if sb_rows:
+                    upsert_rows.extend(sb_rows)
+                    logger.info("%s: Stockbit keystats → %d period rows", ticker, len(sb_rows))
+                else:
+                    logger.info("%s: Stockbit keystats returned no data", ticker)
+            except Exception as e:
+                logger.info("Stockbit keystats unavailable for %s: %s", ticker, e)
+
+    if not upsert_rows:
         return 0, 0, "no_data"
 
-    # Merge fallback rows with existing DB rows
-    to_upsert: list[dict] = []
-    rows_updated = 0
+    # ── Direct upsert — same as web refresh flow (no merge, just write) ─
+    if not dry_run:
+        bulk_upsert("financials", upsert_rows, on_conflict="ticker,year,quarter")
 
-    # De-duplicate fallback rows by (year, quarter)
-    seen_periods: dict[tuple[int, int], dict] = {}
-    for row in fallback_rows:
-        key = (row["year"], row["quarter"])
-        if key not in seen_periods:
-            seen_periods[key] = row
-        else:
-            # Merge: fill NULLs from later source into already-seen row
-            existing_fallback = seen_periods[key]
-            for field in _FILLABLE_FIELDS:
-                if existing_fallback.get(field) is None and row.get(field) is not None:
-                    existing_fallback[field] = row[field]
-            # Update source to reflect both contributed
-            src_a = existing_fallback.get("source") or ""
-            src_b = row.get("source") or ""
-            if src_b and src_b not in src_a:
-                existing_fallback["source"] = f"{src_a}+{src_b}"
-
-    for key, fallback_row in seen_periods.items():
-        db_row = existing.get(key)
-        merged = _merge(db_row, fallback_row, fallback_row.get("source", "unknown"))
-
-        if merged is None:
-            continue  # nothing new from this source
-
-        rows_updated += 1
-        if not dry_run:
-            to_upsert.append(merged)
-
-        if logger.isEnabledFor(logging.DEBUG):
-            new_fields = [k for k in merged if k not in _IMMUTABLE_FIELDS and k not in ("source", "last_updated")]
-            logger.debug(
-                "  %s %d Q%d: filling %d fields from %s",
-                ticker, key[0], key[1], len(new_fields), merged.get("source"),
-            )
-
-    if to_upsert and not dry_run:
-        bulk_upsert("financials", to_upsert, on_conflict="ticker,year,quarter")
-
-    reason = "ok" if rows_updated > 0 else "complete"
-    return len(seen_periods), rows_updated, reason
+    return len(upsert_rows), len(upsert_rows), "ok"
 
 
 # ===========================================================================
@@ -626,18 +623,21 @@ def run(
     annual: bool = True,
     quarterly: bool = True,
     dry_run: bool = False,
+    year_from: int | None = None,
+    year_to: int | None = None,
 ) -> RunResult:
     """
-    Backfill financial data from Stockbit for incomplete tickers.
+    Fetch financial data from Stockbit and upsert into the financials table.
 
     Args:
         tickers:      Limit to these tickers. None = all active stocks.
         source:       Data source — currently only 'stockbit'.
-        only_missing: If True, skip tickers that already have complete annual
-                      + quarterly data. Speeds up incremental runs significantly.
+        only_missing: If True, skip tickers that already have complete data.
         annual:       Fetch annual periods.
         quarterly:    Fetch quarterly periods.
-        dry_run:      Compute merges but do not write to the database.
+        dry_run:      Preview only, do not write to the database.
+        year_from:    Earliest fiscal year to fetch (default: current_year - 10).
+        year_to:      Latest fiscal year to fetch (default: current_year).
     """
     result = RunResult("financials_fallback")
     run_id = start_run(
@@ -703,6 +703,8 @@ def run(
                 only_missing=only_missing,
                 dry_run=dry_run,
                 stockbit_client=stockbit_client,
+                year_from=year_from,
+                year_to=year_to,
             )
             total_checked += checked
             total_updated += updated
@@ -773,7 +775,9 @@ Examples:
     )
     parser.add_argument("--annual-only", action="store_true", help="Fetch annual data only")
     parser.add_argument("--quarterly-only", action="store_true", help="Fetch quarterly data only")
-    parser.add_argument("--dry-run", action="store_true", help="Compute merges but do not write to DB")
+    parser.add_argument("--dry-run", action="store_true", help="Preview only, do not write to DB")
+    parser.add_argument("--year-from", type=int, default=None, help="Earliest fiscal year (default: current - 10)")
+    parser.add_argument("--year-to", type=int, default=None, help="Latest fiscal year (default: current)")
     args = parser.parse_args()
 
     setup_logging("financials_fallback")
@@ -784,4 +788,6 @@ Examples:
         annual=not args.quarterly_only,
         quarterly=not args.annual_only,
         dry_run=args.dry_run,
+        year_from=args.year_from,
+        year_to=args.year_to,
     )

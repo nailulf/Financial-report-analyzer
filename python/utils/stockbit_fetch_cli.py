@@ -332,7 +332,162 @@ def parse_keystats_snapshot(raw_data: dict) -> dict[str, Any]:
     return snapshot
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
+# ── Reusable core logic ──────────────────────────────────────────────────────
+
+def fetch_full_financials(
+    ticker: str,
+    year_from: int,
+    year_to: int,
+    client: Any = None,
+) -> tuple[list[dict], dict]:
+    """
+    Fetch complete financial data for a ticker using findata-view + keystats.
+
+    Uses the same rich endpoints as the Stockbit web UI:
+    - findata-view HTML tables (IS, BS, CF — quarterly + annual)
+    - keystats current snapshot (TTM valuation, margins, ratios)
+    - Derives annual BS from Q4, annual IS/CF by summing quarters
+    - Computes margins from raw P&L values
+
+    Args:
+        ticker:    IDX ticker code (e.g. 'BBRI')
+        year_from: Earliest fiscal year to include
+        year_to:   Latest fiscal year to include
+        client:    StockbitClient instance (optional, created if None)
+
+    Returns:
+        (rows, snapshot) where rows is a list of period dicts sorted newest-first,
+        and snapshot is the current TTM/valuation dict.
+    """
+    if client is None:
+        from utils.stockbit_client import StockbitClient
+        client = StockbitClient(prompt_for_token=False)
+
+    current_year = _CURRENT_YEAR
+
+    # ── Fetch all HTML statement tables ─────────────────────────────────────
+    is_q_html = client.get_findata_html(ticker, report_type=1, statement_type=1)  # IS quarterly
+    is_a_html = client.get_findata_html(ticker, report_type=1, statement_type=2)  # IS annual
+    bs_q_html = client.get_findata_html(ticker, report_type=2, statement_type=1)  # BS quarterly
+    cf_q_html = client.get_findata_html(ticker, report_type=3, statement_type=1)  # CF quarterly
+
+    # ── Parse each statement ────────────────────────────────────────────────
+    is_q = parse_findata_html(is_q_html, IS_MAP)
+    is_a = parse_findata_html(is_a_html, IS_MAP)
+    bs_q = parse_findata_html(bs_q_html, BS_MAP)
+    cf_q = parse_findata_html(cf_q_html, CF_MAP)
+
+    # ── Fetch keystats for current snapshot ─────────────────────────────────
+    snapshot = client.get_keystats(ticker)
+
+    # ── Merge into unified period dict ──────────────────────────────────────
+    period_data: dict[str, dict[str, Any]] = {}
+    completed_annual_years: set[int] = set()
+    for source in (is_q, bs_q, cf_q):
+        for fields in source.values():
+            if fields.get("quarter") == 4:
+                completed_annual_years.add(fields["year"])
+
+    def merge_into(source: dict[str, dict[str, Any]]) -> None:
+        for pk, fields in source.items():
+            yr = fields["year"]
+            q = fields["quarter"]
+            if not (year_from <= yr <= year_to):
+                continue
+            if q == 0 and yr >= current_year and yr not in completed_annual_years:
+                continue
+            if pk not in period_data:
+                period_data[pk] = {"ticker": ticker, "year": yr, "quarter": q}
+            for k, v in fields.items():
+                if k in ("year", "quarter"):
+                    continue
+                period_data[pk].setdefault(k, v)
+
+    # Priority: IS quarterly > IS annual > BS quarterly > CF quarterly
+    merge_into(is_q)
+    merge_into(is_a)
+    merge_into(bs_q)
+    merge_into(cf_q)
+
+    # ── Derive annual BS from Q4 balance sheet ──────────────────────────────
+    bs_annual_cols = set(BS_MAP.values())
+    for yr in range(year_from, year_to + 1):
+        ann_pk = f"{yr}_0"
+        q4_pk = f"{yr}_4"
+        if q4_pk in period_data and ann_pk in period_data:
+            q4 = period_data[q4_pk]
+            ann = period_data[ann_pk]
+            for col in bs_annual_cols:
+                if col in q4:
+                    ann.setdefault(col, q4[col])
+
+    # ── Derive annual IS from quarterly sums ────────────────────────────────
+    is_sum_cols = {"revenue", "gross_profit", "operating_income", "net_income"}
+    for yr in range(year_from, year_to + 1):
+        ann_pk = f"{yr}_0"
+        if ann_pk not in period_data:
+            continue
+        ann = period_data[ann_pk]
+        for col in is_sum_cols:
+            if ann.get(col) is not None:
+                continue
+            q_vals = [
+                period_data.get(f"{yr}_{q}", {}).get(col)
+                for q in range(1, 5)
+            ]
+            q_vals_filled = [v for v in q_vals if v is not None]
+            if len(q_vals_filled) == 4:
+                ann[col] = sum(q_vals_filled)
+
+    # ── Derive annual CF from quarterly sums ────────────────────────────────
+    cf_sum_cols = {"operating_cash_flow", "capex", "free_cash_flow",
+                   "investing_cash_flow", "financing_cash_flow"}
+    for yr in range(year_from, year_to + 1):
+        ann_pk = f"{yr}_0"
+        if ann_pk not in period_data:
+            continue
+        ann = period_data[ann_pk]
+        for col in cf_sum_cols:
+            if col in ann:
+                continue
+            q_vals = [
+                period_data.get(f"{yr}_{q}", {}).get(col)
+                for q in range(1, 5)
+            ]
+            q_vals = [v for v in q_vals if v is not None]
+            if q_vals:
+                ann[col] = sum(q_vals)
+
+    # ── Derive margins from raw P&L ─────────────────────────────────────────
+    for row in period_data.values():
+        rev = row.get("revenue")
+        if not rev:
+            continue
+        if "gross_margin" not in row and row.get("gross_profit") is not None:
+            row["gross_margin"] = round(row["gross_profit"] / rev * 100, 4)
+        if "operating_margin" not in row and row.get("operating_income") is not None:
+            row["operating_margin"] = round(row["operating_income"] / rev * 100, 4)
+        if "net_margin" not in row and row.get("net_income") is not None:
+            row["net_margin"] = round(row["net_income"] / rev * 100, 4)
+
+    # ── Merge snapshot into most recent annual row ──────────────────────────
+    rows = sorted(period_data.values(), key=lambda r: (-r["year"], -r["quarter"]))
+    for row in rows:
+        if row["quarter"] == 0:
+            for k, v in snapshot.items():
+                row.setdefault(k, v)
+            break
+
+    # ── Ensure required keys ────────────────────────────────────────────────
+    for row in rows:
+        row.setdefault("revenue", None)
+        row.setdefault("net_income", None)
+        row.setdefault("eps", None)
+
+    return rows, snapshot
+
+
+# ── CLI entry point ──────────────────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -396,7 +551,6 @@ def main() -> None:
     base_url = "https://exodus.stockbit.com/findata-view/company/financial"
 
     def findata(report_type: int, statement_type: int) -> str:
-        """Fetch findata-view HTML for a given report_type + statement_type."""
         url = (
             f"{base_url}?symbol={ticker}"
             f"&data_type=1&report_type={report_type}&statement_type={statement_type}"
@@ -404,24 +558,22 @@ def main() -> None:
         data = get(url).get("data") or {}
         return data.get("html_report") or ""
 
-    # ── Fetch all three statements (quarterly) ────────────────────────────────
-    is_q_html  = findata(report_type=1, statement_type=1)   # IS quarterly
-    is_a_html  = findata(report_type=1, statement_type=2)   # IS annual  (12M periods)
-    bs_q_html  = findata(report_type=2, statement_type=1)   # BS quarterly
-    cf_q_html  = findata(report_type=3, statement_type=1)   # CF quarterly
+    is_q_html = findata(report_type=1, statement_type=1)
+    is_a_html = findata(report_type=1, statement_type=2)
+    bs_q_html = findata(report_type=2, statement_type=1)
+    cf_q_html = findata(report_type=3, statement_type=1)
 
-    # ── Parse each statement ──────────────────────────────────────────────────
-    is_q  = parse_findata_html(is_q_html,  IS_MAP)
-    is_a  = parse_findata_html(is_a_html,  IS_MAP)
-    bs_q  = parse_findata_html(bs_q_html,  BS_MAP)
-    cf_q  = parse_findata_html(cf_q_html,  CF_MAP)
+    is_q = parse_findata_html(is_q_html, IS_MAP)
+    is_a = parse_findata_html(is_a_html, IS_MAP)
+    bs_q = parse_findata_html(bs_q_html, BS_MAP)
+    cf_q = parse_findata_html(cf_q_html, CF_MAP)
 
-    # ── Fetch keystats for current snapshot ───────────────────────────────────
-    ks_raw  = get(f"https://exodus.stockbit.com/keystats/ratio/v1/{ticker}?year_limit=10")
+    ks_raw = get(f"https://exodus.stockbit.com/keystats/ratio/v1/{ticker}?year_limit=10")
     ks_data = ks_raw.get("data") or {}
     snapshot = parse_keystats_snapshot(ks_data)
 
-    # ── Merge into unified period dict ────────────────────────────────────────
+    # Reuse the same merge/derive logic via inline processing
+    # (CLI keeps its own session for the web API route call path)
     period_data: dict[str, dict[str, Any]] = {}
     completed_annual_years: set[int] = set()
     for source in (is_q, bs_q, cf_q):
@@ -431,8 +583,7 @@ def main() -> None:
 
     def merge_into(source: dict[str, dict[str, Any]]) -> None:
         for pk, fields in source.items():
-            yr  = fields["year"]
-            q   = fields["quarter"]
+            yr, q = fields["year"], fields["quarter"]
             if not (year_from <= yr <= year_to):
                 continue
             if q == 0 and yr >= _CURRENT_YEAR and yr not in completed_annual_years:
@@ -440,71 +591,39 @@ def main() -> None:
             if pk not in period_data:
                 period_data[pk] = {"ticker": ticker, "year": yr, "quarter": q}
             for k, v in fields.items():
-                if k in ("year", "quarter"):
-                    continue
-                period_data[pk].setdefault(k, v)  # first-write wins across statements
+                if k not in ("year", "quarter"):
+                    period_data[pk].setdefault(k, v)
 
-    # Priority: IS quarterly > IS annual > BS quarterly > CF quarterly
-    merge_into(is_q)
-    merge_into(is_a)
-    merge_into(bs_q)
-    merge_into(cf_q)
+    merge_into(is_q); merge_into(is_a); merge_into(bs_q); merge_into(cf_q)
 
-    # ── Derive annual (quarter=0) BS from Q4 quarterly data ───────────────────
-    # The Q4 balance sheet IS the year-end snapshot → copy into annual row
     bs_annual_cols = set(BS_MAP.values())
     for yr in range(year_from, year_to + 1):
-        ann_pk = f"{yr}_0"
-        q4_pk  = f"{yr}_4"
+        ann_pk, q4_pk = f"{yr}_0", f"{yr}_4"
         if q4_pk in period_data and ann_pk in period_data:
-            q4 = period_data[q4_pk]
-            ann = period_data[ann_pk]
             for col in bs_annual_cols:
-                if col in q4:
-                    ann.setdefault(col, q4[col])
+                if col in period_data[q4_pk]:
+                    period_data[ann_pk].setdefault(col, period_data[q4_pk][col])
 
-    # ── Derive annual IS items from quarterly sum when IS annual is incomplete ──
-    # Stockbit's IS annual HTML sometimes omits Gross Profit (and other P&L lines)
-    # for the most recent year even when quarterly data is complete.  Summing all
-    # four single-quarter rows gives the correct annual total.  Require all 4
-    # quarters to avoid presenting a partial annual figure.
-    is_sum_cols = {"revenue", "gross_profit", "operating_income", "net_income"}
     for yr in range(year_from, year_to + 1):
         ann_pk = f"{yr}_0"
         if ann_pk not in period_data:
             continue
         ann = period_data[ann_pk]
-        for col in is_sum_cols:
+        for col in {"revenue", "gross_profit", "operating_income", "net_income"}:
             if ann.get(col) is not None:
-                continue  # already populated from IS annual
-            q_vals = [
-                period_data.get(f"{yr}_{q}", {}).get(col)
-                for q in range(1, 5)
-            ]
-            q_vals_filled = [v for v in q_vals if v is not None]
-            if len(q_vals_filled) == 4:  # only sum when all 4 quarters exist
-                ann[col] = sum(q_vals_filled)
-
-    # ── Derive annual CF from summing quarterly CF ────────────────────────────
-    cf_sum_cols = {"operating_cash_flow", "capex", "free_cash_flow",
-                   "investing_cash_flow", "financing_cash_flow"}
-    for yr in range(year_from, year_to + 1):
-        ann_pk = f"{yr}_0"
-        if ann_pk not in period_data:
-            continue
-        ann = period_data[ann_pk]
-        for col in cf_sum_cols:
+                continue
+            qv = [period_data.get(f"{yr}_{q}", {}).get(col) for q in range(1, 5)]
+            qv = [v for v in qv if v is not None]
+            if len(qv) == 4:
+                ann[col] = sum(qv)
+        for col in {"operating_cash_flow", "capex", "free_cash_flow", "investing_cash_flow", "financing_cash_flow"}:
             if col in ann:
-                continue  # already set by IS annual or similar
-            q_vals = [
-                period_data.get(f"{yr}_{q}", {}).get(col)
-                for q in range(1, 5)
-            ]
-            q_vals = [v for v in q_vals if v is not None]
-            if q_vals:
-                ann[col] = sum(q_vals)
+                continue
+            qv = [period_data.get(f"{yr}_{q}", {}).get(col) for q in range(1, 5)]
+            qv = [v for v in qv if v is not None]
+            if qv:
+                ann[col] = sum(qv)
 
-    # ── Derive margins from raw P&L values (no margin rows in HTML) ──────────
     for row in period_data.values():
         rev = row.get("revenue")
         if not rev:
@@ -516,7 +635,6 @@ def main() -> None:
         if "net_margin" not in row and row.get("net_income") is not None:
             row["net_margin"] = round(row["net_income"] / rev * 100, 4)
 
-    # ── Merge snapshot into most recent annual row ────────────────────────────
     rows = sorted(period_data.values(), key=lambda r: (-r["year"], -r["quarter"]))
     for row in rows:
         if row["quarter"] == 0:
@@ -524,11 +642,10 @@ def main() -> None:
                 row.setdefault(k, v)
             break
 
-    # ── Ensure required keys ──────────────────────────────────────────────────
     for row in rows:
-        row.setdefault("revenue",    None)
+        row.setdefault("revenue", None)
         row.setdefault("net_income", None)
-        row.setdefault("eps",        None)
+        row.setdefault("eps", None)
 
     print(json.dumps({"rows": rows, "snapshot": snapshot}))
 

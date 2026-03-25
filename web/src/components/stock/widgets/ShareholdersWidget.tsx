@@ -62,9 +62,9 @@ export function ShareholdersWidget({ shareholders, shareholderHistory = [] }: Pr
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-[#E0E0E5]">
         <div className="flex flex-col gap-0.5">
-          <span className="font-mono text-[13px] font-bold tracking-[0.5px] text-[#1A1A1A]">SHAREHOLDERS</span>
+          <span className="font-mono text-[13px] font-bold tracking-[0.5px] text-[#1A1A1A]">PEMEGANG SAHAM</span>
           {snapshotDate && (
-            <span className="font-mono text-[11px] text-[#888888]">As of {fmtDate(snapshotDate)}</span>
+            <span className="font-mono text-[11px] text-[#888888]">Per tanggal {fmtDate(snapshotDate)}</span>
           )}
         </div>
         {historyDates.length > 1 && (
@@ -75,7 +75,7 @@ export function ShareholdersWidget({ shareholders, shareholderHistory = [] }: Pr
           >
             {historyDates.map((d, i) => (
               <option key={d} value={i}>
-                {fmtDate(d)}{i === 0 ? ' (latest)' : ''}
+                {fmtDate(d)}{i === 0 ? ' (terbaru)' : ''}
               </option>
             ))}
           </select>
@@ -84,8 +84,8 @@ export function ShareholdersWidget({ shareholders, shareholderHistory = [] }: Pr
 
       {/* Column headers */}
       <div className="flex items-center bg-[#F5F5F8] px-3 py-2">
-        <span className="font-mono text-[11px] font-bold text-[#888888] tracking-[0.5px] flex-1">SHAREHOLDER</span>
-        <span className="font-mono text-[11px] font-bold text-[#888888] tracking-[0.5px] w-14">TYPE</span>
+        <span className="font-mono text-[11px] font-bold text-[#888888] tracking-[0.5px] flex-1">PEMEGANG SAHAM</span>
+        <span className="font-mono text-[11px] font-bold text-[#888888] tracking-[0.5px] w-14">TIPE</span>
         <span className="font-mono text-[11px] font-bold text-[#888888] tracking-[0.5px] w-14 text-right">%</span>
       </div>
 
@@ -116,9 +116,9 @@ export function ShareholdersWidget({ shareholders, shareholderHistory = [] }: Pr
 
       {/* Summary footer */}
       <div className="flex items-center justify-between bg-[#F5F5F8] px-3 py-2.5">
-        <span className="font-mono text-[12px] text-[#888888]">{displayed.length} holders shown (≥1%)</span>
+        <span className="font-mono text-[12px] text-[#888888]">{displayed.length} pemegang saham ditampilkan (≥1%)</span>
         <span className="font-mono text-[12px] font-semibold text-[#1A1A1A]">
-          Shown: {total.toFixed(2)}%
+          Ditampilkan: {total.toFixed(2)}%
         </span>
       </div>
     </div>

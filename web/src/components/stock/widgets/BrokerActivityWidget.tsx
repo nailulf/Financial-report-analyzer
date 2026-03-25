@@ -55,9 +55,9 @@ function SummaryCard({
 
 /* ─── broker table (right panel) ────────────────────────────────────── */
 
-function BrokerTable({ buckets, netForeignFlow }: { buckets: StockBrokerBucket[]; netForeignFlow: number }) {
+function BrokerTable({ buckets, netBrokerFlow }: { buckets: StockBrokerBucket[]; netBrokerFlow: number }) {
   return (
-    <div className="bg-white border-l border-[#E0E0E5] flex flex-col min-h-full">
+    <div className="bg-white flex flex-col min-h-full">
       {/* title */}
       <div className="px-5 py-3">
         <span className="font-mono text-[13px] font-bold tracking-[0.5px] text-[#1A1A1A]">
@@ -75,33 +75,41 @@ function BrokerTable({ buckets, netForeignFlow }: { buckets: StockBrokerBucket[]
 
       {/* rows */}
       <div className="flex-1">
-        {buckets.map((b, i) => {
-          const net = b.total_net_value
-          const netColor = net > 0 ? 'text-[#00FF88]' : net < 0 ? 'text-red-400' : 'text-[#888888]'
-          return (
-            <div key={i} className="flex items-center px-3 py-2.5 border-b border-[#E0E0E5] last:border-0">
-              <span className="font-mono text-[12px] font-semibold text-[#1A1A1A] flex-1 truncate">
-                {b.broker_name ?? b.broker_code}
-              </span>
-              <span className="font-mono text-[12px] text-[#00FF88] w-[104px] text-right">
-                {formatIDRCompact(b.total_buy_value)}
-              </span>
-              <span className="font-mono text-[12px] text-red-400 w-[104px] text-right">
-                {formatIDRCompact(b.total_sell_value)}
-              </span>
-              <span className={`font-mono text-[12px] font-semibold w-[104px] text-right ${netColor}`}>
-                {net > 0 ? '+' : ''}{formatIDRCompact(net)}
-              </span>
-            </div>
-          )
-        })}
+        {buckets.length > 0 ? (
+          buckets.map((b) => {
+            const net = b.total_net_value
+            const netColor = net > 0 ? 'text-[#00FF88]' : net < 0 ? 'text-red-400' : 'text-[#888888]'
+            return (
+              <div key={b.broker_code} className="flex items-center px-3 py-2.5 border-b border-[#E0E0E5] last:border-0">
+                <span className="font-mono text-[12px] font-semibold text-[#1A1A1A] flex-1 truncate">
+                  {b.broker_name ?? b.broker_code}
+                </span>
+                <span className="font-mono text-[12px] text-[#00FF88] w-[104px] text-right">
+                  {formatIDRCompact(b.total_buy_value)}
+                </span>
+                <span className="font-mono text-[12px] text-red-400 w-[104px] text-right">
+                  {formatIDRCompact(b.total_sell_value)}
+                </span>
+                <span className={`font-mono text-[12px] font-semibold w-[104px] text-right ${netColor}`}>
+                  {net > 0 ? '+' : ''}{formatIDRCompact(net)}
+                </span>
+              </div>
+            )
+          })
+        ) : (
+          <div className="flex items-center justify-center py-12">
+            <span className="font-mono text-[11px] text-[#AAAAAA]">Belum ada data broker</span>
+          </div>
+        )}
       </div>
 
       {/* footer */}
       <div className="flex items-center justify-between px-3 py-3 border-t border-[#E0E0E5] bg-[#F5F5F8]">
-        <span className="font-mono text-[12px] font-bold text-[#888888]">NET FOREIGN FLOW</span>
-        <span className={`font-mono text-[13px] font-bold ${netForeignFlow >= 0 ? 'text-[#00FF88]' : 'text-red-400'}`}>
-          {netForeignFlow >= 0 ? '+' : ''}{formatIDRCompact(netForeignFlow)}
+        <span className="font-mono text-[12px] font-bold text-[#888888]">NET BROKER FLOW</span>
+        <span className={`font-mono text-[13px] font-bold ${
+          buckets.length === 0 ? 'text-[#888888]' : netBrokerFlow >= 0 ? 'text-[#00FF88]' : 'text-red-400'
+        }`}>
+          {buckets.length === 0 ? '—' : `${netBrokerFlow >= 0 ? '+' : ''}${formatIDRCompact(netBrokerFlow)}`}
         </span>
       </div>
     </div>
@@ -150,8 +158,11 @@ export function BrokerActivityWidget({ ticker, initialData }: Props) {
       const params = new URLSearchParams({ days: String(d) })
       if (ed) params.set('endDate', ed)
       const res = await fetch(`/api/stocks/${ticker}/broker?${params}`)
+      if (!res.ok) throw new Error(`Broker API ${res.status}`)
       const json = await res.json()
-      setData(json)
+      if (json && typeof json === 'object' && 'topBuyers' in json) {
+        setData(json)
+      }
     } catch {
       // keep current data on error
     } finally {
@@ -159,18 +170,20 @@ export function BrokerActivityWidget({ ticker, initialData }: Props) {
     }
   }, [ticker])
 
+  // Track whether user has changed filters (skip redundant initial fetch)
   const [mounted, setMounted] = useState(false)
+  const [userChanged, setUserChanged] = useState(false)
   useEffect(() => { setMounted(true) }, [])
   useEffect(() => {
     if (!mounted) return
+    if (!userChanged) return
     fetchData(days, endDate)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [days, endDate, mounted])
+  }, [days, endDate, mounted, userChanged])
 
   // Compute aggregates from available data
   const allBuckets = data ? mergeBuckets(data) : []
   const topBuckets = allBuckets.slice(0, 8)
-  const totalNet = allBuckets.reduce((s, b) => s + b.total_net_value, 0)
   const totalBuy = allBuckets.reduce((s, b) => s + b.total_buy_value, 0)
   const totalSell = allBuckets.reduce((s, b) => s + b.total_sell_value, 0)
   const netFlow = totalBuy - totalSell
@@ -185,7 +198,7 @@ export function BrokerActivityWidget({ ticker, initialData }: Props) {
             {DURATION_PRESETS.map((p) => (
               <button
                 key={p.days}
-                onClick={() => setDays(p.days)}
+                onClick={() => { setUserChanged(true); setDays(p.days) }}
                 className={`font-mono text-[11px] font-bold px-2 py-1 border transition-colors ${
                   days === p.days
                     ? 'bg-[#1A1A1A] text-[#00FF88] border-[#1A1A1A]'
@@ -200,7 +213,7 @@ export function BrokerActivityWidget({ ticker, initialData }: Props) {
             <input
               type="date"
               value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
+              onChange={(e) => { setUserChanged(true); setEndDate(e.target.value) }}
               className="font-mono text-[11px] text-[#1A1A1A] border border-[#E0E0E5] px-2 py-1 bg-white focus:outline-none focus:border-[#1A1A1A] w-[110px]"
             />
           )}
@@ -228,15 +241,15 @@ export function BrokerActivityWidget({ ticker, initialData }: Props) {
                 valueClass={!data ? 'text-[#888888]' : netFlow >= 0 ? 'text-[#00FF88]' : 'text-red-400'}
               />
               <SummaryCard
-                label={`TOTAL BELI (${data?.daysCount ?? days}D)`}
+                label={`TOP BELI (${data?.daysCount ?? days}D)`}
                 value={data ? formatIDRCompact(totalBuy) : '—'}
-                sub="Total nilai pembelian"
+                sub="Nilai beli broker teratas"
                 valueClass={data ? 'text-[#00FF88]' : 'text-[#888888]'}
               />
               <SummaryCard
-                label={`TOTAL JUAL (${data?.daysCount ?? days}D)`}
+                label={`TOP JUAL (${data?.daysCount ?? days}D)`}
                 value={data ? formatIDRCompact(totalSell) : '—'}
-                sub="Total nilai penjualan"
+                sub="Nilai jual broker teratas"
                 valueClass={data ? 'text-red-400' : 'text-[#888888]'}
               />
               <SummaryCard
@@ -317,8 +330,8 @@ export function BrokerActivityWidget({ ticker, initialData }: Props) {
           </div>
 
           {/* ── right panel ────────────────────────────────── */}
-          <div className="w-[480px]">
-            <BrokerTable buckets={topBuckets} netForeignFlow={totalNet} />
+          <div className="w-[480px] flex flex-col self-stretch">
+            <BrokerTable buckets={topBuckets} netBrokerFlow={netFlow} />
           </div>
         </div>
       )}

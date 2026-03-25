@@ -146,20 +146,70 @@ idx-stock-analysis/
 - Python scripts: snake_case, type hints encouraged, logging via Python `logging` module
 - NextJS: TypeScript, App Router, server components by default
 - Supabase queries in NextJS use the `@supabase/supabase-js` client
-- Currency formatting: `Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR' })`
 - Charts: Recharts with consistent color palette (blue=#3B82F6, green=#10B981, purple=#8B5CF6)
 
-### SSR & Chart Rendering
+### SSR Hydration Safety (CRITICAL)
 
-- **Never use `ssr: false`** with `next/dynamic`. It is forbidden in Server Components and breaks SSR.
-- Chart components that use browser-only libraries (Recharts) must use the **mounted guard** pattern for SSR compatibility:
-  ```typescript
-  const [mounted, setMounted] = useState(false)
-  useEffect(() => setMounted(true), [])
-  if (!mounted) return <ChartSkeleton height={300} />
-  ```
-- SSR renders the skeleton; Recharts hydrates on the client after mount. No `dynamic()` wrapper needed.
+This project has strict SSR requirements. **Every component must produce identical HTML on server and client during the initial render.** Hydration mismatches cause React errors, visual flicker, and broken interactivity.
+
+#### Banned Patterns — NEVER use these in render output:
+
+| Pattern | Why it breaks | Use instead |
+|---------|--------------|-------------|
+| `toLocaleString('id-ID')` | Node.js and browser ICU produce different output | `fmtNumID()` from `lib/calculations/formatters` |
+| `Intl.NumberFormat('id-ID')` | Same locale divergence as above | `fmtNumID()`, `formatIDRCompact()` |
+| `new Date()` / `Date.now()` in render | Server time ≠ client time | Guard behind `mounted` state, or use static placeholder |
+| `Math.random()` in render | Different on every execution | Use deterministic IDs, or guard behind `mounted` |
+| `<input type="date">` with empty value | Browser normalizes date inputs differently | Render only after `mounted` is true |
+| `new Date().getFullYear()` at module scope | Can differ at year boundary between server/client | Use a hardcoded constant, update annually |
+
+#### Required: Deterministic Number Formatting
+
+**All number formatting must use the deterministic formatters in `lib/calculations/formatters.ts`:**
+
+```typescript
+// ✅ CORRECT — deterministic, SSR-safe
+import { fmtNumID, formatIDRCompact, formatPercent } from '@/lib/calculations/formatters'
+fmtNumID(1234567)           // "1.234.567"
+formatIDRCompact(1500000)   // "1.5Jt"
+formatPercent(15.5)         // "15.5%"
+
+// ❌ WRONG — locale-dependent, causes hydration mismatch
+value.toLocaleString('id-ID')
+new Intl.NumberFormat('id-ID').format(value)
+```
+
+`fmtNumID()` uses regex-based thousand separators (`.`) and decimal commas (`,`) — identical output in Node.js and all browsers.
+
+#### Required: Mounted Guard Pattern
+
+Any component rendering browser-only content (Recharts, Mermaid, date inputs, time-dependent values) must use:
+
+```typescript
+const [mounted, setMounted] = useState(false)
+useEffect(() => setMounted(true), [])
+
+// For chart components — show skeleton during SSR:
+if (!mounted) return <ChartSkeleton height={300} />
+
+// For inline elements — conditionally render:
+{mounted && <input type="date" ... />}
+{mounted ? relativeTime(timestamp) : '—'}
+```
+
+- **Never use `ssr: false`** with `next/dynamic`. It is forbidden in Server Components.
 - All chart components are `'use client'` and handle their own mount guard internally.
+- SSR renders the skeleton/placeholder; interactive content hydrates after mount.
+
+#### Checklist Before Every Component
+
+Before writing or modifying any component, verify:
+
+1. **No locale-dependent formatting** — grep for `toLocaleString`, `Intl.NumberFormat`
+2. **No time-dependent render values** — grep for `new Date()`, `Date.now()`, `Math.random()`
+3. **Browser-only inputs guarded** — `<input type="date">`, `<input type="time">` behind `mounted`
+4. **Chart/visualization libraries guarded** — Recharts, Mermaid, D3 behind `mounted`
+5. **Tooltip/formatter callbacks null-safe** — Recharts passes `null` for missing data points
 
 ### Scraping Etiquette
 

@@ -199,7 +199,7 @@ export function QuarterlyTable({ quarterlyData, annualData }: Props) {
                     <td className="py-2 pr-6 text-[#6D6C6A] whitespace-nowrap">{metric.label}</td>
                     {rows.map((r, i) => {
                       const val   = metric.fn(r)
-                      const prev  = metric.fn(rows[i + 1] ?? ({} as QuarterlyFinancial))
+                      const prev  = i + 1 < rows.length ? metric.fn(rows[i + 1]) : null
                       const color = metric.growth ? growthColor(val, prev) : 'text-[#1A1918]'
                       const badge = metric.growth ? growthBadge(val, prev) : ''
                       return (

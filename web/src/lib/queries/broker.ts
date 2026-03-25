@@ -87,13 +87,9 @@ export async function getStockBrokerSummary(
     topBuyers:   topN(all, 'total_buy_value'),
     topSellers:  topN(all, 'total_sell_value'),
     topNetBuyers: topN(all.filter((b) => b.total_net_value > 0), 'total_net_value'),
-    topNetSellers: topN(
-      all.filter((b) => b.total_net_value < 0).map((b) => ({
-        ...b,
-        total_net_value: Math.abs(b.total_net_value),
-      })),
-      'total_net_value',
-    ),
+    topNetSellers: [...all.filter((b) => b.total_net_value < 0)]
+      .sort((a, b) => a.total_net_value - b.total_net_value)
+      .slice(0, 5),
     dateRange: `${uniqueDates.at(-1)} – ${uniqueDates[0]}`,
     daysCount: uniqueDates.length,
   }

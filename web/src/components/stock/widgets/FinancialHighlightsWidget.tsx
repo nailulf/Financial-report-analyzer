@@ -19,7 +19,8 @@ export function FinancialHighlightsWidget({ quarterly, annual }: Props) {
       <div className="bg-white border border-[#E0E0E5] flex flex-col">
         <button
           onClick={() => setOpen(!open)}
-          className="flex items-center justify-between px-5 py-3 border-b border-[#E0E0E5] w-full text-left"
+          aria-expanded={open}
+          className={['flex items-center justify-between px-5 py-3 w-full text-left', open && 'border-b border-[#E0E0E5]'].filter(Boolean).join(' ')}
         >
           <span className="font-mono text-[13px] font-bold tracking-[0.5px] text-[#1A1A1A]">
             SOROTAN KEUANGAN
@@ -33,7 +34,7 @@ export function FinancialHighlightsWidget({ quarterly, annual }: Props) {
             strokeWidth="2"
             strokeLinecap="round"
             strokeLinejoin="round"
-            className={`transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+            className={['transition-transform duration-200', open && 'rotate-180'].filter(Boolean).join(' ')}
           >
             <polyline points="6 9 12 15 18 9" />
           </svg>

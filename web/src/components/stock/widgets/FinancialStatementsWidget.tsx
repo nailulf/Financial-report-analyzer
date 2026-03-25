@@ -1,8 +1,8 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import {
-  ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend,
+  ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts'
 import type { QuarterlyFinancial } from '@/lib/types/api'
 import { CHART_COLORS } from '@/lib/constants'
@@ -89,13 +89,15 @@ function buildRows(rows: QuarterlyFinancial[], mode: 'annual' | 'quarterly'): Ch
     }))
 }
 
-function fmtTooltip(value: number, format: 'idr' | 'pct' | 'x'): string {
+function fmtTooltip(value: number | null | undefined, format: 'idr' | 'pct' | 'x'): string {
+  if (value == null) return '—'
   if (format === 'pct') return formatPercent(value)
   if (format === 'x') return formatMultiple(value)
   return formatIDRCompact(value)
 }
 
-function fmtAxis(value: number, format: 'idr' | 'pct' | 'x'): string {
+function fmtAxis(value: number | null | undefined, format: 'idr' | 'pct' | 'x'): string {
+  if (value == null) return ''
   if (format === 'pct') return `${value.toFixed(0)}%`
   if (format === 'x') return `${value.toFixed(1)}x`
   return formatIDRCompact(value)
@@ -139,7 +141,7 @@ function MetricDropdown({
         Metrik
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-1 bg-white border border-[#E0E0E5] shadow-lg z-20 min-w-[200px]">
+        <div className="absolute right-0 top-full mt-1 bg-white border border-[#E0E0E5] shadow-lg z-50 min-w-[200px]">
           {metrics.map((m) => (
             <button
               key={m.key}
@@ -202,7 +204,7 @@ function StatementCard({
   const chartH = expanded ? 340 : 220
 
   return (
-    <div className="bg-white border border-[#E0E0E5] flex flex-col overflow-visible">
+    <div className={['bg-white border border-[#E0E0E5] flex flex-col overflow-visible', dropdownOpen && 'relative z-10'].filter(Boolean).join(' ')}>
       {/* card header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[#E0E0E5]">
         <div className="flex items-center gap-2">
@@ -341,7 +343,7 @@ export function FinancialStatementsWidget({ annual, quarterly }: Props) {
     bs: new Set(STATEMENTS.bs.defaults),
   })
 
-  const data = buildRows(mode === 'annual' ? annual : quarterly, mode)
+  const data = useMemo(() => buildRows(mode === 'annual' ? annual : quarterly, mode), [annual, quarterly, mode])
 
   const toggleMetric = useCallback((type: StatementType, key: string) => {
     setSelectedMetrics((prev) => {

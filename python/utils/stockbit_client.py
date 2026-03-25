@@ -592,6 +592,91 @@ class StockbitClient:
         return (data.get("data") or {}).get("html_report") or ""
 
     # ------------------------------------------------------------------
+    # Broker distribution — buy/sell breakdown per broker
+    # ------------------------------------------------------------------
+
+    @retry(
+        retry=retry_if_exception_type(Exception),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        reraise=True,
+    )
+    def get_broker_distribution(
+        self,
+        ticker: str,
+        date: str,
+        data_type: str = "VALUE",
+    ) -> dict:
+        """
+        Fetch broker buy/sell distribution for a ticker on a single date.
+
+        Uses exodus.stockbit.com/order-trade/broker/distribution.
+        Requires a valid bearer token.
+
+        Args:
+            ticker:    IDX ticker code (e.g. 'BMRI')
+            date:      Trading date YYYY-MM-DD
+            data_type: 'VALUE' (IDR amounts) or 'VOLUME' (share counts)
+
+        Returns:
+            {
+              'top_broker_buy':  [{'code': 'BK', 'type': 'Asing', 'amount': 851695992000}, ...],
+              'top_broker_sell': [{'code': 'ZP', 'type': 'Asing', 'amount': 345080728000}, ...],
+            }
+            or {} on failure / no token.
+        """
+        if not self._token:
+            logger.debug("Stockbit broker distribution skipped — no token")
+            return {}
+
+        self._wait()
+        url = f"{_EXODUS_BASE}/order-trade/broker/distribution"
+        dt_enum = f"BROKER_DISTRIBUTION_DATA_TYPE_{data_type.upper()}"
+        params = {
+            "date": "",
+            "symbol": ticker,
+            "from": date,
+            "to": date,
+            "investor_type": "INVESTOR_TYPE_ALL",
+            "market_board": "MARKET_TYPE_REGULER",
+            "data_type": dt_enum,
+        }
+        session = cffi_requests.Session(impersonate="chrome120")
+        headers = {
+            "Accept": "application/json",
+            "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Origin": "https://stockbit.com",
+            "Referer": "https://stockbit.com/",
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Authorization": f"Bearer {self._token}",
+        }
+        logger.debug("Stockbit broker distribution GET %s %s %s", ticker, date, data_type)
+        resp = session.get(url, headers=headers, params=params, timeout=20)
+        self._last_at = time.time()
+
+        if resp.status_code == 401:
+            logger.warning("Stockbit broker distribution 401 — token expired.")
+            clear_cached_token()
+            self._token = None
+            return {}
+
+        resp.raise_for_status()
+        data = resp.json().get("data") or {}
+
+        # Extract the relevant bucket (by_value or by_volume)
+        bucket_key = "by_value" if data_type.upper() == "VALUE" else "by_volume"
+        bucket = data.get(bucket_key) or {}
+
+        # Flatten to simple lists of {code, type, amount}
+        buy_list = [b["detail"] for b in bucket.get("top_broker_buy") or []]
+        sell_list = [b["detail"] for b in bucket.get("top_broker_sell") or []]
+        return {"top_broker_buy": buy_list, "top_broker_sell": sell_list}
+
+    # ------------------------------------------------------------------
     # Authenticated endpoints — require STOCKBIT_BEARER_TOKEN
     # ------------------------------------------------------------------
 

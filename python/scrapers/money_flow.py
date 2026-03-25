@@ -129,6 +129,78 @@ def _parse_broker_row(ticker: str, trade_date: str, record: dict) -> dict | None
     }
 
 
+# ------------------------------------------------------------------
+# Parser: Stockbit broker distribution (buy/sell split)
+# ------------------------------------------------------------------
+
+def _fetch_broker_stockbit(
+    ticker: str,
+    trade_date: str,
+    client,
+) -> list[dict]:
+    """
+    Fetch broker buy/sell data from Stockbit's order-trade/broker/distribution.
+
+    Makes 2 API calls per ticker/date (value + volume), merges into unified rows.
+    Returns list of broker_summary row dicts with buy/sell/net filled.
+    """
+    value_data = client.get_broker_distribution(ticker, trade_date, data_type="VALUE")
+    volume_data = client.get_broker_distribution(ticker, trade_date, data_type="VOLUME")
+
+    if not value_data and not volume_data:
+        return []
+
+    # Merge buy/sell by broker code
+    brokers: dict[str, dict] = {}
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    def ensure(code: str, inv_type: str) -> dict:
+        if code not in brokers:
+            brokers[code] = {
+                "ticker": ticker,
+                "date": trade_date,
+                "broker_code": code,
+                "broker_name": None,  # filled later from existing data or left null
+                "buy_volume": None,
+                "buy_value": None,
+                "sell_volume": None,
+                "sell_value": None,
+                "net_volume": None,
+                "net_value": None,
+                "frequency": None,
+                "investor_type": inv_type or None,
+                "last_updated": now_iso,
+            }
+        return brokers[code]
+
+    # Value data (IDR amounts)
+    for b in value_data.get("top_broker_buy") or []:
+        row = ensure(b["code"], b.get("type"))
+        row["buy_value"] = safe_int(b["amount"])
+    for b in value_data.get("top_broker_sell") or []:
+        row = ensure(b["code"], b.get("type"))
+        row["sell_value"] = safe_int(b["amount"])
+
+    # Volume data (share counts)
+    for b in volume_data.get("top_broker_buy") or []:
+        row = ensure(b["code"], b.get("type"))
+        row["buy_volume"] = safe_int(b["amount"])
+    for b in volume_data.get("top_broker_sell") or []:
+        row = ensure(b["code"], b.get("type"))
+        row["sell_volume"] = safe_int(b["amount"])
+
+    # Compute net
+    for row in brokers.values():
+        bv = row.get("buy_value") or 0
+        sv = row.get("sell_value") or 0
+        row["net_value"] = bv - sv
+        bvol = row.get("buy_volume") or 0
+        svol = row.get("sell_volume") or 0
+        row["net_volume"] = bvol - svol
+
+    return list(brokers.values())
+
+
 def _parse_date(value) -> str | None:
     if not value:
         return None
@@ -238,6 +310,89 @@ def run(
 
 
 # ------------------------------------------------------------------
+# Broker backfill (Stockbit — buy/sell split)
+# ------------------------------------------------------------------
+
+def run_broker_backfill(
+    tickers: list[str] | None = None,
+    days: int = 30,
+) -> RunResult:
+    """
+    Backfill broker_summary with buy/sell data from Stockbit.
+
+    Fetches per-day broker distribution for the last N trading days.
+    Each day requires 2 API calls per ticker (value + volume).
+
+    Args:
+        tickers: Tickers to process. None = top N by market cap.
+        days:    Number of trading days to backfill (default: 30).
+    """
+    result = RunResult("broker_backfill")
+    run_id = start_run("broker_backfill", metadata={"days": days})
+
+    if tickers:
+        ticker_list = [t.upper() for t in tickers]
+    else:
+        all_stocks = fetch_all("stocks", "ticker, market_cap", filters={"status": "Active"})
+        all_stocks.sort(key=lambda r: r.get("market_cap") or 0, reverse=True)
+        ticker_list = [r["ticker"] for r in all_stocks[:BROKER_SUMMARY_TOP_N]]
+
+    date_list = [d.isoformat() for d in _last_n_trading_dates(days)]
+    logger.info("Broker backfill: %d tickers × %d dates (%s to %s)",
+                len(ticker_list), len(date_list), date_list[-1], date_list[0])
+
+    try:
+        from utils.stockbit_client import StockbitClient
+        sb_client = StockbitClient()
+    except Exception as e:
+        logger.error("Stockbit client init failed: %s", e)
+        finish_run(run_id, "failed", error_message=str(e))
+        return result
+
+    if not sb_client.is_authenticated:
+        logger.error("Stockbit token required for broker backfill")
+        finish_run(run_id, "failed", error_message="no token")
+        return result
+
+    all_rows: list[dict] = []
+
+    for i, ticker in enumerate(ticker_list, 1):
+        ticker_rows = 0
+        try:
+            for trade_date in date_list:
+                rows = _fetch_broker_stockbit(ticker, trade_date, sb_client)
+                if rows:
+                    # Strip investor_type if column doesn't exist in DB
+                    for r in rows:
+                        r.pop("investor_type", None)
+                    all_rows.extend(rows)
+                    ticker_rows += len(rows)
+
+            logger.info("[%d/%d] %s: %d broker rows across %d dates",
+                        i, len(ticker_list), ticker, ticker_rows, len(date_list))
+            result.ok(ticker)
+
+        except Exception as e:
+            logger.warning("Failed %s: %s", ticker, e)
+            result.fail(ticker, str(e))
+
+        # Batch upsert every 10 tickers to avoid huge memory usage
+        if len(all_rows) > 5000:
+            logger.info("Batch upserting %d broker rows...", len(all_rows))
+            bulk_upsert("broker_summary", all_rows, on_conflict="ticker,date,broker_code")
+            all_rows.clear()
+
+    # Final upsert
+    if all_rows:
+        logger.info("Upserting %d broker rows...", len(all_rows))
+        bulk_upsert("broker_summary", all_rows, on_conflict="ticker,date,broker_code")
+
+    result.print_summary()
+    finish_run(run_id, **result.to_db_kwargs())
+    return result
+
+
+# ------------------------------------------------------------------
 # Entry point
 # ------------------------------------------------------------------
 
@@ -248,16 +403,24 @@ if __name__ == "__main__":
     parser.add_argument("--ticker", nargs="+", help="Test mode: only process these tickers")
     parser.add_argument("--date", help="Specific date to fetch (YYYY-MM-DD)")
     parser.add_argument("--days", type=int, default=2, help="Number of recent trading days (default: 2)")
+    parser.add_argument(
+        "--broker-backfill",
+        type=int,
+        metavar="DAYS",
+        help="Backfill broker buy/sell data from Stockbit for N trading days",
+    )
     args = parser.parse_args()
 
     setup_logging("money_flow")
 
-    specific_dates = None
-    if args.date:
-        try:
-            specific_dates = [datetime.strptime(args.date, "%Y-%m-%d").date()]
-        except ValueError:
-            logger.error("Invalid date format: %s (expected YYYY-MM-DD)", args.date)
-            sys.exit(1)
-
-    run(tickers=args.ticker, dates=specific_dates, days=args.days)
+    if args.broker_backfill:
+        run_broker_backfill(tickers=args.ticker, days=args.broker_backfill)
+    else:
+        specific_dates = None
+        if args.date:
+            try:
+                specific_dates = [datetime.strptime(args.date, "%Y-%m-%d").date()]
+            except ValueError:
+                logger.error("Invalid date format: %s (expected YYYY-MM-DD)", args.date)
+                sys.exit(1)
+        run(tickers=args.ticker, dates=specific_dates, days=args.days)

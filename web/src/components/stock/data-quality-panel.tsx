@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import type { DataQuality, QualityCategory, StockbitPreviewRow, RefreshJob, RefreshScraperProgress, CategoryFreshness } from '@/lib/types/api'
 import { AlternativeSources } from '@/components/stock/alternative-sources'
+import { useToast } from '@/components/ui/toast'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -178,9 +179,11 @@ function scraperStatusIcon(status: string): { icon: string; color: string; bg: s
 
 function StockbitRefreshModal({
   ticker,
+  visible,
   onClose,
 }: {
   ticker: string
+  visible: boolean
   onClose: () => void
 }) {
   const [step, setStep]               = useState<WizardStep>('token')
@@ -194,7 +197,55 @@ function StockbitRefreshModal({
   const [rows, setRows]               = useState<StockbitPreviewRow[]>([])
   const [errorMsg, setErrorMsg]       = useState('')
   const [job, setJob]                 = useState<RefreshJob | null>(null)
+  const [dispatchFailed, setDispatchFailed] = useState(false)
+  const [manualCmd, setManualCmd]     = useState('')
+  const [modalClosed, setModalClosed] = useState(false)
   const pollingRef                    = useRef<ReturnType<typeof setInterval> | null>(null)
+  const { addToast }                  = useToast()
+
+  // Allow closing the modal while pipeline runs — polling continues in background
+  const handleClose = useCallback(() => {
+    if (step === 'running') {
+      setModalClosed(true)
+      addToast({
+        message: `Refresh ${ticker} sedang berjalan`,
+        detail: 'Notifikasi akan muncul saat selesai',
+        variant: 'info',
+        duration: 4000,
+      })
+    }
+    onClose()
+  }, [step, ticker, onClose, addToast])
+
+  // When job finishes (modal open or closed), show toast + reload if data changed
+  useEffect(() => {
+    if (!job || (job.status !== 'done' && job.status !== 'failed')) return
+    if (job.status === 'done') {
+      const total = (job.progress ?? []).reduce((sum, p) => sum + (p.rows_added ?? 0), 0)
+      if (modalClosed) {
+        addToast({
+          message: `Refresh ${ticker} selesai`,
+          detail: job.no_new_data
+            ? 'Tidak ada data baru ditemukan'
+            : `${total} baris ditambahkan — halaman akan di-reload`,
+          variant: job.no_new_data ? 'warning' : 'success',
+          duration: job.no_new_data ? 5000 : 4000,
+        })
+      }
+      // Only auto-reload if new data was actually inserted
+      if (!job.no_new_data && total > 0) {
+        setTimeout(() => { window.location.reload() }, modalClosed ? 2500 : 1500)
+      }
+    } else if (job.status === 'failed' && modalClosed) {
+      addToast({
+        message: `Refresh ${ticker} gagal`,
+        detail: job.error_message ?? 'Cek log untuk detail',
+        variant: 'error',
+        duration: 8000,
+      })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job?.status])
 
   useEffect(() => {
     return () => { if (pollingRef.current) clearInterval(pollingRef.current) }
@@ -304,22 +355,47 @@ function StockbitRefreshModal({
         }
       }
 
-      // 2. Trigger refresh pipeline with selected scrapers
+      // 2. Create refresh job (seeds progress rows in DB)
       const scraperList = Array.from(selectedScrapers)
       const refreshRes = await fetch(`/api/stocks/${ticker}/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ scrapers: scraperList }),
       })
-      const refreshBody = await refreshRes.json() as { job_id?: number; error?: string }
+      const refreshBody = await refreshRes.json() as {
+        job_id?: number; error?: string
+      }
       if (!refreshRes.ok || !refreshBody.job_id) {
         setErrorMsg(`Pipeline trigger failed: ${refreshBody.error ?? 'unknown'}`)
         setStep('error')
         return
       }
 
-      // 3. Start polling
       const jobId = refreshBody.job_id
+
+      // 3. Always run locally — local execution has the bearer token from step 1.
+      //    GitHub Actions is for scheduled batch jobs, not interactive refreshes.
+      try {
+        const localRes = await fetch(`/api/stocks/${ticker}/refresh/local`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            job_id: jobId,
+            scrapers: scraperList,
+            broker_days: brokerDays,
+            bearer_token: token.trim() || undefined,
+          }),
+        })
+        if (!localRes.ok) {
+          const flags = ['--broker-backfill', `--backfill-days ${brokerDays}`, `--ticker ${ticker}`, `--job-id ${jobId}`]
+          setManualCmd(`cd python && python run_all.py ${flags.join(' ')}`)
+          setDispatchFailed(true)
+        }
+      } catch {
+        setDispatchFailed(true)
+      }
+
+      // 4. Start polling
       const poll = async () => {
         try {
           const res = await fetch(`/api/stocks/${ticker}/refresh/${jobId}`)
@@ -338,7 +414,7 @@ function StockbitRefreshModal({
       setErrorMsg(e instanceof Error ? e.message : 'Network error')
       setStep('error')
     }
-  }, [ticker, rows, selectedScrapers, needsFinancials])
+  }, [ticker, token, brokerDays, rows, selectedScrapers, needsFinancials])
 
   // ── Step indicator ──
   const stepLabels = [
@@ -355,6 +431,9 @@ function StockbitRefreshModal({
     (step === 'error' && s.key === (rows.length > 0 ? 'preview' : 'config'))
   )
 
+  // When hidden, keep component alive (polling continues) but render nothing
+  if (!visible) return null
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
       <div className="bg-white rounded-2xl border border-[#E5E4E1] shadow-[0_4px_24px_rgba(26,25,24,0.12)] w-full max-w-lg flex flex-col max-h-[90vh]">
@@ -364,7 +443,7 @@ function StockbitRefreshModal({
           <h3 className="text-sm font-semibold text-[#1A1918]">
             Refresh Data — <span className="text-[#3D8A5A]">{ticker}</span>
           </h3>
-          <button onClick={onClose} className="text-[#9C9B99] hover:text-[#6D6C6A] text-lg leading-none transition-colors" aria-label="Close">×</button>
+          <button onClick={handleClose} className="text-[#9C9B99] hover:text-[#6D6C6A] text-lg leading-none transition-colors" aria-label="Close">×</button>
         </div>
 
         {/* Step indicator */}
@@ -616,6 +695,19 @@ function StockbitRefreshModal({
                   : 'Pipeline selesai!'}
               </p>
 
+              {/* Dispatch failure: show manual command */}
+              {dispatchFailed && step === 'running' && (
+                <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 space-y-1.5">
+                  <p className="text-xs font-medium text-amber-700">
+                    GitHub Actions tidak bisa dipicu. Jalankan manual di terminal:
+                  </p>
+                  <code className="block text-[10px] text-amber-900 bg-amber-100 rounded px-2 py-1.5 break-all font-mono select-all">
+                    {manualCmd}
+                  </code>
+                  <p className="text-[10px] text-amber-600">Progress akan update otomatis setelah pipeline berjalan.</p>
+                </div>
+              )}
+
               <div className="rounded-lg border border-[#E5E4E1] overflow-hidden divide-y divide-[#E5E4E1]">
                 {/* Financial upsert row (only if financials were refreshed) */}
                 {needsFinancials && rows.length > 0 && (
@@ -712,9 +804,18 @@ function StockbitRefreshModal({
               <button onClick={handleTriggerPipeline}
                 className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors">Konfirmasi & Jalankan</button>
             )}
+            {step === 'running' && (
+              <button onClick={handleClose}
+                className="px-4 py-1.5 text-xs text-[#6D6C6A] bg-[#F5F4F1] border border-[#E5E4E1] rounded-lg hover:bg-[#EDECEA] transition-colors">Tutup (jalan di background)</button>
+            )}
             {step === 'done' && (
-              <button onClick={onClose}
-                className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors">Selesai</button>
+              job?.no_new_data ? (
+                <button onClick={handleClose}
+                  className="px-4 py-1.5 text-xs text-[#6D6C6A] bg-[#F5F4F1] border border-[#E5E4E1] rounded-lg hover:bg-[#EDECEA] transition-colors">Tutup</button>
+              ) : (
+                <button onClick={() => window.location.reload()}
+                  className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors">Selesai & Reload</button>
+              )
             )}
           </div>
         </div>
@@ -735,8 +836,14 @@ interface DataQualityPanelProps {
 export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
   const [expanded,      setExpanded]      = useState(false)
   const [modalOpen,     setModalOpen]     = useState(false)
+  const [modalMounted,  setModalMounted]  = useState(false) // stays true once opened, so polling survives close
   const [isMounted,     setIsMounted]     = useState(false)
   useEffect(() => setIsMounted(true), [])
+
+  const openModal = useCallback(() => {
+    setModalMounted(true)
+    setModalOpen(true)
+  }, [])
 
   if (!data) return null
 
@@ -747,8 +854,9 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
 
   return (
     <>
-      {modalOpen && (
-        <StockbitRefreshModal ticker={ticker} onClose={() => setModalOpen(false)} />
+      {/* Modal stays mounted once opened so background polling survives close */}
+      {modalMounted && (
+        <StockbitRefreshModal ticker={ticker} visible={modalOpen} onClose={() => setModalOpen(false)} />
       )}
 
       <div className="bg-white rounded-2xl border border-[#E5E4E1] shadow-[0_2px_12px_rgba(26,25,24,0.06)] overflow-hidden">
@@ -780,7 +888,7 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
                 </span>
               )}
               <button
-                onClick={() => setModalOpen(true)}
+                onClick={openModal}
                 className={`text-xs px-2.5 py-1 rounded-lg border transition-colors ${
                   isLowCompleteness
                     ? 'border-amber-300 text-amber-600 hover:bg-amber-50'

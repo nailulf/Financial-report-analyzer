@@ -3,6 +3,7 @@ import localFont from 'next/font/local'
 import { JetBrains_Mono, Space_Grotesk } from 'next/font/google'
 import './globals.css'
 import { Navbar } from '@/components/nav/navbar'
+import { ToastProvider } from '@/components/ui/toast'
 
 const geistSans = localFont({
   src: './fonts/GeistVF.woff',
@@ -38,8 +39,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body
         className={`${geistSans.variable} ${geistMono.variable} ${jetbrainsMono.variable} ${spaceGrotesk.variable} antialiased`}
       >
-        <Navbar />
-        {children}
+        <ToastProvider>
+          <Navbar />
+          {children}
+        </ToastProvider>
       </body>
     </html>
   )

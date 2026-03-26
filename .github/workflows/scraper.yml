@@ -93,8 +93,9 @@ jobs:
 
       - name: Run scraper
         env:
-          SUPABASE_URL:         ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_URL:             ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY:     ${{ secrets.SUPABASE_SERVICE_KEY }}
+          STOCKBIT_BEARER_TOKEN:    ${{ secrets.STOCKBIT_BEARER_TOKEN }}
         run: |
           cd python
           echo "Running: python run_all.py ${{ steps.args.outputs.extra_args }}"

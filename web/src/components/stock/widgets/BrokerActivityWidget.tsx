@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import {
-  BarChart, Bar, LineChart, Line, XAxis, YAxis, Tooltip, Legend,
+  BarChart, Bar, LineChart, Line, Area, XAxis, YAxis, Tooltip, Legend,
   ResponsiveContainer, ReferenceLine, ComposedChart,
 } from 'recharts'
 import type {
@@ -11,6 +11,7 @@ import type {
   SmartMoneyData,
 } from '@/lib/queries/broker'
 import { formatIDRCompact, formatNumber, fmtNumID } from '@/lib/calculations/formatters'
+import { computeConfidence as computeConfidenceScore, generateNarrative as generateNarrativeText, type ConfidenceScore } from '@/lib/calculations/signal-confidence'
 
 /* ─── constants ─────────────────────────────────────────────────────── */
 
@@ -30,32 +31,34 @@ const TABS = [
 
 type TabKey = (typeof TABS)[number]['key']
 
-/* ─── combined signal logic (truth table from FRD) ─────────────────── */
+/* ─── combined signal logic ─────────────────────────────────────────── */
 
 type BrokerDirection = 'net_beli' | 'netral' | 'net_jual'
 type InsiderAction = 'buy' | 'sell' | 'mixed' | 'none'
+type SignalPhase = 'akumulasi' | 'distribusi' | 'netral'
 
 interface CombinedSignal {
   signal: string
+  phase: SignalPhase
   label: string
   color: string
   bgColor: string
-  description: string
+  description: string        // static explanation for matrix cells
 }
 
 const SIGNAL_MAP: Record<string, CombinedSignal> = {
-  'net_beli:buy':   { signal: 'STRONG_BUY',    label: 'Beli kuat',         color: '#006633', bgColor: '#D4EDDA', description: 'Broker + insider aligned' },
-  'net_beli:none':  { signal: 'ACCUMULATION',   label: 'Akumulasi',         color: '#155724', bgColor: '#D4EDDA', description: 'Broker beli, insider diam' },
-  'net_beli:sell':  { signal: 'CONFLICT',       label: 'Konflik',           color: '#856404', bgColor: '#FFF3CD', description: 'Sinyal berlawanan' },
-  'net_beli:mixed': { signal: 'CONFLICT',       label: 'Konflik',           color: '#856404', bgColor: '#FFF3CD', description: 'Sinyal berlawanan' },
-  'netral:buy':     { signal: 'EARLY_SIGNAL',   label: 'Sinyal awal',       color: '#856404', bgColor: '#FFF3CD', description: 'Insider mulai masuk' },
-  'netral:none':    { signal: 'NEUTRAL',        label: 'Tidak ada sinyal',  color: '#666666', bgColor: '#F0F0F0', description: 'Tidak ada pergerakan' },
-  'netral:sell':    { signal: 'CAUTION',        label: 'Waspada',           color: '#856404', bgColor: '#FFF3CD', description: 'Insider jual, broker diam' },
-  'netral:mixed':   { signal: 'CAUTION',        label: 'Waspada',           color: '#856404', bgColor: '#FFF3CD', description: 'Insider jual, broker diam' },
-  'net_jual:buy':   { signal: 'TRAP',           label: 'Potensi jebakan',   color: '#856404', bgColor: '#FFF3CD', description: 'Broker jual, insider beli?' },
-  'net_jual:none':  { signal: 'DISTRIBUTION',   label: 'Distribusi',        color: '#721C24', bgColor: '#F8D7DA', description: 'Broker jual, belum konfirmasi' },
-  'net_jual:sell':  { signal: 'DANGER',         label: 'Bahaya',            color: '#721C24', bgColor: '#F8D7DA', description: 'Broker + insider confirmed' },
-  'net_jual:mixed': { signal: 'DANGER',         label: 'Bahaya',            color: '#721C24', bgColor: '#F8D7DA', description: 'Broker + insider confirmed' },
+  'net_beli:buy':   { signal: 'STRONG_ACC',  phase: 'akumulasi',  label: 'Akumulasi kuat',   color: '#006633', bgColor: '#D4EDDA', description: 'Broker & insider selaras masuk' },
+  'net_beli:none':  { signal: 'ACCUMULATION', phase: 'akumulasi',  label: 'Akumulasi',        color: '#155724', bgColor: '#D4EDDA', description: 'Broker masuk, insider diam' },
+  'net_beli:sell':  { signal: 'CONFLICT',     phase: 'netral',     label: 'Konflik',          color: '#856404', bgColor: '#FFF3CD', description: 'Broker masuk tapi insider keluar' },
+  'net_beli:mixed': { signal: 'CONFLICT',     phase: 'netral',     label: 'Konflik',          color: '#856404', bgColor: '#FFF3CD', description: 'Broker masuk, insider campuran' },
+  'netral:buy':     { signal: 'EARLY_ACC',    phase: 'netral',     label: 'Sinyal awal',      color: '#856404', bgColor: '#FFF3CD', description: 'Insider mulai masuk' },
+  'netral:none':    { signal: 'NEUTRAL',      phase: 'netral',     label: 'Netral',           color: '#666666', bgColor: '#F0F0F0', description: 'Tidak ada pergerakan' },
+  'netral:sell':    { signal: 'EARLY_DIST',   phase: 'netral',     label: 'Waspada',          color: '#856404', bgColor: '#FFF3CD', description: 'Insider mulai keluar' },
+  'netral:mixed':   { signal: 'EARLY_DIST',   phase: 'netral',     label: 'Waspada',          color: '#856404', bgColor: '#FFF3CD', description: 'Insider campuran, broker diam' },
+  'net_jual:buy':   { signal: 'CONFLICT',     phase: 'netral',     label: 'Konflik',          color: '#856404', bgColor: '#FFF3CD', description: 'Broker keluar tapi insider masuk' },
+  'net_jual:none':  { signal: 'DISTRIBUTION', phase: 'distribusi', label: 'Distribusi',       color: '#721C24', bgColor: '#F8D7DA', description: 'Broker keluar, insider diam' },
+  'net_jual:sell':  { signal: 'STRONG_DIST',  phase: 'distribusi', label: 'Distribusi berat', color: '#721C24', bgColor: '#F8D7DA', description: 'Broker & insider selaras keluar' },
+  'net_jual:mixed': { signal: 'STRONG_DIST',  phase: 'distribusi', label: 'Distribusi berat', color: '#721C24', bgColor: '#F8D7DA', description: 'Broker keluar, insider campuran' },
 }
 
 function computeBrokerDirection(netFlow: number, threshold = 5_000_000): BrokerDirection {
@@ -111,18 +114,55 @@ function signalLabel(signal: string | null): string {
   return signal
 }
 
+/* ─── broker flow constants ────────────────────────────────────────── */
+
+const BROKER_COLORS = {
+  asing:      '#2EAE7B',  // green  — foreign
+  bumn:       '#E8A838',  // gold   — government / SOE
+  retail:     '#5B8DEF',  // blue   — domestic retail / institutional
+  harga:      '#CC3333',  // red    — price line
+} as const
+
+/** Format a value that is already in Rp juta (millions) into human-readable M/B/T */
+function fmtFlowJuta(v: number | null | undefined): string {
+  if (v == null || isNaN(v)) return '—'
+  const abs = Math.abs(v)
+  const sign = v < 0 ? '-' : ''
+  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}T`
+  if (abs >= 1_000)     return `${sign}${(abs / 1_000).toFixed(1)}B`
+  return `${sign}${abs.toFixed(0)}M`
+}
+
 /* ─── chart tooltip formatter ──────────────────────────────────────── */
 
 function ChartTooltip({ active, payload, label }: any) {
-  if (!active || !payload) return null
+  if (!active || !payload?.length) return null
+  // Deduplicate: _pos and _neg keys map to the same series — merge them
+  const merged = new Map<string, { name: string; color: string; value: number }>()
+  for (const p of payload) {
+    const baseKey = (p.dataKey as string).replace(/_pos$|_neg$/, '')
+    const existing = merged.get(baseKey)
+    if (existing) {
+      existing.value += (p.value ?? 0)
+    } else {
+      merged.set(baseKey, { name: p.name, color: p.color, value: p.value ?? 0 })
+    }
+  }
+  // Inject harga from the underlying data row (Area has tooltipType="none")
+  const row = payload[0]?.payload
+  if (row?.harga != null && !merged.has('harga')) {
+    merged.set('harga', { name: 'Harga', color: BROKER_COLORS.harga, value: row.harga })
+  }
   return (
     <div className="bg-white border border-[#E0E0E5] px-3 py-2 shadow-sm font-mono text-[11px]">
       <div className="font-bold text-[#1A1A1A] mb-1">{label}</div>
-      {payload.map((p: any) => (
-        <div key={p.dataKey} className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
-          <span className="text-[#888888]">{p.name}:</span>
-          <span style={{ color: p.color }}>{formatIDRCompact(p.value)}</span>
+      {[...merged.entries()].map(([key, { name, color, value }]) => (
+        <div key={key} className="flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color }} />
+          <span className="text-[#888888]">{name}:</span>
+          <span style={{ color }}>
+            {key === 'harga' ? `Rp ${fmtNumID(value)}` : `Rp ${fmtFlowJuta(value)}`}
+          </span>
         </div>
       ))}
     </div>
@@ -156,20 +196,120 @@ function SummaryCard({
   )
 }
 
-/* ─── daily flow bar chart (Tab 1) ──────────────────────────────────── */
+/* ─── signal summary card with hover tooltip ───────────────────────── */
+
+function ConfidenceBar({ score, max, label }: { score: number; max: number; label: string }) {
+  const pct = max > 0 ? (score / max) * 100 : 0
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[#888888] w-[90px] shrink-0 truncate">{label}</span>
+      <div className="flex-1 h-1.5 bg-[#333] rounded-full overflow-hidden">
+        <div className="h-full bg-[#00FF88] rounded-full" style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-white w-[36px] text-right">{score}/{max}</span>
+    </div>
+  )
+}
+
+function SignalSummaryCard({ signal, confidence, narrative }: {
+  signal: CombinedSignal | null
+  confidence: ConfidenceScore | null
+  narrative: string | null
+}) {
+  const [hover, setHover] = useState(false)
+
+  return (
+    <div
+      className="flex-1 border border-[#E0E0E5] px-4 py-3 flex flex-col gap-1 relative cursor-default"
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      <span className="font-mono text-[10px] font-bold tracking-[0.5px] text-[#888888] uppercase">
+        SINYAL GABUNGAN
+      </span>
+      <div className="flex items-center gap-1.5">
+        {signal && <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: signal.color }} />}
+        <span className={`font-mono text-[18px] font-bold tracking-[-0.5px] ${signal ? '' : 'text-[#888888]'}`}>
+          {signal ? signal.label : '—'}
+        </span>
+        {confidence && (
+          <span className="font-mono text-[11px] font-bold ml-auto" style={{ color: confidence.color }}>
+            {confidence.total}/100 {confidence.label}
+          </span>
+        )}
+      </div>
+      {/* Thin confidence bar */}
+      {confidence && (
+        <div className="h-1 bg-[#EDECEA] rounded-full overflow-hidden mt-0.5">
+          <div
+            className="h-full rounded-full transition-all"
+            style={{ width: `${confidence.total}%`, backgroundColor: confidence.color }}
+          />
+        </div>
+      )}
+      <span className="font-mono text-[10px] text-[#888888]">
+        {narrative ?? (signal ? signal.description : 'Belum ada data')}
+      </span>
+
+      {/* Confidence breakdown tooltip on hover */}
+      {hover && signal && confidence && (
+        <div className="absolute z-50 top-full left-0 mt-1 w-80 bg-[#1A1A1A] text-white px-4 py-3 rounded-lg shadow-xl font-mono text-[10px] leading-relaxed">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: signal.color }} />
+            <span className="text-[12px] font-bold">{signal.label}</span>
+            <span className="text-[#888888]">{signal.signal}</span>
+            <span className="ml-auto font-bold text-[12px]" style={{ color: confidence.color }}>
+              {confidence.total}/100
+            </span>
+          </div>
+
+          {/* 5-component breakdown bars */}
+          <div className="border-t border-[#444] pt-2 space-y-1.5">
+            <ConfidenceBar score={confidence.components.brokerMagnitude} max={25} label="Flow magnitude" />
+            <ConfidenceBar score={confidence.components.foreignAlignment} max={25} label="Asing alignment" />
+            <ConfidenceBar score={confidence.components.bandarConfirmation} max={20} label="Bandar confirm" />
+            <ConfidenceBar score={confidence.components.insiderWeight} max={15} label="Insider weight" />
+            <ConfidenceBar score={confidence.components.brokerConcentration} max={15} label="Konsentrasi" />
+          </div>
+
+          {/* Explanations */}
+          <div className="border-t border-[#444] mt-2 pt-2 space-y-1 text-[9px] text-[#999]">
+            <div>{confidence.explanations.brokerMagnitude}</div>
+            <div>{confidence.explanations.foreignAlignment}</div>
+            <div>{confidence.explanations.bandarConfirmation}</div>
+            <div>{confidence.explanations.insiderWeight}</div>
+            <div>{confidence.explanations.brokerConcentration}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/* ─── daily flow bar chart (Tab 1) — diverging stacked ──────────────── */
 
 function DailyFlowChart({ data }: { data: DailyFlowByType[] }) {
   const [mounted, setMounted] = useState(false)
   useEffect(() => { setMounted(true) }, [])
 
+  // Split each type into _pos / _neg so positive bars stack upward,
+  // negative bars stack downward — true diverging bar chart.
   const chartData = useMemo(() =>
-    data.map((d) => ({
-      date: d.trade_date.slice(5), // MM-DD
-      asing: d.asing_net / 1e6,
-      lokal: d.lokal_net / 1e6,
-      pemerintah: d.pemerintah_net / 1e6,
-      harga: d.close_price,
-    })),
+    data.map((d) => {
+      const asing = d.asing_net / 1e6
+      const bumn  = d.pemerintah_net / 1e6
+      const retail = d.lokal_net / 1e6
+      return {
+        date:        d.trade_date.slice(5), // MM-DD
+        bumn_pos:    bumn > 0 ? bumn : 0,
+        bumn_neg:    bumn < 0 ? bumn : 0,
+        asing_pos:   asing > 0 ? asing : 0,
+        asing_neg:   asing < 0 ? asing : 0,
+        retail_pos:  retail > 0 ? retail : 0,
+        retail_neg:  retail < 0 ? retail : 0,
+        harga:       d.close_price,
+      }
+    }),
     [data],
   )
 
@@ -199,7 +339,7 @@ function DailyFlowChart({ data }: { data: DailyFlowByType[] }) {
           tick={{ fontSize: 10, fontFamily: 'monospace', fill: '#888' }}
           tickLine={false}
           axisLine={false}
-          tickFormatter={(v: number) => `${v}jt`}
+          tickFormatter={fmtFlowJuta}
         />
         <YAxis
           yAxisId="price"
@@ -209,19 +349,36 @@ function DailyFlowChart({ data }: { data: DailyFlowByType[] }) {
           axisLine={false}
           tickFormatter={(v: number) => `Rp ${fmtNumID(v)}`}
         />
-        <Tooltip content={<ChartTooltip />} />
+        <Tooltip content={<ChartTooltip />} cursor={{ stroke: 'rgba(0,0,0,0.12)', strokeWidth: 28, fill: 'none' }} />
         <Legend
           wrapperStyle={{ fontSize: 10, fontFamily: 'monospace' }}
           iconType="square"
           iconSize={8}
+          payload={[
+            { value: 'BUMN',   type: 'square', color: BROKER_COLORS.bumn },
+            { value: 'Asing',  type: 'square', color: BROKER_COLORS.asing },
+            { value: 'Retail', type: 'square', color: BROKER_COLORS.retail },
+            { value: 'Harga',  type: 'line',   color: BROKER_COLORS.harga },
+          ]}
         />
         <ReferenceLine yAxisId="flow" y={0} stroke="#E0E0E5" />
-        <Bar yAxisId="flow" dataKey="lokal" name="Bandar broker" fill="#4A7CBA" stackId="flow" />
-        <Bar yAxisId="flow" dataKey="asing" name="Asing" fill="#2EAE7B" stackId="flow" />
-        <Bar yAxisId="flow" dataKey="pemerintah" name="Dom. ritel" fill="#BBBBBB" stackId="flow" />
-        <Line
+        {/* Positive stack (upward) */}
+        <Bar yAxisId="flow" dataKey="bumn_pos"   name="BUMN"   fill={BROKER_COLORS.bumn}   stackId="pos" />
+        <Bar yAxisId="flow" dataKey="asing_pos"  name="Asing"  fill={BROKER_COLORS.asing}  stackId="pos" />
+        <Bar yAxisId="flow" dataKey="retail_pos" name="Retail" fill={BROKER_COLORS.retail} stackId="pos" />
+        {/* Negative stack (downward) */}
+        <Bar yAxisId="flow" dataKey="bumn_neg"   name="BUMN"   fill={BROKER_COLORS.bumn}   stackId="neg" legendType="none" />
+        <Bar yAxisId="flow" dataKey="asing_neg"  name="Asing"  fill={BROKER_COLORS.asing}  stackId="neg" legendType="none" />
+        <Bar yAxisId="flow" dataKey="retail_neg" name="Retail" fill={BROKER_COLORS.retail} stackId="neg" legendType="none" />
+        {/* Price overlay — rendered as Area with transparent fill so only
+            Bar components drive the tooltip cursor (block highlight) */}
+        <Area
           yAxisId="price" dataKey="harga" name="Harga"
-          stroke="#CC3333" strokeWidth={2} dot={false} type="monotone"
+          stroke={BROKER_COLORS.harga} strokeWidth={2}
+          fill="transparent"
+          dot={false} activeDot={{ r: 4, fill: BROKER_COLORS.harga, stroke: '#fff', strokeWidth: 2 }}
+          type="monotone"
+          tooltipType="none"
         />
       </ComposedChart>
     </ResponsiveContainer>
@@ -276,7 +433,7 @@ function CumulativeFlowChart({ data }: { data: DailyFlowByType[] }) {
           tick={{ fontSize: 10, fontFamily: 'monospace', fill: '#888' }}
           tickLine={false}
           axisLine={false}
-          tickFormatter={(v: number) => `${v}jt`}
+          tickFormatter={fmtFlowJuta}
         />
         <YAxis
           yAxisId="price"
@@ -294,20 +451,20 @@ function CumulativeFlowChart({ data }: { data: DailyFlowByType[] }) {
         />
         <ReferenceLine yAxisId="flow" y={0} stroke="#E0E0E5" />
         <Line
-          yAxisId="flow" dataKey="lokal" name="Bandar broker"
-          stroke="#4A7CBA" strokeWidth={2} dot={false} type="monotone"
+          yAxisId="flow" dataKey="lokal" name="Retail"
+          stroke={BROKER_COLORS.retail} strokeWidth={2} dot={false} type="monotone"
         />
         <Line
           yAxisId="flow" dataKey="asing" name="Asing"
-          stroke="#2EAE7B" strokeWidth={2} dot={false} type="monotone"
+          stroke={BROKER_COLORS.asing} strokeWidth={2} dot={false} type="monotone"
         />
         <Line
-          yAxisId="flow" dataKey="domestik" name="Dom. ritel"
-          stroke="#999999" strokeWidth={1.5} dot={false} type="monotone"
+          yAxisId="flow" dataKey="domestik" name="BUMN"
+          stroke={BROKER_COLORS.bumn} strokeWidth={1.5} dot={false} type="monotone"
         />
         <Line
           yAxisId="price" dataKey="harga" name="Harga"
-          stroke="#CC3333" strokeWidth={2} dot={false} type="monotone"
+          stroke={BROKER_COLORS.harga} strokeWidth={2} dot={false} type="monotone"
         />
       </ComposedChart>
     </ResponsiveContainer>
@@ -507,10 +664,21 @@ function BandarSignalDetail({ signal }: { signal: BandarSignalRow }) {
 
 /* ─── signal matrix (3x3 grid) ─────────────────────────────────────── */
 
-function SignalMatrix({ currentBroker, currentInsider }: {
+interface SignalMatrixProps {
   currentBroker: BrokerDirection
   currentInsider: InsiderAction
-}) {
+  netFlow: number
+  insiderBuyCount: number
+  insiderSellCount: number
+  days: number
+  confidence: ConfidenceScore
+}
+
+function SignalMatrix({
+  currentBroker, currentInsider, netFlow, insiderBuyCount, insiderSellCount, days, confidence,
+}: SignalMatrixProps) {
+  const [hover, setHover] = useState<string | null>(null)
+
   const brokerLabels: { key: BrokerDirection; label: string }[] = [
     { key: 'net_beli', label: 'Broker net beli' },
     { key: 'netral',   label: 'Broker netral' },
@@ -521,6 +689,22 @@ function SignalMatrix({ currentBroker, currentInsider }: {
     { key: 'none', label: 'Tidak ada' },
     { key: 'sell', label: 'Insider jual' },
   ]
+
+  // Build human-readable explanation for the current state
+  const threshold = 5_000_000
+  const brokerExplain = netFlow > threshold
+    ? `Net flow +${formatIDRCompact(netFlow)} > threshold ${formatIDRCompact(threshold)} → net beli`
+    : netFlow < -threshold
+    ? `Net flow ${formatIDRCompact(netFlow)} < -threshold ${formatIDRCompact(threshold)} → net jual`
+    : `Net flow ${formatIDRCompact(netFlow)} dalam threshold ±${formatIDRCompact(threshold)} → netral`
+
+  const insiderExplain = insiderBuyCount === 0 && insiderSellCount === 0
+    ? `Tidak ada insider filing dalam ${days} hari → none`
+    : insiderBuyCount > 0 && insiderSellCount > 0
+    ? `${insiderBuyCount} buy + ${insiderSellCount} sell → mixed`
+    : insiderBuyCount > 0
+    ? `${insiderBuyCount} insider buy, 0 sell → buy`
+    : `0 buy, ${insiderSellCount} insider sell → sell`
 
   return (
     <div className="flex flex-col gap-2">
@@ -545,18 +729,56 @@ function SignalMatrix({ currentBroker, currentInsider }: {
             {insiderLabels.map((il) => {
               const sig = getCombinedSignal(bl.key, il.key)
               const isCurrent = bl.key === currentBroker && il.key === currentInsider
+              const cellKey = `${bl.key}-${il.key}`
               return (
                 <div
-                  key={`${bl.key}-${il.key}`}
-                  className={`px-2 py-2 border ${isCurrent ? 'border-[#1A1A1A] border-2' : 'border-[#E0E0E5]'}`}
+                  key={cellKey}
+                  className={`px-2 py-2 border relative cursor-default ${isCurrent ? 'border-[#1A1A1A] border-2' : 'border-[#E0E0E5]'}`}
                   style={{ backgroundColor: sig.bgColor }}
+                  onMouseEnter={() => setHover(cellKey)}
+                  onMouseLeave={() => setHover(null)}
                 >
-                  <div className="font-mono text-[11px] font-bold" style={{ color: sig.color }}>
-                    {sig.label}
+                  <div className="flex items-center gap-1">
+                    <span className="font-mono text-[11px] font-bold" style={{ color: sig.color }}>
+                      {sig.label}
+                    </span>
+                    {isCurrent && (
+                      <span className="font-mono text-[9px] font-bold px-1 py-0.5 rounded" style={{ backgroundColor: confidence.color, color: '#fff' }}>
+                        {confidence.total}
+                      </span>
+                    )}
                   </div>
                   <div className="font-mono text-[9px] text-[#888888]">
                     {sig.description}
                   </div>
+                  {/* Tooltip on hover — quantitative breakdown */}
+                  {hover === cellKey && (
+                    <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-1 w-64 bg-[#1A1A1A] text-white px-3 py-2 rounded shadow-lg font-mono text-[10px] leading-relaxed pointer-events-none">
+                      <div className="font-bold text-[11px] mb-1" style={{ color: sig.color === '#666666' ? '#ccc' : sig.bgColor }}>
+                        {sig.signal}
+                      </div>
+                      <div className="text-[#AAAAAA] mb-1">Kondisi: {bl.label} + {il.label}</div>
+                      {isCurrent ? (
+                        <>
+                          <div className="border-t border-[#444] pt-1 mt-1 space-y-0.5">
+                            <div className="text-[#00FF88]">▸ Broker: {brokerExplain}</div>
+                            <div className="text-[#00FF88]">▸ Insider: {insiderExplain}</div>
+                          </div>
+                          <div className="border-t border-[#444] pt-1 mt-1.5 space-y-0.5 text-[9px]">
+                            <div className="flex justify-between"><span className="text-[#888]">Confidence:</span><span className="font-bold" style={{ color: confidence.color }}>{confidence.total}/100 {confidence.label}</span></div>
+                            <div className="text-[#666]">{confidence.explanations.brokerMagnitude}</div>
+                            <div className="text-[#666]">{confidence.explanations.foreignAlignment}</div>
+                            <div className="text-[#666]">{confidence.explanations.bandarConfirmation}</div>
+                            <div className="text-[#666]">{confidence.explanations.insiderWeight}</div>
+                            <div className="text-[#666]">{confidence.explanations.brokerConcentration}</div>
+                          </div>
+                          <div className="mt-1 text-[#FFD700] text-[9px]">← Kondisi saat ini</div>
+                        </>
+                      ) : (
+                        <div className="text-[#888888] italic">Bukan kondisi saat ini</div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )
             })}
@@ -746,6 +968,22 @@ export function BrokerActivityWidget({
 
   const bandar = data?.bandarSignal ?? null
 
+  // Confidence score + narrative — layers all available data on top of the 9-signal truth table
+  const confidenceInput = useMemo(() => ({
+    signal: combinedSignal.signal,
+    phase: combinedSignal.phase,
+    netFlow,
+    totalTradingValue: totalBuy + totalSell,
+    asingNetFlow,
+    lokalNetFlow: dailyFlow.reduce((s, d) => s + d.lokal_net, 0),
+    pemerintahNetFlow: dailyFlow.reduce((s, d) => s + d.pemerintah_net, 0),
+    bandarSignal: bandar,
+    insiderTransactions: insidersInRange,
+    concentration,
+  }), [combinedSignal.signal, combinedSignal.phase, netFlow, totalBuy, totalSell, asingNetFlow, dailyFlow, bandar, insidersInRange, concentration])
+  const confidence = useMemo(() => computeConfidenceScore(confidenceInput), [confidenceInput])
+  const narrative = useMemo(() => generateNarrativeText(confidenceInput), [confidenceInput])
+
   return (
     <div className="bg-white border border-[#E0E0E5] flex flex-col">
       {/* header */}
@@ -817,12 +1055,10 @@ export function BrokerActivityWidget({
                   insiderSellCount > 0 && insiderBuyCount === 0 ? 'text-red-500' :
                   insiderBuyCount > 0 && insiderSellCount === 0 ? 'text-emerald-600' : 'text-[#1A1A1A]'}
               />
-              <SummaryCard
-                label="SINYAL GABUNGAN"
-                value={data ? combinedSignal.label : '—'}
-                sub={data ? combinedSignal.description : 'Belum ada data'}
-                valueClass={data ? '' : 'text-[#888888]'}
-                dot={data ? combinedSignal.color : undefined}
+              <SignalSummaryCard
+                signal={data ? combinedSignal : null}
+                confidence={data ? confidence : null}
+                narrative={data ? narrative : null}
               />
             </div>
 
@@ -848,7 +1084,7 @@ export function BrokerActivityWidget({
               {activeTab === 'daily' ? (
                 <div className="flex flex-col gap-2">
                   <span className="font-mono text-[10px] text-[#888888] leading-relaxed">
-                    Net flow harian (Rp juta) — biru = bandar broker, hijau = asing, abu = domestik ritel
+                    Net flow harian — emas = BUMN, hijau = asing, biru = retail
                   </span>
                   <DailyFlowChart data={dailyFlow} />
                 </div>
@@ -896,7 +1132,15 @@ export function BrokerActivityWidget({
             {/* Signal matrix */}
             {data && (
               <div className="px-6 pb-6">
-                <SignalMatrix currentBroker={brokerDirection} currentInsider={insiderAction} />
+                <SignalMatrix
+                  currentBroker={brokerDirection}
+                  currentInsider={insiderAction}
+                  netFlow={netFlow}
+                  insiderBuyCount={insiderBuyCount}
+                  insiderSellCount={insiderSellCount}
+                  days={days}
+                  confidence={confidence}
+                />
               </div>
             )}
           </div>

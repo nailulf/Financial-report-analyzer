@@ -14,6 +14,7 @@ import type {
   DataQuality,
 } from '@/lib/types/api'
 import type { StockBrokerSummary, InsiderTransactionRow, DailyFlowByType, BrokerConcentrationRow } from '@/lib/queries/broker'
+import type { AnnualDPS } from '@/lib/queries/dividends'
 
 import { HeroBar }                  from './widgets/HeroBar'
 import { NavTabs }                  from './widgets/NavTabs'
@@ -58,6 +59,7 @@ export interface StockPageProps {
   insiderTransactions: InsiderTransactionRow[]
   dailyBrokerFlow:    DailyFlowByType[]
   brokerConcentration: BrokerConcentrationRow[]
+  dividendHistory:    AnnualDPS[]
   // Pre-computed DCF inputs (server-side, avoids serialization issues)
   dcfFcf:             number | null
   dcfDividends:       number | null   // abs(dividends_paid) — for DDM
@@ -84,6 +86,7 @@ export function StockPageClient({
   insiderTransactions,
   dailyBrokerFlow,
   brokerConcentration,
+  dividendHistory,
   dcfFcf,
   dcfDividends,
   dcfNetIncome,
@@ -147,7 +150,12 @@ export function StockPageClient({
         <FinancialHighlightsWidget quarterly={quarterly} annual={annualTable} />
         <ProductsWidget />
         <div className="px-12 py-2">
-          <DividendWidget />
+          <DividendWidget
+            dividendHistory={dividendHistory}
+            series={series}
+            dividendYield={metrics?.dividend_yield ?? null}
+            price={metrics?.price ?? latestPrice}
+          />
         </div>
       </div>
 

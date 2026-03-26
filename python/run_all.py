@@ -11,6 +11,8 @@ Usage:
     python run_all.py --quarterly      # financials + company_profiles
     python run_all.py --full           # everything (weekly + quarterly + daily)
     python run_all.py --ticker BBRI    # all scrapers for one stock (testing)
+    python run_all.py --broker-backfill   # Stockbit broker flow + bandar signals
+    python run_all.py --insider           # KSEI insider transactions
 
     # Mix and match:
     python run_all.py --daily --ticker BBRI ASII
@@ -30,8 +32,8 @@ logger = logging.getLogger("run_all")
 
 # Scraper import is deferred to avoid slow imports when only one flag is used
 def _import_scrapers():
-    from scrapers import stock_universe, daily_prices, financials, company_profiles, money_flow
-    return stock_universe, daily_prices, financials, company_profiles, money_flow
+    from scrapers import stock_universe, daily_prices, company_profiles, money_flow
+    return stock_universe, daily_prices, company_profiles, money_flow
 
 
 def _import_phase2_scrapers():
@@ -200,7 +202,7 @@ def _update_scores(tickers: list[str] | None) -> None:
 
 def run_daily(tickers: list[str] | None, days: int, job_id: int | None = None) -> None:
     """Runs: daily_prices → money_flow → scores"""
-    _, dp, _, _, mf = _import_scrapers()
+    _, dp, _, mf = _import_scrapers()
     console.rule("[bold blue]DAILY: daily_prices")
     _run_tracked(dp.run, "daily_prices", job_id, tickers=tickers)
     console.rule("[bold blue]DAILY: money_flow")
@@ -219,12 +221,14 @@ def run_weekly(tickers: list[str] | None, job_id: int | None = None) -> None:
 def run_quarterly(tickers: list[str] | None, period: str, job_id: int | None = None,
                    year_from: int | None = None, year_to: int | None = None) -> None:
     """Runs: stockbit financials → company_profiles → docs → events → scores"""
-    _, _, _, cp, _ = _import_scrapers()
+    _, _, cp, _ = _import_scrapers()
     dl, ce = _import_phase2_scrapers()
     _, _, _, ff = _import_enrichment_scrapers()
     console.rule("[bold yellow]QUARTERLY: financials (Stockbit)")
     _run_tracked(ff.run, "financials_fallback", job_id,
                  tickers=tickers, source="stockbit", only_missing=False,
+                 annual=(period in ("annual", "both")),
+                 quarterly=(period in ("quarterly", "both")),
                  year_from=year_from, year_to=year_to)
     console.rule("[bold yellow]QUARTERLY: company_profiles")
     _run_tracked(cp.run, "company_profiles", job_id, tickers=tickers)
@@ -288,10 +292,26 @@ def run_fill_gaps(
     )
 
 
+def run_broker_backfill(tickers: list[str] | None, days: int = 30,
+                        offset: int = 0, limit: int | None = None) -> None:
+    """Runs: money_flow broker backfill from Stockbit"""
+    from scrapers.money_flow import run_broker_backfill as _backfill
+    console.rule("[bold blue]BROKER BACKFILL: broker_flow + bandar_signal")
+    _backfill(tickers=tickers, days=days, offset=offset, limit=limit)
+
+
+def run_insider(tickers: list[str] | None, max_pages: int = 5,
+                offset: int = 0, limit: int | None = None) -> None:
+    """Runs: money_flow insider scrape from Stockbit/KSEI"""
+    from scrapers.money_flow import run_insider_scrape as _insider
+    console.rule("[bold blue]INSIDER: insider_transactions (KSEI)")
+    _insider(tickers=tickers, max_pages=max_pages, offset=offset, limit=limit)
+
+
 def run_full(tickers: list[str] | None, period: str, days: int, job_id: int | None = None,
              year_from: int | None = None, year_to: int | None = None) -> None:
     """Runs everything in dependency order. Scores updated once at the end."""
-    su, dp, _, cp, mf = _import_scrapers()
+    su, dp, cp, mf = _import_scrapers()
     dl, ce = _import_phase2_scrapers()
     _, _, _, ff = _import_enrichment_scrapers()
     console.rule("[bold green]WEEKLY: stock_universe")
@@ -299,6 +319,8 @@ def run_full(tickers: list[str] | None, period: str, days: int, job_id: int | No
     console.rule("[bold yellow]QUARTERLY: financials (Stockbit)")
     _run_tracked(ff.run, "financials_fallback", job_id,
                  tickers=tickers, source="stockbit", only_missing=False,
+                 annual=(period in ("annual", "both")),
+                 quarterly=(period in ("quarterly", "both")),
                  year_from=year_from, year_to=year_to)
     console.rule("[bold yellow]QUARTERLY: company_profiles")
     _run_tracked(cp.run, "company_profiles", job_id, tickers=tickers)
@@ -350,6 +372,13 @@ Examples:
   python run_all.py --fill-gaps --dry-run              # detect gaps, no writes
   python run_all.py --fallback-financials              # Stockbit backfill (only missing)
   python run_all.py --fallback-financials --ticker BBRI --dry-run
+
+  # Broker flow & insider transactions (Stockbit):
+  python run_all.py --broker-backfill                  # last 30 days, top stocks by mcap
+  python run_all.py --broker-backfill --backfill-days 60 --ticker BBRI
+  python run_all.py --broker-backfill --offset 100 --batch-limit 50
+  python run_all.py --insider                          # KSEI insider transactions
+  python run_all.py --insider --ticker BBRI --insider-pages 10
         """,
     )
 
@@ -363,6 +392,8 @@ Examples:
     mode.add_argument("--dividends", action="store_true", help="Fetch full dividend history from yfinance")
     mode.add_argument("--fill-gaps", action="store_true", help="Detect and fill data gaps for low-completeness stocks")
     mode.add_argument("--fallback-financials", action="store_true", help="Run Stockbit financials standalone (primary source, fills all tickers)")
+    mode.add_argument("--broker-backfill", action="store_true", help="Backfill broker flow + bandar signals from Stockbit")
+    mode.add_argument("--insider", action="store_true", help="Fetch KSEI insider transactions from Stockbit")
 
     # Scope modifiers
     parser.add_argument("--ticker", nargs="+", metavar="TICKER", help="Limit to specific tickers")
@@ -425,6 +456,35 @@ Examples:
         action="store_true",
         help="--fallback-financials: process all tickers even if data exists (default: only missing)",
     )
+    # Broker backfill / insider options
+    parser.add_argument(
+        "--backfill-days",
+        type=int,
+        default=30,
+        metavar="N",
+        help="--broker-backfill: number of days to backfill (default: 30)",
+    )
+    parser.add_argument(
+        "--insider-pages",
+        type=int,
+        default=5,
+        metavar="N",
+        help="--insider: max pages per ticker (default: 5)",
+    )
+    parser.add_argument(
+        "--offset",
+        type=int,
+        default=0,
+        metavar="N",
+        help="--broker-backfill / --insider: skip first N tickers (for batching)",
+    )
+    parser.add_argument(
+        "--batch-limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="--broker-backfill / --insider: max tickers to process (for batching)",
+    )
     # Year range (applies to --quarterly, --full, --fallback-financials)
     parser.add_argument(
         "--year-from",
@@ -444,7 +504,8 @@ Examples:
     args = parser.parse_args()
 
     all_modes = [args.daily, args.weekly, args.quarterly, args.full,
-                 args.enrich_ratios, args.dividends, args.fill_gaps, args.fallback_financials]
+                 args.enrich_ratios, args.dividends, args.fill_gaps, args.fallback_financials,
+                 args.broker_backfill, args.insider]
     if not any(all_modes):
         parser.print_help()
         console.print("\n[red]Error: specify at least one run mode.[/red]")
@@ -507,6 +568,20 @@ Examples:
                     dry_run=args.dry_run,
                     year_from=args.year_from,
                     year_to=args.year_to,
+                )
+            if args.broker_backfill:
+                run_broker_backfill(
+                    tickers=tickers,
+                    days=args.backfill_days,
+                    offset=args.offset,
+                    limit=args.batch_limit,
+                )
+            if args.insider:
+                run_insider(
+                    tickers=tickers,
+                    max_pages=args.insider_pages,
+                    offset=args.offset,
+                    limit=args.batch_limit,
                 )
     except KeyboardInterrupt:
         if job_id and tickers and len(tickers) == 1:

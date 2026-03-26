@@ -92,6 +92,80 @@ export interface SmartMoneyData {
 }
 
 /**
+ * Fetch broker_flow rows in batches to avoid Supabase's PostgREST max_rows cap
+ * (default 1000). Each batch queries a subset of dates to keep row counts
+ * within the cap (~50 brokers per date × 20 dates = 1000 rows).
+ */
+async function _fetchBrokerFlowBatched<T>(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  ticker: string,
+  uniqueDates: string[],
+  select: string,
+): Promise<T[]> {
+  const DATES_PER_BATCH = 20 // ~50 brokers/date × 20 = 1000, within PostgREST cap
+  const results: T[] = []
+
+  for (let i = 0; i < uniqueDates.length; i += DATES_PER_BATCH) {
+    const batch = uniqueDates.slice(i, i + DATES_PER_BATCH)
+    const { data } = await supabase
+      .from('broker_flow')
+      .select(select)
+      .eq('ticker', ticker)
+      .in('trade_date', batch)
+
+    if (data) results.push(...(data as T[]))
+  }
+
+  return results
+}
+
+/**
+ * Efficiently fetch the N most recent unique trade dates for a ticker.
+ *
+ * Uses bandar_signal (1 row per date) instead of broker_flow (~25-50 rows per date)
+ * to avoid hitting Supabase's PostgREST max_rows cap (default 1000) which silently
+ * truncates results and causes fewer unique dates to be returned for liquid stocks.
+ *
+ * Falls back to broker_flow if bandar_signal has no data.
+ */
+async function _getUniqueBrokerDates(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  ticker: string,
+  days: number,
+  endDate?: string,
+): Promise<string[]> {
+  // Primary: bandar_signal has exactly 1 row per ticker per date
+  let bq = supabase
+    .from('bandar_signal')
+    .select('trade_date')
+    .eq('ticker', ticker)
+    .order('trade_date', { ascending: false })
+    .limit(days)
+
+  if (endDate) bq = bq.lte('trade_date', endDate)
+
+  const { data: bandarRows } = await bq
+  if (bandarRows && bandarRows.length > 0) {
+    return bandarRows.map((r) => r.trade_date as string)
+  }
+
+  // Fallback: deduplicate from broker_flow (works for small day counts)
+  let fq = supabase
+    .from('broker_flow')
+    .select('trade_date')
+    .eq('ticker', ticker)
+    .order('trade_date', { ascending: false })
+    .limit(days * 100)
+
+  if (endDate) fq = fq.lte('trade_date', endDate)
+
+  const { data: flowRows } = await fq
+  if (!flowRows || flowRows.length === 0) return []
+
+  return [...new Set(flowRows.map((r) => r.trade_date as string))].slice(0, days)
+}
+
+/**
  * Aggregate broker activity for a single ticker.
  *
  * Reads from broker_flow (Stockbit data with buy/sell split) as primary source.
@@ -121,28 +195,14 @@ async function _fromBrokerFlow(
   days: number,
   endDate?: string,
 ): Promise<StockBrokerSummary | null> {
-  let q = supabase
-    .from('broker_flow')
-    .select('trade_date')
-    .eq('ticker', ticker)
-    .order('trade_date', { ascending: false })
-    .limit(days * 100)
-
-  if (endDate) q = q.lte('trade_date', endDate)
-
-  const { data: dateRows, error: dateErr } = await q
-  if (dateErr || !dateRows || dateRows.length === 0) return null
-
-  const uniqueDates = [...new Set(dateRows.map((r) => r.trade_date as string))].slice(0, days)
+  const uniqueDates = await _getUniqueBrokerDates(supabase, ticker, days, endDate)
   if (uniqueDates.length === 0) return null
 
-  const { data: rows, error: rowErr } = await supabase
-    .from('broker_flow')
-    .select('broker_code, broker_type, buy_value, sell_value, net_value, buy_lot, sell_lot')
-    .eq('ticker', ticker)
-    .in('trade_date', uniqueDates)
-
-  if (rowErr || !rows || rows.length === 0) return null
+  const rows = await _fetchBrokerFlowBatched<any>(
+    supabase, ticker, uniqueDates,
+    'broker_code, broker_type, buy_value, sell_value, net_value, buy_lot, sell_lot',
+  )
+  if (rows.length === 0) return null
 
   const map = new Map<string, StockBrokerBucket>()
   for (const row of rows) {
@@ -338,30 +398,16 @@ export async function getDailyBrokerFlowByType(
 ): Promise<DailyFlowByType[]> {
   const supabase = await createClient()
 
-  // 1. Get unique trade dates
-  let dq = supabase
-    .from('broker_flow')
-    .select('trade_date')
-    .eq('ticker', ticker)
-    .order('trade_date', { ascending: false })
-    .limit(days * 100)
-
-  if (endDate) dq = dq.lte('trade_date', endDate)
-
-  const { data: dateRows } = await dq
-  if (!dateRows || dateRows.length === 0) return []
-
-  const uniqueDates = [...new Set(dateRows.map((r) => r.trade_date as string))].slice(0, days)
+  // 1. Get unique trade dates (via bandar_signal for efficiency)
+  const uniqueDates = await _getUniqueBrokerDates(supabase, ticker, days, endDate)
   if (uniqueDates.length === 0) return []
 
-  // 2. Fetch all broker_flow rows for these dates
-  const { data: rows } = await supabase
-    .from('broker_flow')
-    .select('trade_date, broker_type, buy_value, sell_value, net_value')
-    .eq('ticker', ticker)
-    .in('trade_date', uniqueDates)
-
-  if (!rows || rows.length === 0) return []
+  // 2. Fetch all broker_flow rows for these dates (batched to avoid PostgREST row cap)
+  const rows = await _fetchBrokerFlowBatched<any>(
+    supabase, ticker, uniqueDates,
+    'trade_date, broker_type, buy_value, sell_value, net_value',
+  )
+  if (rows.length === 0) return []
 
   // 3. Fetch close prices for these dates
   const { data: priceRows } = await supabase
@@ -419,29 +465,16 @@ export async function getBrokerConcentration(
 ): Promise<BrokerConcentrationRow[]> {
   const supabase = await createClient()
 
-  // 1. Get unique trade dates
-  let dq = supabase
-    .from('broker_flow')
-    .select('trade_date')
-    .eq('ticker', ticker)
-    .order('trade_date', { ascending: false })
-    .limit(days * 100)
+  // 1. Get unique trade dates (via bandar_signal for efficiency)
+  const uniqueDates = await _getUniqueBrokerDates(supabase, ticker, days, endDate)
+  if (uniqueDates.length === 0) return []
 
-  if (endDate) dq = dq.lte('trade_date', endDate)
-
-  const { data: dateRows } = await dq
-  if (!dateRows || dateRows.length === 0) return []
-
-  const uniqueDates = [...new Set(dateRows.map((r) => r.trade_date as string))].slice(0, days)
-
-  // 2. Fetch all broker_flow rows
-  const { data: rows } = await supabase
-    .from('broker_flow')
-    .select('broker_code, broker_type, buy_value, sell_value, net_value')
-    .eq('ticker', ticker)
-    .in('trade_date', uniqueDates)
-
-  if (!rows || rows.length === 0) return []
+  // 2. Fetch all broker_flow rows (batched to avoid PostgREST row cap)
+  const rows = await _fetchBrokerFlowBatched<any>(
+    supabase, ticker, uniqueDates,
+    'broker_code, broker_type, buy_value, sell_value, net_value',
+  )
+  if (rows.length === 0) return []
 
   // 3. Aggregate per broker
   const map = new Map<string, {

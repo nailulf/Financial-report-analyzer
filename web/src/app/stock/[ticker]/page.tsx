@@ -15,6 +15,7 @@ import {
   getMajorShareholderHistory,
 } from '@/lib/queries/company'
 import { getDataQuality } from '@/lib/queries/completeness'
+import { getDividendHistory } from '@/lib/queries/dividends'
 import { getStockBrokerSummary, getInsiderTransactions, getDailyBrokerFlowByType, getBrokerConcentration } from '@/lib/queries/broker'
 import { computeCAGR } from '@/lib/calculations/cagr'
 import { computeHealthScores } from '@/lib/calculations/health-score'
@@ -44,6 +45,7 @@ export default async function StockPage({
     insiderTransactions,
     dailyBrokerFlow,
     brokerConcentration,
+    dividendHistory,
   ] = await Promise.all([
     getStockHeader(t),
     getLatestMetrics(t),
@@ -60,6 +62,7 @@ export default async function StockPage({
     getInsiderTransactions(t),
     getDailyBrokerFlowByType(t, 30),
     getBrokerConcentration(t, 30),
+    getDividendHistory(t),
   ])
 
   if (!header) notFound()
@@ -105,6 +108,7 @@ export default async function StockPage({
       insiderTransactions={insiderTransactions}
       dailyBrokerFlow={dailyBrokerFlow}
       brokerConcentration={brokerConcentration}
+      dividendHistory={dividendHistory}
       dcfFcf={dcfFcf}
       dcfDividends={(() => {
         // Latest year (TTM) often has null dividends — fall back to most recent year with data

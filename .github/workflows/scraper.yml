@@ -29,6 +29,10 @@ on:
         description: 'stock_refresh_requests.id to link progress updates to.'
         required: false
         default: ''
+      scrapers:
+        description: 'Comma-separated scraper names to run (e.g. daily_prices,money_flow). Blank = all.'
+        required: false
+        default: ''
 
 jobs:
   scrape:
@@ -68,12 +72,20 @@ jobs:
             MODE="${{ inputs.mode }}"
             TICKER="${{ inputs.ticker }}"
             JOB_ID="${{ inputs.job_id }}"
+            SCRAPERS="${{ inputs.scrapers }}"
             EXTRA="--$MODE"
+            # For full single-ticker refreshes (UI-triggered), also run enrichment scrapers
+            if [ "$MODE" = "full" ] && [ -n "$TICKER" ]; then
+              EXTRA="$EXTRA --dividends --broker-backfill --backfill-days 60"
+            fi
             if [ -n "$TICKER" ]; then
               EXTRA="$EXTRA --ticker $TICKER"
             fi
             if [ -n "$JOB_ID" ]; then
               EXTRA="$EXTRA --job-id $JOB_ID"
+            fi
+            if [ -n "$SCRAPERS" ]; then
+              EXTRA="$EXTRA --scrapers $SCRAPERS"
             fi
             echo "mode=$MODE" >> $GITHUB_OUTPUT
             echo "extra_args=$EXTRA" >> $GITHUB_OUTPUT

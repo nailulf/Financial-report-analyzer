@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useCallback, useRef } from 'react'
-import type { DataQuality, QualityCategory, StockbitPreviewRow } from '@/lib/types/api'
+import type { DataQuality, QualityCategory, StockbitPreviewRow, RefreshJob, RefreshScraperProgress, CategoryFreshness } from '@/lib/types/api'
 import { AlternativeSources } from '@/components/stock/alternative-sources'
 
 // ---------------------------------------------------------------------------
@@ -128,25 +128,53 @@ function CategoryRow({ name, cat }: { name: string; cat: QualityCategory }) {
 }
 
 // ---------------------------------------------------------------------------
-// Stockbit Refresh Modal
+// Comprehensive Refresh Wizard
 // ---------------------------------------------------------------------------
 
-type ModalPhase =
-  | 'token'     // Step 1: enter bearer token
-  | 'config'    // Step 2: select year range
-  | 'fetching'  // Loading: calling Stockbit API
-  | 'preview'   // Show data preview
-  | 'saving'    // Loading: upserting
-  | 'saved'     // Done
-  | 'error'     // Any error
+type WizardStep =
+  | 'token'      // Step 1: enter Stockbit bearer token
+  | 'freshness'  // Step 2: data freshness check + scraper selection
+  | 'config'     // Step 3: configure financial period + broker days (conditional)
+  | 'fetching'   // Loading: calling Stockbit API for preview
+  | 'preview'    // Step 4: show data preview + confirm (conditional)
+  | 'running'    // Step 5: executing scrapers (polling for progress)
+  | 'done'       // Step 6: all scrapers finished
+  | 'error'      // Any error
 
 // Use a fixed year constant to avoid SSR/client hydration mismatch at year boundary
 const CURRENT_YEAR = 2026
-// Annual financial data for the current year isn't complete until year-end.
-// Default year_to to the previous year so the TTM-labeled-as-current-year
-// annual row from Stockbit doesn't get included.
 const DEFAULT_YEAR_TO = CURRENT_YEAR - 1
 const YEAR_OPTIONS = Array.from({ length: CURRENT_YEAR - 2014 }, (_, i) => 2015 + i)
+const BROKER_DAY_OPTIONS = [10, 20, 30, 45, 60]
+
+const SCRAPER_LABELS: Record<string, string> = {
+  stock_universe:      'Info Emiten',
+  financials_fallback: 'Data Keuangan (Stockbit)',
+  company_profiles:    'Profil Perusahaan',
+  document_links:      'Dokumen Publik',
+  corporate_events:    'Aksi Korporasi',
+  daily_prices:        'Harga Harian',
+  money_flow:          'Arus Dana Asing',
+  dividend_scraper:    'Riwayat Dividen',
+  broker_backfill:     'Broker Summary',
+}
+
+function freshnessIcon(status: string): { icon: string; color: string; bg: string } {
+  switch (status) {
+    case 'fresh':   return { icon: '✓', color: '#3D8A5A', bg: '#C8F0D8' }
+    case 'stale':   return { icon: '⚠', color: '#D97706', bg: '#FEF3C7' }
+    default:        return { icon: '✗', color: '#DC2626', bg: '#FEE2E2' }
+  }
+}
+
+function scraperStatusIcon(status: string): { icon: string; color: string; bg: string } {
+  switch (status) {
+    case 'done':    return { icon: '✓', color: '#3D8A5A', bg: '#C8F0D8' }
+    case 'running': return { icon: '↻', color: '#D97706', bg: '#FEF3C7' }
+    case 'failed':  return { icon: '✗', color: '#DC2626', bg: '#FEE2E2' }
+    default:        return { icon: '·', color: '#9C9B99', bg: '#F5F4F1' }
+  }
+}
 
 function StockbitRefreshModal({
   ticker,
@@ -155,17 +183,86 @@ function StockbitRefreshModal({
   ticker: string
   onClose: () => void
 }) {
-  const [phase, setPhase] = useState<ModalPhase>('token')
-  const [token, setToken]           = useState('')
-  const [yearFrom, setYearFrom]     = useState(CURRENT_YEAR - 5)
-  const [yearTo, setYearTo]         = useState(DEFAULT_YEAR_TO)
-  const [rows, setRows]             = useState<StockbitPreviewRow[]>([])
-  const [upsertedCount, setUpsertedCount] = useState(0)
-  const [errorMsg, setErrorMsg]     = useState('')
+  const [step, setStep]               = useState<WizardStep>('token')
+  const [token, setToken]             = useState('')
+  const [freshness, setFreshness]     = useState<CategoryFreshness[]>([])
+  const [selectedScrapers, setSelectedScrapers] = useState<Set<string>>(new Set())
+  const [loadingFreshness, setLoadingFreshness] = useState(false)
+  const [yearFrom, setYearFrom]       = useState(CURRENT_YEAR - 5)
+  const [yearTo, setYearTo]           = useState(DEFAULT_YEAR_TO)
+  const [brokerDays, setBrokerDays]   = useState(30)
+  const [rows, setRows]               = useState<StockbitPreviewRow[]>([])
+  const [errorMsg, setErrorMsg]       = useState('')
+  const [job, setJob]                 = useState<RefreshJob | null>(null)
+  const pollingRef                    = useRef<ReturnType<typeof setInterval> | null>(null)
 
+  useEffect(() => {
+    return () => { if (pollingRef.current) clearInterval(pollingRef.current) }
+  }, [])
+
+  // Derived: what the user selected
+  const needsFinancials = selectedScrapers.has('financials_fallback')
+  const needsBroker     = selectedScrapers.has('broker_backfill')
+  const needsConfig     = needsFinancials || needsBroker
+  const allFresh        = freshness.length > 0 && freshness.every((c) => c.status === 'fresh')
+
+  // ── Token → Freshness: fetch per-category recency ──
+  const handleCheckFreshness = useCallback(async () => {
+    setLoadingFreshness(true)
+    setStep('freshness')
+    try {
+      const res = await fetch(`/api/stocks/${ticker}/freshness`)
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const body = await res.json() as { categories: CategoryFreshness[] }
+      setFreshness(body.categories)
+      // Smart defaults: pre-select stale + missing
+      const defaultSelected = new Set<string>()
+      for (const cat of body.categories) {
+        if (cat.status !== 'fresh') {
+          for (const s of cat.scrapers) defaultSelected.add(s)
+        }
+      }
+      setSelectedScrapers(defaultSelected)
+    } catch {
+      // Fallback: select all scrapers if freshness check fails
+      setFreshness([])
+      setSelectedScrapers(new Set([
+        'daily_prices', 'money_flow', 'financials_fallback', 'stock_universe',
+        'company_profiles', 'broker_backfill', 'dividend_scraper',
+        'document_links', 'corporate_events',
+      ]))
+    } finally {
+      setLoadingFreshness(false)
+    }
+  }, [ticker])
+
+  // Toggle a category's scrapers
+  const toggleCategory = useCallback((cat: CategoryFreshness) => {
+    setSelectedScrapers((prev) => {
+      const next = new Set(prev)
+      const allSelected = cat.scrapers.every((s) => next.has(s))
+      for (const s of cat.scrapers) {
+        if (allSelected) next.delete(s)
+        else next.add(s)
+      }
+      return next
+    })
+  }, [])
+
+  // ── Freshness → next step ──
+  const handleFreshnessNext = useCallback(() => {
+    if (needsConfig) {
+      setStep('config')
+    } else if (selectedScrapers.size > 0) {
+      // No financial/broker config needed, go straight to running
+      handleTriggerPipeline()
+    }
+  }, [needsConfig, selectedScrapers])
+
+  // ── Config → Fetch preview (only if financials selected) ──
   const handleFetch = useCallback(async () => {
     if (!token.trim()) return
-    setPhase('fetching')
+    setStep('fetching')
     setErrorMsg('')
     try {
       const res = await fetch(`/api/stocks/${ticker}/stockbit/fetch`, {
@@ -176,38 +273,87 @@ function StockbitRefreshModal({
       const body = await res.json() as { rows?: StockbitPreviewRow[]; error?: string }
       if (!res.ok || body.error) {
         setErrorMsg(body.error ?? `HTTP ${res.status}`)
-        setPhase('error')
+        setStep('error')
         return
       }
       setRows(body.rows ?? [])
-      setPhase('preview')
+      setStep('preview')
     } catch (e: unknown) {
       setErrorMsg(e instanceof Error ? e.message : 'Network error')
-      setPhase('error')
+      setStep('error')
     }
   }, [ticker, token, yearFrom, yearTo])
 
-  const handleSave = useCallback(async () => {
-    setPhase('saving')
+  // ── Trigger the pipeline (with or without financial upsert) ──
+  const handleTriggerPipeline = useCallback(async () => {
+    setStep('running')
+    setErrorMsg('')
     try {
-      const res = await fetch(`/api/stocks/${ticker}/stockbit/upsert`, {
+      // 1. If financials are selected + preview data exists, upsert first
+      if (needsFinancials && rows.length > 0) {
+        const upsertRes = await fetch(`/api/stocks/${ticker}/stockbit/upsert`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rows }),
+        })
+        const upsertBody = await upsertRes.json() as { upserted?: number; error?: string }
+        if (!upsertRes.ok || upsertBody.error) {
+          setErrorMsg(upsertBody.error ?? `Upsert failed: HTTP ${upsertRes.status}`)
+          setStep('error')
+          return
+        }
+      }
+
+      // 2. Trigger refresh pipeline with selected scrapers
+      const scraperList = Array.from(selectedScrapers)
+      const refreshRes = await fetch(`/api/stocks/${ticker}/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rows }),
+        body: JSON.stringify({ scrapers: scraperList }),
       })
-      const body = await res.json() as { upserted?: number; error?: string }
-      if (!res.ok || body.error) {
-        setErrorMsg(body.error ?? `HTTP ${res.status}`)
-        setPhase('error')
+      const refreshBody = await refreshRes.json() as { job_id?: number; error?: string }
+      if (!refreshRes.ok || !refreshBody.job_id) {
+        setErrorMsg(`Pipeline trigger failed: ${refreshBody.error ?? 'unknown'}`)
+        setStep('error')
         return
       }
-      setUpsertedCount(body.upserted ?? rows.length)
-      setPhase('saved')
+
+      // 3. Start polling
+      const jobId = refreshBody.job_id
+      const poll = async () => {
+        try {
+          const res = await fetch(`/api/stocks/${ticker}/refresh/${jobId}`)
+          if (!res.ok) return
+          const data = await res.json() as RefreshJob
+          setJob(data)
+          if (data.status === 'done' || data.status === 'failed') {
+            if (pollingRef.current) clearInterval(pollingRef.current)
+            setStep('done')
+          }
+        } catch { /* ignore transient errors */ }
+      }
+      await poll()
+      pollingRef.current = setInterval(poll, 3000)
     } catch (e: unknown) {
       setErrorMsg(e instanceof Error ? e.message : 'Network error')
-      setPhase('error')
+      setStep('error')
     }
-  }, [ticker, rows])
+  }, [ticker, rows, selectedScrapers, needsFinancials])
+
+  // ── Step indicator ──
+  const stepLabels = [
+    { key: 'token',     label: '1. Token' },
+    { key: 'freshness', label: '2. Cek Data' },
+    ...(needsConfig ? [{ key: 'config', label: '3. Konfigurasi' }] : []),
+    ...(needsFinancials ? [{ key: 'preview', label: `${needsConfig ? '4' : '3'}. Preview` }] : []),
+    { key: 'running',   label: `${needsFinancials ? (needsConfig ? '5' : '4') : (needsConfig ? '4' : '3')}. Eksekusi` },
+  ]
+  const activeIdx = stepLabels.findIndex((s) =>
+    s.key === step ||
+    (step === 'fetching' && s.key === 'config') ||
+    (step === 'done' && s.key === 'running') ||
+    (step === 'error' && s.key === (rows.length > 0 ? 'preview' : 'config'))
+  )
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4">
@@ -216,32 +362,36 @@ function StockbitRefreshModal({
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-[#E5E4E1] shrink-0">
           <h3 className="text-sm font-semibold text-[#1A1918]">
-            Refresh from Stockbit — <span className="text-[#3D8A5A]">{ticker}</span>
+            Refresh Data — <span className="text-[#3D8A5A]">{ticker}</span>
           </h3>
-          <button
-            onClick={onClose}
-            className="text-[#9C9B99] hover:text-[#6D6C6A] text-lg leading-none transition-colors"
-            aria-label="Close"
-          >
-            ×
-          </button>
+          <button onClick={onClose} className="text-[#9C9B99] hover:text-[#6D6C6A] text-lg leading-none transition-colors" aria-label="Close">×</button>
+        </div>
+
+        {/* Step indicator */}
+        <div className="px-5 py-2 border-b border-[#E5E4E1] flex items-center gap-1 shrink-0">
+          {stepLabels.map((s, i) => (
+            <div key={s.key} className="flex items-center gap-1 flex-1">
+              <div className={`h-1 flex-1 rounded-full transition-colors ${i <= activeIdx ? 'bg-[#3D8A5A]' : 'bg-[#E5E4E1]'}`} />
+              <span className={`text-[10px] font-medium whitespace-nowrap ${i <= activeIdx ? 'text-[#3D8A5A]' : 'text-[#9C9B99]'}`}>{s.label}</span>
+            </div>
+          ))}
         </div>
 
         {/* Body */}
         <div className="overflow-y-auto flex-1 px-5 py-4">
 
-          {/* Step 1: Token */}
-          {phase === 'token' && (
+          {/* ── Step 1: Token ── */}
+          {step === 'token' && (
             <div className="space-y-4">
               <p className="text-xs text-[#6D6C6A] leading-relaxed">
-                Get your token from{' '}
-                <span className="font-medium text-[#1A1918]">stockbit.com</span>:
+                Token diperlukan untuk mengambil data keuangan dan broker dari{' '}
+                <span className="font-medium text-[#1A1918]">stockbit.com</span>.
               </p>
               <ol className="text-xs text-[#6D6C6A] space-y-1 list-decimal pl-4">
-                <li>Open stockbit.com and log in</li>
-                <li>DevTools → Network → any <code className="bg-[#EDECEA] px-1 rounded">api.stockbit.com</code> request</li>
+                <li>Buka stockbit.com dan login</li>
+                <li>DevTools → Network → request ke <code className="bg-[#EDECEA] px-1 rounded">api.stockbit.com</code></li>
                 <li>Headers → <span className="font-medium text-[#1A1918]">Authorization</span></li>
-                <li>Copy the value <span className="font-medium text-red-500">after</span> <code className="bg-[#EDECEA] px-1 rounded">Bearer </code> — just the token itself</li>
+                <li>Copy nilai <span className="font-medium text-red-500">setelah</span> <code className="bg-[#EDECEA] px-1 rounded">Bearer </code></li>
               </ol>
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-[#6D6C6A]">Bearer Token</label>
@@ -251,142 +401,161 @@ function StockbitRefreshModal({
                   onChange={(e) => setToken(e.target.value)}
                   placeholder="eyJhbGciOiJSUzI1NiIs..."
                   className="w-full border border-[#E5E4E1] rounded-lg px-3 py-2 text-xs text-[#1A1918] placeholder-[#9C9B99] focus:outline-none focus:ring-1 focus:ring-[#3D8A5A] font-mono"
-                  onKeyDown={(e) => e.key === 'Enter' && token.trim() && setPhase('config')}
+                  onKeyDown={(e) => e.key === 'Enter' && token.trim() && handleCheckFreshness()}
                   autoFocus
                 />
               </div>
             </div>
           )}
 
-          {/* Step 2: Config */}
-          {phase === 'config' && (
+          {/* ── Step 2: Freshness Check ── */}
+          {step === 'freshness' && (
             <div className="space-y-4">
-              <p className="text-xs text-[#6D6C6A]">
-                Select the year range to fetch financial data for. Annual + quarterly rows will be included.
-              </p>
-              <div className="flex items-center gap-3">
-                <div className="space-y-1 flex-1">
-                  <label className="text-xs font-medium text-[#6D6C6A]">From year</label>
-                  <select
-                    value={yearFrom}
-                    onChange={(e) => setYearFrom(parseInt(e.target.value, 10))}
-                    className="w-full border border-[#E5E4E1] rounded-lg px-3 py-1.5 text-xs text-[#1A1918] focus:outline-none focus:ring-1 focus:ring-[#3D8A5A]"
-                  >
-                    {YEAR_OPTIONS.map((y) => (
-                      <option key={y} value={y}>{y}</option>
-                    ))}
-                  </select>
+              {loadingFreshness ? (
+                <div className="flex flex-col items-center justify-center py-8 gap-3">
+                  <div className="w-6 h-6 border-2 border-[#3D8A5A] border-t-transparent rounded-full animate-spin" />
+                  <p className="text-xs text-[#6D6C6A]">Memeriksa data yang tersedia…</p>
                 </div>
-                <span className="text-[#9C9B99] text-xs mt-4">→</span>
-                <div className="space-y-1 flex-1">
-                  <label className="text-xs font-medium text-[#6D6C6A]">To year</label>
-                  <select
-                    value={yearTo}
-                    onChange={(e) => setYearTo(parseInt(e.target.value, 10))}
-                    className="w-full border border-[#E5E4E1] rounded-lg px-3 py-1.5 text-xs text-[#1A1918] focus:outline-none focus:ring-1 focus:ring-[#3D8A5A]"
-                  >
-                    {YEAR_OPTIONS.map((y) => (
-                      <option key={y} value={y}>{y}</option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-              <div className="bg-[#F5F4F1] rounded-lg px-3 py-2 text-xs text-[#6D6C6A] border border-[#E5E4E1]">
-                <span className="font-medium text-[#1A1918]">Metrics fetched:</span> Revenue, Net Income, EPS (all
-                periods) + current ratios/margins/balance sheet (most recent annual row)
-              </div>
+              ) : (
+                <>
+                  {allFresh && (
+                    <div className="bg-[#C8F0D8] border border-[#3D8A5A]/20 rounded-lg px-3 py-2 text-xs text-[#3D8A5A]">
+                      Semua data sudah terbaru! Centang kategori di bawah jika ingin tetap refresh.
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs text-[#6D6C6A]">Pilih data yang ingin di-refresh:</p>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => {
+                          const all = new Set<string>()
+                          for (const c of freshness) for (const s of c.scrapers) all.add(s)
+                          setSelectedScrapers(all)
+                        }}
+                        className="text-[10px] text-[#3D8A5A] hover:underline"
+                      >
+                        Pilih semua
+                      </button>
+                      <button
+                        onClick={() => setSelectedScrapers(new Set())}
+                        className="text-[10px] text-[#9C9B99] hover:underline"
+                      >
+                        Reset
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-[#E5E4E1] overflow-hidden divide-y divide-[#E5E4E1]">
+                    {freshness.map((cat) => {
+                      const { icon, color, bg } = freshnessIcon(cat.status)
+                      const isSelected = cat.scrapers.every((s) => selectedScrapers.has(s))
+                      return (
+                        <label key={cat.category} className="flex items-center gap-3 px-3 py-2.5 cursor-pointer hover:bg-[#F5F4F1] transition-colors">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleCategory(cat)}
+                            className="w-3.5 h-3.5 rounded border-[#E5E4E1] text-[#3D8A5A] focus:ring-[#3D8A5A] accent-[#3D8A5A]"
+                          />
+                          <div className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0"
+                            style={{ backgroundColor: bg, color }}>{icon}</div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-xs font-medium text-[#1A1918]">{cat.label}</p>
+                            <p className="text-[10px] text-[#9C9B99]">
+                              {cat.status === 'missing'
+                                ? 'Tidak ada data'
+                                : cat.status === 'fresh'
+                                  ? `Terbaru ${cat.daysSince === 0 ? 'hari ini' : `${cat.daysSince} hari lalu`}`
+                                  : `Terakhir update ${cat.daysSince} hari lalu`}
+                            </p>
+                          </div>
+                          <span className={`text-[10px] font-medium uppercase ${
+                            cat.status === 'fresh' ? 'text-[#3D8A5A]' :
+                            cat.status === 'stale' ? 'text-[#D97706]' :
+                            'text-[#DC2626]'
+                          }`}>
+                            {cat.status === 'fresh' ? 'Terbaru' : cat.status === 'stale' ? 'Perlu update' : 'Belum ada'}
+                          </span>
+                        </label>
+                      )
+                    })}
+                  </div>
+
+                  <p className="text-xs text-[#9C9B99] text-center">
+                    {selectedScrapers.size > 0
+                      ? `${selectedScrapers.size} scraper akan dijalankan`
+                      : 'Pilih minimal 1 kategori'}
+                  </p>
+                </>
+              )}
             </div>
           )}
 
-          {/* Loading: fetching */}
-          {phase === 'fetching' && (
+          {/* ── Step 3: Config (conditional) ── */}
+          {step === 'config' && (
+            <div className="space-y-4">
+              {needsFinancials && (
+                <div>
+                  <p className="text-xs font-medium text-[#1A1918] mb-2">Periode Data Keuangan</p>
+                  <p className="text-xs text-[#6D6C6A] mb-2">Annual + quarterly rows dari Stockbit.</p>
+                  <div className="flex items-center gap-3">
+                    <div className="space-y-1 flex-1">
+                      <label className="text-xs font-medium text-[#6D6C6A]">Dari tahun</label>
+                      <select value={yearFrom} onChange={(e) => setYearFrom(parseInt(e.target.value, 10))}
+                        className="w-full border border-[#E5E4E1] rounded-lg px-3 py-1.5 text-xs text-[#1A1918] focus:outline-none focus:ring-1 focus:ring-[#3D8A5A]">
+                        {YEAR_OPTIONS.map((y) => <option key={y} value={y}>{y}</option>)}
+                      </select>
+                    </div>
+                    <span className="text-[#9C9B99] text-xs mt-4">→</span>
+                    <div className="space-y-1 flex-1">
+                      <label className="text-xs font-medium text-[#6D6C6A]">Sampai tahun</label>
+                      <select value={yearTo} onChange={(e) => setYearTo(parseInt(e.target.value, 10))}
+                        className="w-full border border-[#E5E4E1] rounded-lg px-3 py-1.5 text-xs text-[#1A1918] focus:outline-none focus:ring-1 focus:ring-[#3D8A5A]">
+                        {YEAR_OPTIONS.map((y) => <option key={y} value={y}>{y}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {needsBroker && (
+                <div>
+                  <p className="text-xs font-medium text-[#1A1918] mb-2">Periode Broker Summary</p>
+                  <p className="text-xs text-[#6D6C6A] mb-2">Broker flow + bandar signal (maks 60 hari).</p>
+                  <div className="flex items-center gap-2">
+                    {BROKER_DAY_OPTIONS.map((d) => (
+                      <button key={d} onClick={() => setBrokerDays(d)}
+                        className={`flex-1 px-2 py-1.5 text-xs font-medium border rounded-lg transition-colors ${
+                          brokerDays === d ? 'bg-[#1A1918] text-white border-[#1A1918]' : 'bg-white text-[#6D6C6A] border-[#E5E4E1] hover:border-[#1A1918]'
+                        }`}>{d}D</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── Loading: Fetching preview ── */}
+          {step === 'fetching' && (
             <div className="flex flex-col items-center justify-center py-8 gap-3">
               <div className="w-6 h-6 border-2 border-[#3D8A5A] border-t-transparent rounded-full animate-spin" />
-              <p className="text-xs text-[#6D6C6A]">Fetching data from Stockbit…</p>
+              <p className="text-xs text-[#6D6C6A]">Mengambil preview dari Stockbit…</p>
             </div>
           )}
 
-          {/* Preview */}
-          {phase === 'preview' && (() => {
+          {/* ── Step 4: Preview (only when financials selected) ── */}
+          {step === 'preview' && (() => {
             const snapshotRow = rows.find((r) => r.quarter === 0)
-            const snapshotGroups: { label: string; items: { label: string; value: string }[] }[] = [
-              {
-                label: 'Income Statement',
-                items: [
-                  { label: 'Revenue (TTM)',    value: formatIDR(snapshotRow?.revenue) },
-                  { label: 'Gross Profit',     value: formatIDR(snapshotRow?.gross_profit) },
-                  { label: 'Net Income (TTM)', value: formatIDR(snapshotRow?.net_income) },
-                  { label: 'EPS (TTM)',        value: snapshotRow?.eps != null ? snapshotRow.eps.toFixed(2) : '-' },
-                ],
-              },
-              {
-                label: 'Balance Sheet',
-                items: [
-                  { label: 'Total Assets',      value: formatIDR(snapshotRow?.total_assets) },
-                  { label: 'Total Liabilities', value: formatIDR(snapshotRow?.total_liabilities) },
-                  { label: 'Total Equity',      value: formatIDR(snapshotRow?.total_equity) },
-                  { label: 'Total Debt',        value: formatIDR(snapshotRow?.total_debt) },
-                  { label: 'Cash',              value: formatIDR(snapshotRow?.cash_and_equivalents) },
-                  { label: 'Net Debt',          value: formatIDR(snapshotRow?.net_debt) },
-                  { label: 'BVPS',              value: snapshotRow?.book_value_per_share != null ? snapshotRow.book_value_per_share.toFixed(0) : '-' },
-                ],
-              },
-              {
-                label: 'Cash Flow',
-                items: [
-                  { label: 'Operating CF',     value: formatIDR(snapshotRow?.operating_cash_flow) },
-                  { label: 'CapEx',            value: formatIDR(snapshotRow?.capex) },
-                  { label: 'Free Cash Flow',   value: formatIDR(snapshotRow?.free_cash_flow) },
-                  { label: 'Investing CF',     value: formatIDR(snapshotRow?.investing_cash_flow) },
-                  { label: 'Financing CF',     value: formatIDR(snapshotRow?.financing_cash_flow) },
-                ],
-              },
-              {
-                label: 'Profitability',
-                items: [
-                  { label: 'Gross Margin',     value: snapshotRow?.gross_margin != null ? `${snapshotRow.gross_margin.toFixed(1)}%` : '-' },
-                  { label: 'Operating Margin', value: snapshotRow?.operating_margin != null ? `${snapshotRow.operating_margin.toFixed(1)}%` : '-' },
-                  { label: 'Net Margin',       value: snapshotRow?.net_margin != null ? `${snapshotRow.net_margin.toFixed(1)}%` : '-' },
-                  { label: 'ROE',              value: snapshotRow?.roe != null ? `${snapshotRow.roe.toFixed(1)}%` : '-' },
-                  { label: 'ROA',              value: snapshotRow?.roa != null ? `${snapshotRow.roa.toFixed(1)}%` : '-' },
-                  { label: 'ROCE',             value: snapshotRow?.roce != null ? `${snapshotRow.roce.toFixed(1)}%` : '-' },
-                  { label: 'ROIC',             value: snapshotRow?.roic != null ? `${snapshotRow.roic.toFixed(1)}%` : '-' },
-                ],
-              },
-              {
-                label: 'Management Effectiveness',
-                items: [
-                  { label: 'Asset Turnover',     value: snapshotRow?.asset_turnover != null ? snapshotRow.asset_turnover.toFixed(2) : '-' },
-                  { label: 'Inventory Turnover', value: snapshotRow?.inventory_turnover != null ? snapshotRow.inventory_turnover.toFixed(2) : '-' },
-                  { label: 'Interest Coverage',  value: snapshotRow?.interest_coverage != null ? snapshotRow.interest_coverage.toFixed(2) : '-' },
-                ],
-              },
-              {
-                label: 'Assets & Debts',
-                items: [
-                  { label: 'Current Ratio',     value: snapshotRow?.current_ratio != null ? snapshotRow.current_ratio.toFixed(2) : '-' },
-                  { label: 'Quick Ratio',       value: snapshotRow?.quick_ratio != null ? snapshotRow.quick_ratio.toFixed(2) : '-' },
-                  { label: 'D/E',               value: snapshotRow?.debt_to_equity != null ? snapshotRow.debt_to_equity.toFixed(2) : '-' },
-                  { label: 'LT D/E',            value: snapshotRow?.lt_debt_to_equity != null ? snapshotRow.lt_debt_to_equity.toFixed(2) : '-' },
-                  { label: 'Debt/Assets',       value: snapshotRow?.debt_to_assets != null ? snapshotRow.debt_to_assets.toFixed(2) : '-' },
-                  { label: 'Fin. Leverage',     value: snapshotRow?.financial_leverage != null ? snapshotRow.financial_leverage.toFixed(2) : '-' },
-                ],
-              },
-            ]
-
             return (
               <div className="space-y-4">
-                {/* Summary */}
                 <p className="text-xs text-[#6D6C6A]">
-                  <span className="font-medium text-[#1A1918]">{rows.length} rows</span> ready to save —{' '}
+                  <span className="font-medium text-[#1A1918]">{rows.length} baris</span> data keuangan siap disimpan —{' '}
                   {rows.filter((r) => r.quarter === 0).length} annual,{' '}
                   {rows.filter((r) => r.quarter > 0).length} quarterly.
-                  Snapshot metrics merged into most recent annual row.
                 </p>
-
-                {/* History table */}
                 <div>
-                  <p className="text-xs font-medium text-[#6D6C6A] mb-1.5">Historical Series</p>
+                  <p className="text-xs font-medium text-[#6D6C6A] mb-1.5">Preview Data Keuangan</p>
                   <div className="overflow-x-auto rounded-lg border border-[#E5E4E1]">
                     <table className="w-full text-xs">
                       <thead>
@@ -397,7 +566,7 @@ function StockbitRefreshModal({
                         </tr>
                       </thead>
                       <tbody>
-                        {rows.map((r) => (
+                        {rows.slice(0, 12).map((r) => (
                           <tr key={`${r.year}_${r.quarter}`} className="border-b border-[#E5E4E1] last:border-0 hover:bg-[#F5F4F1]">
                             <td className="py-1.5 px-3 text-[#1A1918] tabular-nums">{r.year}</td>
                             <td className="py-1.5 px-3 text-[#9C9B99]">{r.quarter === 0 ? 'FY' : `Q${r.quarter}`}</td>
@@ -406,31 +575,28 @@ function StockbitRefreshModal({
                             <td className="py-1.5 px-3 text-right text-[#6D6C6A] tabular-nums">{r.eps != null ? r.eps.toFixed(2) : '-'}</td>
                           </tr>
                         ))}
+                        {rows.length > 12 && (
+                          <tr><td colSpan={5} className="py-1.5 px-3 text-center text-[#9C9B99]">…{rows.length - 12} baris lagi</td></tr>
+                        )}
                       </tbody>
                     </table>
                   </div>
                 </div>
-
-                {/* Snapshot metrics grid */}
                 {snapshotRow && (
-                  <div>
-                    <p className="text-xs font-medium text-[#6D6C6A] mb-1.5">
-                      Current Snapshot — {snapshotRow.year} FY
-                    </p>
-                    <div className="space-y-3">
-                      {snapshotGroups.map((group) => (
-                        <div key={group.label} className="rounded-lg border border-[#E5E4E1] overflow-hidden">
-                          <div className="bg-[#F5F4F1] px-3 py-1.5 text-xs font-medium text-[#9C9B99] border-b border-[#E5E4E1]">
-                            {group.label}
-                          </div>
-                          <div className="grid grid-cols-2 divide-x divide-[#E5E4E1]">
-                            {group.items.map((item) => (
-                              <div key={item.label} className="px-3 py-1.5 flex items-center justify-between gap-2 border-b border-[#E5E4E1]">
-                                <span className="text-xs text-[#9C9B99]">{item.label}</span>
-                                <span className="text-xs font-medium text-[#1A1918] tabular-nums">{item.value}</span>
-                              </div>
-                            ))}
-                          </div>
+                  <div className="rounded-lg border border-[#E5E4E1] overflow-hidden">
+                    <div className="bg-[#F5F4F1] px-3 py-1.5 text-xs font-medium text-[#9C9B99] border-b border-[#E5E4E1]">Snapshot {snapshotRow.year} FY</div>
+                    <div className="grid grid-cols-3 divide-x divide-[#E5E4E1]">
+                      {[
+                        { label: 'Revenue',    value: formatIDR(snapshotRow.revenue) },
+                        { label: 'Net Income', value: formatIDR(snapshotRow.net_income) },
+                        { label: 'EPS',        value: snapshotRow.eps != null ? snapshotRow.eps.toFixed(2) : '-' },
+                        { label: 'ROE',        value: snapshotRow.roe != null ? `${snapshotRow.roe.toFixed(1)}%` : '-' },
+                        { label: 'D/E',        value: snapshotRow.debt_to_equity != null ? snapshotRow.debt_to_equity.toFixed(2) : '-' },
+                        { label: 'Net Margin', value: snapshotRow.net_margin != null ? `${snapshotRow.net_margin.toFixed(1)}%` : '-' },
+                      ].map((item) => (
+                        <div key={item.label} className="px-3 py-1.5 flex items-center justify-between gap-2 border-b border-[#E5E4E1]">
+                          <span className="text-xs text-[#9C9B99]">{item.label}</span>
+                          <span className="text-xs font-medium text-[#1A1918] tabular-nums">{item.value}</span>
                         </div>
                       ))}
                     </div>
@@ -440,103 +606,115 @@ function StockbitRefreshModal({
             )
           })()}
 
-          {/* Loading: saving */}
-          {phase === 'saving' && (
-            <div className="flex flex-col items-center justify-center py-8 gap-3">
-              <div className="w-6 h-6 border-2 border-[#3D8A5A] border-t-transparent rounded-full animate-spin" />
-              <p className="text-xs text-[#6D6C6A]">Saving {rows.length} rows to database…</p>
-            </div>
-          )}
-
-          {/* Done */}
-          {phase === 'saved' && (
-            <div className="flex flex-col items-center justify-center py-8 gap-2 text-center">
-              <div className="w-10 h-10 rounded-full bg-[#C8F0D8] flex items-center justify-center text-[#3D8A5A] text-lg">
-                ✓
-              </div>
-              <p className="text-sm font-medium text-[#1A1918]">
-                {upsertedCount} rows saved successfully
+          {/* ── Step 5: Running / Done ── */}
+          {(step === 'running' || step === 'done') && (
+            <div className="space-y-4">
+              <p className="text-xs text-[#6D6C6A]">
+                {step === 'running' ? 'Pipeline sedang berjalan…'
+                  : job?.status === 'failed' ? 'Pipeline selesai dengan error.'
+                  : job?.no_new_data ? 'Pipeline selesai — tidak ada data baru.'
+                  : 'Pipeline selesai!'}
               </p>
-              <p className="text-xs text-[#9C9B99]">Reload the page to see updated charts.</p>
+
+              <div className="rounded-lg border border-[#E5E4E1] overflow-hidden divide-y divide-[#E5E4E1]">
+                {/* Financial upsert row (only if financials were refreshed) */}
+                {needsFinancials && rows.length > 0 && (
+                  <div className="flex items-center gap-3 px-3 py-2">
+                    <div className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0" style={{ backgroundColor: '#C8F0D8', color: '#3D8A5A' }}>✓</div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-medium text-[#1A1918]">Data Keuangan (Stockbit)</p>
+                      <p className="text-[10px] text-[#9C9B99]">{rows.length} baris disimpan</p>
+                    </div>
+                  </div>
+                )}
+
+                {(job?.progress ?? []).map((p) => {
+                  const { icon, color, bg } = scraperStatusIcon(p.status)
+                  return (
+                    <div key={p.scraper} className="flex items-center gap-3 px-3 py-2">
+                      <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] shrink-0 ${p.status === 'running' ? 'animate-spin' : ''}`}
+                        style={{ backgroundColor: bg, color }}>{icon}</div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-medium text-[#1A1918]">{SCRAPER_LABELS[p.scraper] ?? p.scraper}</p>
+                        {p.status === 'done' && p.rows_added != null && (
+                          <p className="text-[10px] text-[#9C9B99]">{p.rows_added} baris{p.duration_ms != null ? ` · ${(p.duration_ms / 1000).toFixed(1)}s` : ''}</p>
+                        )}
+                        {p.status === 'failed' && p.error_msg && (
+                          <p className="text-[10px] text-red-500 truncate">{p.error_msg}</p>
+                        )}
+                      </div>
+                      <span className={`text-[10px] font-medium uppercase ${
+                        p.status === 'done' ? 'text-[#3D8A5A]' : p.status === 'failed' ? 'text-red-500' : p.status === 'running' ? 'text-[#D97706]' : 'text-[#9C9B99]'
+                      }`}>{p.status}</span>
+                    </div>
+                  )
+                })}
+              </div>
+
+              {step === 'done' && job && (job.completeness_after != null || job.confidence_after != null) && (
+                <div className="bg-[#F5F4F1] rounded-lg px-3 py-2 text-xs border border-[#E5E4E1] flex items-center gap-4">
+                  {job.completeness_before != null && job.completeness_after != null && (
+                    <span className="text-[#6D6C6A]">Completeness: {job.completeness_before} → <span className="font-medium text-[#1A1918]">{job.completeness_after}</span></span>
+                  )}
+                  {job.confidence_before != null && job.confidence_after != null && (
+                    <span className="text-[#6D6C6A]">Confidence: {job.confidence_before} → <span className="font-medium text-[#1A1918]">{job.confidence_after}</span></span>
+                  )}
+                </div>
+              )}
             </div>
           )}
 
-          {/* Error */}
-          {phase === 'error' && (
+          {/* ── Error ── */}
+          {step === 'error' && (
             <div className="flex flex-col items-center justify-center py-6 gap-3 text-center">
-              <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center text-red-400 text-lg">
-                ✗
-              </div>
+              <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center text-red-400 text-lg">✗</div>
               <p className="text-xs text-red-500 max-w-xs">{errorMsg}</p>
             </div>
           )}
         </div>
 
-        {/* Footer actions */}
+        {/* Footer */}
         <div className="px-5 py-4 border-t border-[#E5E4E1] flex justify-between items-center shrink-0">
-          {/* Back navigation */}
           <div>
-            {phase === 'config' && (
-              <button
-                onClick={() => setPhase('token')}
-                className="text-xs text-[#9C9B99] hover:text-[#6D6C6A] transition-colors"
-              >
-                ← Back
-              </button>
+            {step === 'freshness' && !loadingFreshness && (
+              <button onClick={() => setStep('token')} className="text-xs text-[#9C9B99] hover:text-[#6D6C6A] transition-colors">← Back</button>
             )}
-            {phase === 'preview' && (
-              <button
-                onClick={() => setPhase('config')}
-                className="text-xs text-[#9C9B99] hover:text-[#6D6C6A] transition-colors"
-              >
-                ← Back
-              </button>
+            {step === 'config' && (
+              <button onClick={() => setStep('freshness')} className="text-xs text-[#9C9B99] hover:text-[#6D6C6A] transition-colors">← Back</button>
             )}
-            {phase === 'error' && (
-              <button
-                onClick={() => setPhase(rows.length > 0 ? 'preview' : 'config')}
-                className="text-xs text-[#9C9B99] hover:text-[#6D6C6A] transition-colors"
-              >
-                ← Back
-              </button>
+            {step === 'preview' && (
+              <button onClick={() => setStep('config')} className="text-xs text-[#9C9B99] hover:text-[#6D6C6A] transition-colors">← Back</button>
+            )}
+            {step === 'error' && (
+              <button onClick={() => setStep(rows.length > 0 ? 'preview' : needsConfig ? 'config' : 'freshness')} className="text-xs text-[#9C9B99] hover:text-[#6D6C6A] transition-colors">← Back</button>
             )}
           </div>
-
-          {/* Primary CTA */}
           <div className="flex gap-2">
-            {(phase === 'saved') && (
-              <button
-                onClick={onClose}
-                className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors"
-              >
-                Done
+            {step === 'token' && (
+              <button disabled={!token.trim()} onClick={handleCheckFreshness}
+                className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors disabled:opacity-40 disabled:cursor-not-allowed">Lanjut →</button>
+            )}
+            {step === 'freshness' && !loadingFreshness && (
+              <button disabled={selectedScrapers.size === 0} onClick={handleFreshnessNext}
+                className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                {needsConfig ? 'Lanjut →' : 'Jalankan'}
               </button>
             )}
-            {phase === 'token' && (
-              <button
-                disabled={!token.trim()}
-                onClick={() => setPhase('config')}
-                className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                Next →
-              </button>
+            {step === 'config' && needsFinancials && (
+              <button disabled={yearFrom > yearTo} onClick={handleFetch}
+                className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors disabled:opacity-40 disabled:cursor-not-allowed">Fetch Preview</button>
             )}
-            {phase === 'config' && (
-              <button
-                disabled={yearFrom > yearTo}
-                onClick={handleFetch}
-                className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                Fetch Preview
-              </button>
+            {step === 'config' && !needsFinancials && (
+              <button onClick={handleTriggerPipeline}
+                className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors">Jalankan</button>
             )}
-            {phase === 'preview' && (
-              <button
-                onClick={handleSave}
-                className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors"
-              >
-                Save to Database ({rows.length} rows)
-              </button>
+            {step === 'preview' && (
+              <button onClick={handleTriggerPipeline}
+                className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors">Konfirmasi & Jalankan</button>
+            )}
+            {step === 'done' && (
+              <button onClick={onClose}
+                className="px-4 py-1.5 text-xs text-white bg-[#3D8A5A] rounded-lg hover:bg-[#2d6b45] transition-colors">Selesai</button>
             )}
           </div>
         </div>

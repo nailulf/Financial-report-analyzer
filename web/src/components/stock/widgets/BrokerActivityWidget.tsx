@@ -11,7 +11,7 @@ import type {
   SmartMoneyData,
 } from '@/lib/queries/broker'
 import { formatIDRCompact, formatNumber, fmtNumID } from '@/lib/calculations/formatters'
-import { computeConfidence as computeConfidenceScore, generateNarrative as generateNarrativeText, type ConfidenceScore } from '@/lib/calculations/signal-confidence'
+import { computeConfidence as computeConfidenceScore, generateNarrative as generateNarrativeText, type ConfidenceScore, type Narrative } from '@/lib/calculations/signal-confidence'
 
 /* ─── constants ─────────────────────────────────────────────────────── */
 
@@ -61,9 +61,29 @@ const SIGNAL_MAP: Record<string, CombinedSignal> = {
   'net_jual:mixed': { signal: 'STRONG_DIST',  phase: 'distribusi', label: 'Distribusi berat', color: '#721C24', bgColor: '#F8D7DA', description: 'Broker keluar, insider campuran' },
 }
 
-function computeBrokerDirection(netFlow: number, threshold = 5_000_000): BrokerDirection {
-  if (netFlow > threshold) return 'net_beli'
-  if (netFlow < -threshold) return 'net_jual'
+/** Classify broker direction relative to total trading volume.
+ *  - Flow < 1% of total volume → netral (noise)
+ *  - Actors pulling in opposite directions with large offsetting flows → netral (conflict) */
+function computeBrokerDirection(
+  netFlow: number,
+  totalTradingValue: number,
+  asingNet: number,
+  lokalNet: number,
+  bumnNet: number,
+): BrokerDirection {
+  const ratio = totalTradingValue > 0 ? Math.abs(netFlow) / totalTradingValue : 0
+  if (ratio < 0.01) return 'netral' // < 1% of volume = noise
+
+  // Detect conflict: if actors disagree significantly, treat as netral.
+  // "Significant" = the minority side's flow is > 50% of the majority side.
+  const positiveFlow = (asingNet > 0 ? asingNet : 0) + (lokalNet > 0 ? lokalNet : 0) + (bumnNet > 0 ? bumnNet : 0)
+  const negativeFlow = Math.abs((asingNet < 0 ? asingNet : 0) + (lokalNet < 0 ? lokalNet : 0) + (bumnNet < 0 ? bumnNet : 0))
+  const majority = Math.max(positiveFlow, negativeFlow)
+  const minority = Math.min(positiveFlow, negativeFlow)
+  if (majority > 0 && minority / majority > 0.5) return 'netral' // tug of war → conflict
+
+  if (netFlow > 0) return 'net_beli'
+  if (netFlow < 0) return 'net_jual'
   return 'netral'
 }
 
@@ -123,14 +143,14 @@ const BROKER_COLORS = {
   harga:      '#CC3333',  // red    — price line
 } as const
 
-/** Format a value that is already in Rp juta (millions) into human-readable M/B/T */
+/** Format a value that is already in Rp juta into human-readable Jt/M/T (Indonesian) */
 function fmtFlowJuta(v: number | null | undefined): string {
   if (v == null || isNaN(v)) return '—'
   const abs = Math.abs(v)
   const sign = v < 0 ? '-' : ''
-  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}T`
-  if (abs >= 1_000)     return `${sign}${(abs / 1_000).toFixed(1)}B`
-  return `${sign}${abs.toFixed(0)}M`
+  if (abs >= 1_000_000) return `${sign}${(abs / 1_000_000).toFixed(1)}T`   // triliun
+  if (abs >= 1_000)     return `${sign}${(abs / 1_000).toFixed(1)}M`       // miliar
+  return `${sign}${abs.toFixed(0)}Jt`                                      // juta
 }
 
 /* ─── chart tooltip formatter ──────────────────────────────────────── */
@@ -198,13 +218,20 @@ function SummaryCard({
 
 /* ─── signal summary card with hover tooltip ───────────────────────── */
 
-function ConfidenceBar({ score, max, label }: { score: number; max: number; label: string }) {
+const PHASE_BAR_COLOR: Record<string, string> = {
+  akumulasi:  '#22C55E', // green
+  distribusi: '#EF4444', // red
+  netral:     '#F59E0B', // amber
+}
+
+function ConfidenceBar({ score, max, label, phase }: { score: number; max: number; label: string; phase?: string }) {
   const pct = max > 0 ? (score / max) * 100 : 0
+  const barColor = PHASE_BAR_COLOR[phase ?? 'netral'] ?? '#F59E0B'
   return (
     <div className="flex items-center gap-2">
       <span className="text-[#888888] w-[90px] shrink-0 truncate">{label}</span>
       <div className="flex-1 h-1.5 bg-[#333] rounded-full overflow-hidden">
-        <div className="h-full bg-[#00FF88] rounded-full" style={{ width: `${pct}%` }} />
+        <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: barColor }} />
       </div>
       <span className="text-white w-[36px] text-right">{score}/{max}</span>
     </div>
@@ -214,7 +241,7 @@ function ConfidenceBar({ score, max, label }: { score: number; max: number; labe
 function SignalSummaryCard({ signal, confidence, narrative }: {
   signal: CombinedSignal | null
   confidence: ConfidenceScore | null
-  narrative: string | null
+  narrative: Narrative | null
 }) {
   const [hover, setHover] = useState(false)
 
@@ -239,16 +266,16 @@ function SignalSummaryCard({ signal, confidence, narrative }: {
         )}
       </div>
       {/* Thin confidence bar */}
-      {confidence && (
+      {confidence && signal && (
         <div className="h-1 bg-[#EDECEA] rounded-full overflow-hidden mt-0.5">
           <div
             className="h-full rounded-full transition-all"
-            style={{ width: `${confidence.total}%`, backgroundColor: confidence.color }}
+            style={{ width: `${confidence.total}%`, backgroundColor: PHASE_BAR_COLOR[signal.phase] ?? '#F59E0B' }}
           />
         </div>
       )}
       <span className="font-mono text-[10px] text-[#888888]">
-        {narrative ?? (signal ? signal.description : 'Belum ada data')}
+        {narrative?.conclusion ?? (signal ? signal.description : 'Belum ada data')}
       </span>
 
       {/* Confidence breakdown tooltip on hover */}
@@ -263,13 +290,20 @@ function SignalSummaryCard({ signal, confidence, narrative }: {
             </span>
           </div>
 
+          {/* Narrative detail */}
+          {narrative && (
+            <div className="border-t border-[#444] pt-2 pb-1 text-[11px] text-[#ccc] leading-snug">
+              {narrative.detail}
+            </div>
+          )}
+
           {/* 5-component breakdown bars */}
           <div className="border-t border-[#444] pt-2 space-y-1.5">
-            <ConfidenceBar score={confidence.components.brokerMagnitude} max={25} label="Flow magnitude" />
-            <ConfidenceBar score={confidence.components.foreignAlignment} max={25} label="Asing alignment" />
-            <ConfidenceBar score={confidence.components.bandarConfirmation} max={20} label="Bandar confirm" />
-            <ConfidenceBar score={confidence.components.insiderWeight} max={15} label="Insider weight" />
-            <ConfidenceBar score={confidence.components.brokerConcentration} max={15} label="Konsentrasi" />
+            <ConfidenceBar score={confidence.components.brokerMagnitude} max={25} label="Flow magnitude" phase={signal.phase} />
+            <ConfidenceBar score={confidence.components.foreignAlignment} max={25} label="Asing alignment" phase={signal.phase} />
+            <ConfidenceBar score={confidence.components.bandarConfirmation} max={20} label="Bandar confirm" phase={signal.phase} />
+            <ConfidenceBar score={confidence.components.insiderWeight} max={15} label="Insider weight" phase={signal.phase} />
+            <ConfidenceBar score={confidence.components.brokerConcentration} max={15} label="Konsentrasi" phase={signal.phase} />
           </div>
 
           {/* Explanations */}
@@ -664,21 +698,11 @@ function BandarSignalDetail({ signal }: { signal: BandarSignalRow }) {
 
 /* ─── signal matrix (3x3 grid) ─────────────────────────────────────── */
 
-interface SignalMatrixProps {
+function SignalMatrix({ currentBroker, currentInsider, confidence }: {
   currentBroker: BrokerDirection
   currentInsider: InsiderAction
-  netFlow: number
-  insiderBuyCount: number
-  insiderSellCount: number
-  days: number
   confidence: ConfidenceScore
-}
-
-function SignalMatrix({
-  currentBroker, currentInsider, netFlow, insiderBuyCount, insiderSellCount, days, confidence,
-}: SignalMatrixProps) {
-  const [hover, setHover] = useState<string | null>(null)
-
+}) {
   const brokerLabels: { key: BrokerDirection; label: string }[] = [
     { key: 'net_beli', label: 'Broker net beli' },
     { key: 'netral',   label: 'Broker netral' },
@@ -689,22 +713,6 @@ function SignalMatrix({
     { key: 'none', label: 'Tidak ada' },
     { key: 'sell', label: 'Insider jual' },
   ]
-
-  // Build human-readable explanation for the current state
-  const threshold = 5_000_000
-  const brokerExplain = netFlow > threshold
-    ? `Net flow +${formatIDRCompact(netFlow)} > threshold ${formatIDRCompact(threshold)} → net beli`
-    : netFlow < -threshold
-    ? `Net flow ${formatIDRCompact(netFlow)} < -threshold ${formatIDRCompact(threshold)} → net jual`
-    : `Net flow ${formatIDRCompact(netFlow)} dalam threshold ±${formatIDRCompact(threshold)} → netral`
-
-  const insiderExplain = insiderBuyCount === 0 && insiderSellCount === 0
-    ? `Tidak ada insider filing dalam ${days} hari → none`
-    : insiderBuyCount > 0 && insiderSellCount > 0
-    ? `${insiderBuyCount} buy + ${insiderSellCount} sell → mixed`
-    : insiderBuyCount > 0
-    ? `${insiderBuyCount} insider buy, 0 sell → buy`
-    : `0 buy, ${insiderSellCount} insider sell → sell`
 
   return (
     <div className="flex flex-col gap-2">
@@ -729,14 +737,11 @@ function SignalMatrix({
             {insiderLabels.map((il) => {
               const sig = getCombinedSignal(bl.key, il.key)
               const isCurrent = bl.key === currentBroker && il.key === currentInsider
-              const cellKey = `${bl.key}-${il.key}`
               return (
                 <div
-                  key={cellKey}
-                  className={`px-2 py-2 border relative cursor-default ${isCurrent ? 'border-[#1A1A1A] border-2' : 'border-[#E0E0E5]'}`}
+                  key={`${bl.key}-${il.key}`}
+                  className={`px-2 py-2 border ${isCurrent ? 'border-[#1A1A1A] border-2' : 'border-[#E0E0E5]'}`}
                   style={{ backgroundColor: sig.bgColor }}
-                  onMouseEnter={() => setHover(cellKey)}
-                  onMouseLeave={() => setHover(null)}
                 >
                   <div className="flex items-center gap-1">
                     <span className="font-mono text-[11px] font-bold" style={{ color: sig.color }}>
@@ -751,34 +756,6 @@ function SignalMatrix({
                   <div className="font-mono text-[9px] text-[#888888]">
                     {sig.description}
                   </div>
-                  {/* Tooltip on hover — quantitative breakdown */}
-                  {hover === cellKey && (
-                    <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-1 w-64 bg-[#1A1A1A] text-white px-3 py-2 rounded shadow-lg font-mono text-[10px] leading-relaxed pointer-events-none">
-                      <div className="font-bold text-[11px] mb-1" style={{ color: sig.color === '#666666' ? '#ccc' : sig.bgColor }}>
-                        {sig.signal}
-                      </div>
-                      <div className="text-[#AAAAAA] mb-1">Kondisi: {bl.label} + {il.label}</div>
-                      {isCurrent ? (
-                        <>
-                          <div className="border-t border-[#444] pt-1 mt-1 space-y-0.5">
-                            <div className="text-[#00FF88]">▸ Broker: {brokerExplain}</div>
-                            <div className="text-[#00FF88]">▸ Insider: {insiderExplain}</div>
-                          </div>
-                          <div className="border-t border-[#444] pt-1 mt-1.5 space-y-0.5 text-[9px]">
-                            <div className="flex justify-between"><span className="text-[#888]">Confidence:</span><span className="font-bold" style={{ color: confidence.color }}>{confidence.total}/100 {confidence.label}</span></div>
-                            <div className="text-[#666]">{confidence.explanations.brokerMagnitude}</div>
-                            <div className="text-[#666]">{confidence.explanations.foreignAlignment}</div>
-                            <div className="text-[#666]">{confidence.explanations.bandarConfirmation}</div>
-                            <div className="text-[#666]">{confidence.explanations.insiderWeight}</div>
-                            <div className="text-[#666]">{confidence.explanations.brokerConcentration}</div>
-                          </div>
-                          <div className="mt-1 text-[#FFD700] text-[9px]">← Kondisi saat ini</div>
-                        </>
-                      ) : (
-                        <div className="text-[#888888] italic">Bukan kondisi saat ini</div>
-                      )}
-                    </div>
-                  )}
                 </div>
               )
             })}
@@ -939,12 +916,19 @@ export function BrokerActivityWidget({
   // Compute aggregates
   const allBuckets = data ? mergeBuckets(data) : []
   const topBuckets = allBuckets.slice(0, 8)
-  const totalBuy = allBuckets.reduce((s, b) => s + b.total_buy_value, 0)
-  const totalSell = allBuckets.reduce((s, b) => s + b.total_sell_value, 0)
-  const netFlow = totalBuy - totalSell
+  const bucketBuy = allBuckets.reduce((s, b) => s + b.total_buy_value, 0)
+  const bucketSell = allBuckets.reduce((s, b) => s + b.total_sell_value, 0)
+  const netFlow = bucketBuy - bucketSell
 
-  // Compute asing flow from daily data
+  // Total trading volume from dailyFlow (all brokers, not just top buckets)
+  const totalBuy = dailyFlow.reduce((s, d) => s + d.asing_buy + d.lokal_buy, 0)
+  const totalSell = dailyFlow.reduce((s, d) => s + d.asing_sell + d.lokal_sell, 0)
+  const totalTradingValue = totalBuy + totalSell
+
+  // Compute per-actor flows from daily data
   const asingNetFlow = dailyFlow.reduce((s, d) => s + d.asing_net, 0)
+  const lokalNetFlow = dailyFlow.reduce((s, d) => s + d.lokal_net, 0)
+  const bumnNetFlow = dailyFlow.reduce((s, d) => s + d.pemerintah_net, 0)
 
   // Filter insider transactions to match broker data date range
   const insidersInRange = useMemo(() => {
@@ -963,7 +947,7 @@ export function BrokerActivityWidget({
   const insiderAction = computeInsiderAction(insidersInRange, days)
 
   // Compute combined signal
-  const brokerDirection = computeBrokerDirection(netFlow)
+  const brokerDirection = computeBrokerDirection(netFlow, totalTradingValue, asingNetFlow, lokalNetFlow, bumnNetFlow)
   const combinedSignal = getCombinedSignal(brokerDirection, insiderAction)
 
   const bandar = data?.bandarSignal ?? null
@@ -973,10 +957,10 @@ export function BrokerActivityWidget({
     signal: combinedSignal.signal,
     phase: combinedSignal.phase,
     netFlow,
-    totalTradingValue: totalBuy + totalSell,
+    totalTradingValue: totalTradingValue,
     asingNetFlow,
-    lokalNetFlow: dailyFlow.reduce((s, d) => s + d.lokal_net, 0),
-    pemerintahNetFlow: dailyFlow.reduce((s, d) => s + d.pemerintah_net, 0),
+    lokalNetFlow,
+    pemerintahNetFlow: bumnNetFlow,
     bandarSignal: bandar,
     insiderTransactions: insidersInRange,
     concentration,
@@ -1135,10 +1119,6 @@ export function BrokerActivityWidget({
                 <SignalMatrix
                   currentBroker={brokerDirection}
                   currentInsider={insiderAction}
-                  netFlow={netFlow}
-                  insiderBuyCount={insiderBuyCount}
-                  insiderSellCount={insiderSellCount}
-                  days={days}
                   confidence={confidence}
                 />
               </div>

@@ -453,7 +453,13 @@ export async function getDailyBrokerFlowByType(
     }
   }
 
-  return uniqueDates.sort().map((d) => dateMap.get(d)!)
+  // Filter out dates with no actual trading data (e.g. market holidays)
+  return uniqueDates.sort()
+    .map((d) => dateMap.get(d)!)
+    .filter((d) =>
+      d.asing_net !== 0 || d.lokal_net !== 0 || d.pemerintah_net !== 0 ||
+      d.asing_buy !== 0 || d.asing_sell !== 0 || d.lokal_buy !== 0 || d.lokal_sell !== 0
+    )
 }
 
 // ── Broker concentration for identification table ───────────────────────────

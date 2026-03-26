@@ -77,10 +77,6 @@ function scoreBrokerMagnitude(
   totalTradingValue: number,
   phase: SignalPhase,
 ): { score: number; explanation: string } {
-  const polarity = phaseToPolarity(phase)
-  if (polarity === 'neutral') {
-    return { score: 0, explanation: 'Sinyal netral — magnitude tidak relevan' }
-  }
   if (totalTradingValue <= 0) {
     return { score: 5, explanation: 'Total trading value = 0, default score' }
   }
@@ -344,52 +340,151 @@ export function computeConfidence(input: ConfidenceInput): ConfidenceScore {
 }
 
 
-// ─── Narrative Generator ────────────────────────────────────────────────────
+// ─── Narrative Generator (pattern-based) ────────────────────────────────────
 
-function classifyActor(net: number, label: string): string | null {
-  if (net === 0) return null
-  const dir = net > 0 ? 'akumulasi' : 'distribusi'
-  return `${label} ${dir} ${formatIDRCompact(net)}`
+export interface Narrative {
+  conclusion: string   // short — shown on the summary card
+  detail: string       // full — shown in the tooltip
+}
+
+type ActorDir = 'beli' | 'jual' | 'netral'
+
+function dir(v: number): ActorDir { return v > 0 ? 'beli' : v < 0 ? 'jual' : 'netral' }
+
+function fmtActor(label: string, v: number): string {
+  return `${label} ${formatIDRCompact(v)}`
 }
 
 /**
- * Generate a 1-2 sentence narrative describing who is doing what.
- * E.g. "Retail akumulasi +349M, asing distribusi -531M. 1 insider BUY."
+ * Rule-based narrative that detects money-flow patterns and describes
+ * what is actually happening — no AI, pure pattern matching.
  */
-export function generateNarrative(input: ConfidenceInput): string {
-  const { asingNetFlow, lokalNetFlow, pemerintahNetFlow, insiderTransactions } = input
-  const parts: string[] = []
+export function generateNarrative(input: ConfidenceInput): Narrative {
+  const { asingNetFlow: asing, lokalNetFlow: lokal, pemerintahNetFlow: bumn, netFlow, totalTradingValue, insiderTransactions } = input
 
-  // Classify each actor
-  const actors = [
-    classifyActor(asingNetFlow, 'Asing'),
-    classifyActor(lokalNetFlow, 'Retail'),
-    classifyActor(pemerintahNetFlow, 'BUMN'),
-  ].filter(Boolean) as string[]
+  const aDir = dir(asing)
+  const lDir = dir(lokal)
+  const bDir = dir(bumn)
 
-  if (actors.length === 0) {
-    parts.push('Tidak ada pergerakan signifikan')
-  } else {
-    parts.push(actors.join(', '))
+  // Magnitude check — is net flow meaningful?
+  const flowRatio = totalTradingValue > 0 ? Math.abs(netFlow) / totalTradingValue : 0
+  const isNoise = flowRatio < 0.005 // < 0.5% of total volume
+
+  // Dominant actor = largest absolute flow
+  const absAsing = Math.abs(asing)
+  const absLokal = Math.abs(lokal)
+  const absBumn = Math.abs(bumn)
+
+  // Who is buying / selling
+  const buyers: string[] = []
+  const sellers: string[] = []
+  if (aDir === 'beli') buyers.push(fmtActor('asing', asing))
+  if (aDir === 'jual') sellers.push(fmtActor('asing', asing))
+  if (lDir === 'beli') buyers.push(fmtActor('retail', lokal))
+  if (lDir === 'jual') sellers.push(fmtActor('retail', lokal))
+  if (bDir === 'beli') buyers.push(fmtActor('BUMN', bumn))
+  if (bDir === 'jual') sellers.push(fmtActor('BUMN', bumn))
+
+  // Insider summary
+  const insiderBuys = insiderTransactions.filter((t) => t.action === 'BUY').length
+  const insiderSells = insiderTransactions.filter((t) => t.action === 'SELL').length
+  const insiderSuffix = insiderBuys > 0 || insiderSells > 0
+    ? ` Insider: ${[insiderBuys > 0 && `${insiderBuys} BUY`, insiderSells > 0 && `${insiderSells} SELL`].filter(Boolean).join(', ')}.`
+    : ''
+
+  // Helper: build { conclusion, detail }
+  const mk = (conclusion: string, detail: string): Narrative => ({
+    conclusion,
+    detail: detail + insiderSuffix,
+  })
+
+  // ── Pattern detection (ordered by specificity) ──
+
+  // All actors neutral
+  if (aDir === 'netral' && lDir === 'netral' && bDir === 'netral') {
+    return mk('Tidak ada pergerakan signifikan', 'Semua aktor netral — pasar sepi.')
   }
 
-  // Check for conflict between actors
-  const directions = [asingNetFlow, lokalNetFlow, pemerintahNetFlow].filter((v) => v !== 0)
-  const hasPositive = directions.some((v) => v > 0)
-  const hasNegative = directions.some((v) => v < 0)
-  if (hasPositive && hasNegative) {
-    parts[0] += ' — konflik'
+  // All aligned accumulation
+  if (aDir === 'beli' && lDir === 'beli' && bDir === 'beli') {
+    return mk('Semua aktor selaras masuk', `Asing ${formatIDRCompact(asing)}, retail ${formatIDRCompact(lokal)}, BUMN ${formatIDRCompact(bumn)} — akumulasi selaras.`)
   }
 
-  // Insider activity
-  const buys = insiderTransactions.filter((t) => t.action === 'BUY')
-  const sells = insiderTransactions.filter((t) => t.action === 'SELL')
-  if (buys.length > 0 || sells.length > 0) {
-    const insiderParts: string[] = []
-    if (buys.length > 0) insiderParts.push(`${buys.length} insider BUY`)
-    if (sells.length > 0) insiderParts.push(`${sells.length} insider SELL`)
-    parts.push(insiderParts.join(', '))
+  // All aligned distribution
+  if (aDir === 'jual' && lDir === 'jual' && bDir === 'jual') {
+    return mk('Semua aktor selaras keluar', `Asing ${formatIDRCompact(asing)}, retail ${formatIDRCompact(lokal)}, BUMN ${formatIDRCompact(bumn)} — distribusi selaras.`)
   }
 
-  return parts.join('. ') + '.'
+  // Foreign exit absorbed by domestic (PTRO pattern)
+  if (aDir === 'jual' && (lDir === 'beli' || bDir === 'beli') && isNoise) {
+    const absorbers = [lDir === 'beli' && fmtActor('retail', lokal), bDir === 'beli' && fmtActor('BUMN', bumn)].filter(Boolean).join(' & ')
+    return mk(
+      'Perpindahan kepemilikan, bukan distribusi',
+      `Asing keluar ${formatIDRCompact(asing)}, diserap oleh ${absorbers}. Net flow kecil (${(flowRatio * 100).toFixed(1)}%) — saham berpindah dari asing ke domestik.`,
+    )
+  }
+
+  // Genuine distribution: asing + institutions selling, retail catching
+  if (aDir === 'jual' && bDir === 'jual' && lDir === 'beli') {
+    return mk(
+      'Potensi distribusi ke retail',
+      `Asing ${formatIDRCompact(asing)} dan BUMN ${formatIDRCompact(bumn)} keluar, retail ${formatIDRCompact(lokal)} menampung.`,
+    )
+  }
+
+  // Smart money accumulation: asing + BUMN buying, retail selling
+  if (aDir === 'beli' && bDir === 'beli' && lDir === 'jual') {
+    return mk(
+      'Smart money masuk',
+      `Asing ${formatIDRCompact(asing)} dan BUMN ${formatIDRCompact(bumn)} akumulasi, retail ${formatIDRCompact(lokal)} keluar.`,
+    )
+  }
+
+  // Foreign-driven accumulation
+  if (aDir === 'beli' && absAsing > absLokal && absAsing > absBumn) {
+    const resistors = sellers.length > 0 ? ` ${sellers.join(' & ')} keluar.` : '.'
+    return mk(
+      'Foreign smart money masuk',
+      `Asing mendominasi akumulasi ${formatIDRCompact(asing)},${resistors}`,
+    )
+  }
+
+  // Foreign-driven distribution, domestic absorbing
+  if (aDir === 'jual' && absAsing > absLokal && absAsing > absBumn && buyers.length > 0) {
+    return mk(
+      'Waspada jika tekanan asing berlanjut',
+      `Asing mendominasi distribusi ${formatIDRCompact(asing)}, ${buyers.join(' & ')} menampung.`,
+    )
+  }
+
+  // Foreign-driven distribution, nobody absorbing
+  if (aDir === 'jual' && absAsing > absLokal && absAsing > absBumn) {
+    return mk(
+      'Tekanan jual asing dominan',
+      `Asing mendominasi distribusi ${formatIDRCompact(asing)}, belum ada penyerap signifikan.`,
+    )
+  }
+
+  // Retail-driven accumulation
+  if (lDir === 'beli' && absLokal > absAsing && absLokal > absBumn) {
+    const conclusion = aDir === 'jual' ? 'Retail masuk, perlu konfirmasi smart money' : 'Retail masuk, belum didukung asing'
+    const note = aDir === 'jual' ? ` Asing berlawanan arah ${formatIDRCompact(asing)}.` : ''
+    return mk(conclusion, `Retail mendominasi akumulasi ${formatIDRCompact(lokal)}.${note}`)
+  }
+
+  // Retail-driven distribution
+  if (lDir === 'jual' && absLokal > absAsing && absLokal > absBumn) {
+    const conclusion = aDir === 'beli' ? 'Potensi akumulasi smart money' : 'Retail keluar'
+    const note = aDir === 'beli' ? ` Asing berlawanan arah ${formatIDRCompact(asing)}.` : ''
+    return mk(conclusion, `Retail mendominasi distribusi ${formatIDRCompact(lokal)}.${note}`)
+  }
+
+  // Generic conflict: some buying, some selling
+  if (buyers.length > 0 && sellers.length > 0) {
+    return mk('Belum ada konsensus arah', `${buyers.join(' & ')} masuk, ${sellers.join(' & ')} keluar.`)
+  }
+
+  // Fallback
+  const all = [...buyers, ...sellers]
+  return mk(all.length > 0 ? 'Arus campuran' : 'Tidak ada data', `${all.join(', ')}.`)
 }

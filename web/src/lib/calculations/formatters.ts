@@ -21,7 +21,7 @@ export function formatIDR(value: string | number | null | undefined): string {
   return `Rp ${fmtNumID(Math.round(n))}`
 }
 
-// Compact IDR: 1.2T, 500M, 50Jt
+// Compact IDR (Indonesian): 1.2T (triliun), 500M (miliar), 50Jt (juta)
 export function formatIDRCompact(value: string | number | null | undefined): string {
   if (value === null || value === undefined) return '—'
   const n = Number(value)

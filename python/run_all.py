@@ -248,11 +248,11 @@ def run_enrich_ratios(tickers: list[str] | None, dry_run: bool = False) -> None:
         _update_scores(tickers)
 
 
-def run_dividends(tickers: list[str] | None) -> None:
+def run_dividends(tickers: list[str] | None, job_id: int | None = None) -> None:
     """Runs: dividend_scraper"""
     _, ds, _, _ = _import_enrichment_scrapers()
     console.rule("[bold magenta]ENRICH: dividend_scraper")
-    _run_tracked(ds.run, "dividend_scraper", None, tickers=tickers)
+    _run_tracked(ds.run, "dividend_scraper", job_id, tickers=tickers)
 
 
 def run_financials_fallback(
@@ -293,11 +293,13 @@ def run_fill_gaps(
 
 
 def run_broker_backfill(tickers: list[str] | None, days: int = 30,
-                        offset: int = 0, limit: int | None = None) -> None:
+                        offset: int = 0, limit: int | None = None,
+                        job_id: int | None = None) -> None:
     """Runs: money_flow broker backfill from Stockbit"""
     from scrapers.money_flow import run_broker_backfill as _backfill
     console.rule("[bold blue]BROKER BACKFILL: broker_flow + bandar_signal")
-    _backfill(tickers=tickers, days=days, offset=offset, limit=limit)
+    _run_tracked(_backfill, "broker_backfill", job_id,
+                 tickers=tickers, days=days, offset=offset, limit=limit)
 
 
 def run_insider(tickers: list[str] | None, max_pages: int = 5,
@@ -309,29 +311,53 @@ def run_insider(tickers: list[str] | None, max_pages: int = 5,
 
 
 def run_full(tickers: list[str] | None, period: str, days: int, job_id: int | None = None,
-             year_from: int | None = None, year_to: int | None = None) -> None:
-    """Runs everything in dependency order. Scores updated once at the end."""
+             year_from: int | None = None, year_to: int | None = None,
+             scraper_filter: set[str] | None = None) -> None:
+    """Runs everything in dependency order. Scores updated once at the end.
+
+    If scraper_filter is set, only matching scrapers execute; others are skipped
+    (their progress rows are marked 'done' with rows_added=0 when job_id is set).
+    """
+    def _should_run(name: str) -> bool:
+        if scraper_filter is None:
+            return True
+        if name in scraper_filter:
+            return True
+        # Mark skipped scrapers as done in the progress table
+        if job_id is not None:
+            from utils.supabase_client import update_refresh_scraper_progress
+            update_refresh_scraper_progress(job_id, name, "done", rows_added=0)
+        logger.info("Skipping %s (not in scraper filter)", name)
+        return False
+
     su, dp, cp, mf = _import_scrapers()
     dl, ce = _import_phase2_scrapers()
     _, _, _, ff = _import_enrichment_scrapers()
-    console.rule("[bold green]WEEKLY: stock_universe")
-    _run_tracked(su.run, "stock_universe", job_id, tickers=tickers)
-    console.rule("[bold yellow]QUARTERLY: financials (Stockbit)")
-    _run_tracked(ff.run, "financials_fallback", job_id,
-                 tickers=tickers, source="stockbit", only_missing=False,
-                 annual=(period in ("annual", "both")),
-                 quarterly=(period in ("quarterly", "both")),
-                 year_from=year_from, year_to=year_to)
-    console.rule("[bold yellow]QUARTERLY: company_profiles")
-    _run_tracked(cp.run, "company_profiles", job_id, tickers=tickers)
-    console.rule("[bold yellow]QUARTERLY: document_links")
-    _run_tracked_optional(dl.run, "document_links", job_id, tickers=tickers)
-    console.rule("[bold yellow]QUARTERLY: corporate_events")
-    _run_tracked_optional(ce.run, "corporate_events", job_id, tickers=tickers)
-    console.rule("[bold blue]DAILY: daily_prices")
-    _run_tracked(dp.run, "daily_prices", job_id, tickers=tickers)
-    console.rule("[bold blue]DAILY: money_flow")
-    _run_tracked(mf.run, "money_flow", job_id, tickers=tickers, days=days)
+    if _should_run("stock_universe"):
+        console.rule("[bold green]WEEKLY: stock_universe")
+        _run_tracked(su.run, "stock_universe", job_id, tickers=tickers)
+    if _should_run("financials_fallback"):
+        console.rule("[bold yellow]QUARTERLY: financials (Stockbit)")
+        _run_tracked(ff.run, "financials_fallback", job_id,
+                     tickers=tickers, source="stockbit", only_missing=False,
+                     annual=(period in ("annual", "both")),
+                     quarterly=(period in ("quarterly", "both")),
+                     year_from=year_from, year_to=year_to)
+    if _should_run("company_profiles"):
+        console.rule("[bold yellow]QUARTERLY: company_profiles")
+        _run_tracked(cp.run, "company_profiles", job_id, tickers=tickers)
+    if _should_run("document_links"):
+        console.rule("[bold yellow]QUARTERLY: document_links")
+        _run_tracked_optional(dl.run, "document_links", job_id, tickers=tickers)
+    if _should_run("corporate_events"):
+        console.rule("[bold yellow]QUARTERLY: corporate_events")
+        _run_tracked_optional(ce.run, "corporate_events", job_id, tickers=tickers)
+    if _should_run("daily_prices"):
+        console.rule("[bold blue]DAILY: daily_prices")
+        _run_tracked(dp.run, "daily_prices", job_id, tickers=tickers)
+    if _should_run("money_flow"):
+        console.rule("[bold blue]DAILY: money_flow")
+        _run_tracked(mf.run, "money_flow", job_id, tickers=tickers, days=days)
     _update_scores(tickers)
 
 
@@ -485,6 +511,14 @@ Examples:
         metavar="N",
         help="--broker-backfill / --insider: max tickers to process (for batching)",
     )
+    # Scraper filter (for selective refresh from UI)
+    parser.add_argument(
+        "--scrapers",
+        type=str,
+        default="",
+        help="Comma-separated scraper names to run. When set, only matching scrapers execute "
+             "in --full mode. Others are skipped. Empty = run all (default).",
+    )
     # Year range (applies to --quarterly, --full, --fallback-financials)
     parser.add_argument(
         "--year-from",
@@ -529,6 +563,12 @@ Examples:
     elif tickers:
         console.print(f"[cyan]Scope: tickers = {tickers}[/cyan]")
 
+    # Parse --scrapers filter (comma-separated → set, empty string → None = run all)
+    scraper_filter: set[str] | None = None
+    if args.scrapers:
+        scraper_filter = {s.strip() for s in args.scrapers.split(",") if s.strip()}
+        console.print(f"[cyan]Scraper filter: {sorted(scraper_filter)}[/cyan]")
+
     # Detect or use explicit refresh job id (only meaningful for single-ticker runs)
     job_id: int | None = args.job_id or _detect_job(tickers)
     if job_id:
@@ -537,9 +577,11 @@ Examples:
         console.print(f"[cyan]Linked to refresh job #{job_id}[/cyan]")
 
     try:
+        # ── Core pipeline modes (mutually exclusive: --full vs individual) ──
         if args.full:
             run_full(tickers, args.period, args.days, job_id=job_id,
-                     year_from=args.year_from, year_to=args.year_to)
+                     year_from=args.year_from, year_to=args.year_to,
+                     scraper_filter=scraper_filter)
         else:
             if args.weekly:
                 run_weekly(tickers, job_id=job_id)
@@ -548,18 +590,6 @@ Examples:
                               year_from=args.year_from, year_to=args.year_to)
             if args.daily:
                 run_daily(tickers, args.days, job_id=job_id)
-            if args.enrich_ratios:
-                run_enrich_ratios(tickers, dry_run=args.dry_run)
-            if args.dividends:
-                run_dividends(tickers)
-            if args.fill_gaps:
-                run_fill_gaps(
-                    tickers=tickers,
-                    min_score=args.min_score,
-                    limit=args.gap_limit,
-                    categories=args.gap_category,
-                    dry_run=args.dry_run,
-                )
             if args.fallback_financials:
                 run_financials_fallback(
                     tickers=tickers,
@@ -569,20 +599,39 @@ Examples:
                     year_from=args.year_from,
                     year_to=args.year_to,
                 )
-            if args.broker_backfill:
-                run_broker_backfill(
-                    tickers=tickers,
-                    days=args.backfill_days,
-                    offset=args.offset,
-                    limit=args.batch_limit,
-                )
-            if args.insider:
-                run_insider(
-                    tickers=tickers,
-                    max_pages=args.insider_pages,
-                    offset=args.offset,
-                    limit=args.batch_limit,
-                )
+
+        # ── Enrichment modes (can combine with --full or run standalone) ──
+        # When --scrapers filter is active, only run enrichment if the scraper is in the filter
+        def _filter_ok(name: str) -> bool:
+            return scraper_filter is None or name in scraper_filter
+
+        if args.enrich_ratios and _filter_ok("ratio_enricher"):
+            run_enrich_ratios(tickers, dry_run=args.dry_run)
+        if args.dividends and _filter_ok("dividend_scraper"):
+            run_dividends(tickers, job_id=job_id)
+        if args.fill_gaps:
+            run_fill_gaps(
+                tickers=tickers,
+                min_score=args.min_score,
+                limit=args.gap_limit,
+                categories=args.gap_category,
+                dry_run=args.dry_run,
+            )
+        if args.broker_backfill and _filter_ok("broker_backfill"):
+            run_broker_backfill(
+                tickers=tickers,
+                days=args.backfill_days,
+                offset=args.offset,
+                limit=args.batch_limit,
+                job_id=job_id,
+            )
+        if args.insider:
+            run_insider(
+                tickers=tickers,
+                max_pages=args.insider_pages,
+                offset=args.offset,
+                limit=args.batch_limit,
+            )
     except KeyboardInterrupt:
         if job_id and tickers and len(tickers) == 1:
             _finalize_job(job_id, tickers[0], "failed", "interrupted by user")

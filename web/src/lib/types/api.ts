@@ -245,6 +245,18 @@ export interface RefreshJob {
   finished_at: string | null
 }
 
+// Data freshness check — per-category recency for a ticker
+export type FreshnessStatus = 'fresh' | 'stale' | 'missing'
+
+export interface CategoryFreshness {
+  category: string            // scraper key e.g. 'daily_prices'
+  label: string               // Indonesian label e.g. 'Harga Harian'
+  lastUpdated: string | null  // ISO date or timestamp
+  status: FreshnessStatus
+  daysSince: number | null
+  scrapers: string[]          // which scraper(s) to run for this category
+}
+
 // Stockbit-sourced financial row used in preview & upsert
 export interface StockbitPreviewRow {
   ticker: string

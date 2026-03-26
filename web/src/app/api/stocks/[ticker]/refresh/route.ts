@@ -7,12 +7,14 @@ interface RouteParams {
 
 const SCRAPERS = [
   'stock_universe',
-  'daily_prices',
-  'money_flow',
-  'financials',
+  'financials_fallback',
   'company_profiles',
   'document_links',
   'corporate_events',
+  'daily_prices',
+  'money_flow',
+  'dividend_scraper',
+  'broker_backfill',
 ]
 
 // ---------------------------------------------------------------------------
@@ -51,7 +53,11 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
 // Fires-and-forgets — failure to dispatch is non-fatal (job still queued).
 // ---------------------------------------------------------------------------
 
-async function triggerGithubWorkflow(ticker: string, jobId: number): Promise<{ ok: boolean; status: number; error?: string }> {
+async function triggerGithubWorkflow(
+  ticker: string,
+  jobId: number,
+  scrapers: string[] = [],
+): Promise<{ ok: boolean; status: number; error?: string }> {
   const token = process.env.GITHUB_ACTIONS_TOKEN
   const repo  = process.env.GITHUB_REPO
   if (!token || !repo) {
@@ -59,6 +65,14 @@ async function triggerGithubWorkflow(ticker: string, jobId: number): Promise<{ o
   }
 
   const url = `https://api.github.com/repos/${repo}/actions/workflows/scraper.yml/dispatches`
+  const inputs: Record<string, string> = {
+    mode: 'full',
+    ticker,
+    job_id: String(jobId),
+  }
+  if (scrapers.length > 0) {
+    inputs.scrapers = scrapers.join(',')
+  }
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -66,10 +80,7 @@ async function triggerGithubWorkflow(ticker: string, jobId: number): Promise<{ o
       Accept:         'application/vnd.github+json',
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      ref: 'main',
-      inputs: { mode: 'full', ticker, job_id: String(jobId) },
-    }),
+    body: JSON.stringify({ ref: 'main', inputs }),
   })
   if (!res.ok) {
     const body = await res.text()
@@ -85,9 +96,15 @@ async function triggerGithubWorkflow(ticker: string, jobId: number): Promise<{ o
 // and triggers a GitHub Actions workflow to run the Python scraper.
 // ---------------------------------------------------------------------------
 
-export async function POST(_req: NextRequest, { params }: RouteParams) {
+export async function POST(req: NextRequest, { params }: RouteParams) {
   const { ticker } = await params
   const upperTicker = ticker.toUpperCase()
+  const body = await req.json().catch(() => ({})) as { scrapers?: string[] }
+
+  // Use provided scrapers (validated against known list) or default to all
+  const scrapersToRun = body.scrapers?.length
+    ? body.scrapers.filter((s: string) => SCRAPERS.includes(s))
+    : SCRAPERS
 
   const supabase = await createClient()
 
@@ -141,8 +158,8 @@ export async function POST(_req: NextRequest, { params }: RouteParams) {
     )
   }
 
-  // Seed per-scraper progress rows (status = 'waiting')
-  const progressRows = SCRAPERS.map((name) => ({
+  // Seed per-scraper progress rows (status = 'waiting') for selected scrapers only
+  const progressRows = scrapersToRun.map((name) => ({
     request_id:   job.id,
     scraper_name: name,
     status:       'waiting',
@@ -151,7 +168,7 @@ export async function POST(_req: NextRequest, { params }: RouteParams) {
   await supabase.from('refresh_scraper_progress').insert(progressRows)
 
   // Trigger GitHub Actions to run the scraper
-  const dispatch = await triggerGithubWorkflow(upperTicker, job.id)
+  const dispatch = await triggerGithubWorkflow(upperTicker, job.id, scrapersToRun)
 
   return NextResponse.json({
     job_id: job.id,

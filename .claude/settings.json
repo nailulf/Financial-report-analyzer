@@ -41,7 +41,9 @@
       "Bash(python run_all.py --fallback-financials --ticker RATU BREN INPP PORT MIDI CPRO MKNT MBAP PMJS --fallback-all)",
       "Bash(python run_all.py --quarterly --ticker RATU)",
       "Bash(python -c \"from utils.token_manager import _is_expired, _read_cached_token, _days_until_expiry; t = _read_cached_token\\(\\); print\\(f''Expired: {_is_expired\\(t\\)}''\\); print\\(f''Days left: {_days_until_expiry\\(t\\)}''\\)\")",
-      "Bash(python -m scrapers.money_flow --broker-backfill 30 --ticker BMRI)"
+      "Bash(python -m scrapers.money_flow --broker-backfill 30 --ticker BMRI)",
+      "Bash(npx next:*)",
+      "Bash(curl -s \"http://localhost:3000/stock/BBRI\")"
     ],
     "additionalDirectories": [
       "/Users/nailul.fadloil/Documents/Personal spaces/Financial-report-analyzer/web/src/app/stock",

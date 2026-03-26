@@ -142,7 +142,7 @@ export async function getStockHeader(ticker: string): Promise<StockHeader | null
   const supabase = await createClient()
   const { data, error } = await supabase
     .from('stocks')
-    .select('ticker, name, sector, subsector, board, is_lq45, is_idx30, market_cap, status')
+    .select('ticker, name, sector, subsector, board, is_lq45, is_idx30, market_cap, listed_shares, status')
     .eq('ticker', ticker.toUpperCase())
     .single()
 
@@ -150,5 +150,6 @@ export async function getStockHeader(ticker: string): Promise<StockHeader | null
   return {
     ...data,
     market_cap: parseBigInt(data.market_cap),
+    listed_shares: parseBigInt(data.listed_shares),
   } as StockHeader
 }

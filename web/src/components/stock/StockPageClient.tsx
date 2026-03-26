@@ -13,7 +13,7 @@ import type {
   Shareholder,
   DataQuality,
 } from '@/lib/types/api'
-import type { StockBrokerSummary } from '@/lib/queries/broker'
+import type { StockBrokerSummary, InsiderTransactionRow, DailyFlowByType, BrokerConcentrationRow } from '@/lib/queries/broker'
 
 import { HeroBar }                  from './widgets/HeroBar'
 import { NavTabs }                  from './widgets/NavTabs'
@@ -55,6 +55,14 @@ export interface StockPageProps {
   cagr:               CAGRResult[]
   health:             HealthScore[]
   brokerSummary:      StockBrokerSummary | null
+  insiderTransactions: InsiderTransactionRow[]
+  dailyBrokerFlow:    DailyFlowByType[]
+  brokerConcentration: BrokerConcentrationRow[]
+  // Pre-computed DCF inputs (server-side, avoids serialization issues)
+  dcfFcf:             number | null
+  dcfDividends:       number | null   // abs(dividends_paid) — for DDM
+  dcfNetIncome:       number | null   // net_income — for earnings-based DCF
+  dcfShares:          number | null
 }
 
 export function StockPageClient({
@@ -73,12 +81,16 @@ export function StockPageClient({
   cagr,
   health,
   brokerSummary,
+  insiderTransactions,
+  dailyBrokerFlow,
+  brokerConcentration,
+  dcfFcf,
+  dcfDividends,
+  dcfNetIncome,
+  dcfShares,
 }: StockPageProps) {
   const latestYear    = series.at(-1) ?? null
   const latestPrice   = priceHistory.at(-1)?.close ?? metrics?.price ?? null
-  const shares        = header.market_cap && latestPrice && latestPrice > 0
-    ? header.market_cap / latestPrice
-    : null
   const defaultGrowth = cagr.find((c) => c.metric === 'revenue')?.cagr_3yr ?? 10
   const displayedShareholders = majorShareholders.length > 0 ? majorShareholders : shareholders
 
@@ -107,9 +119,11 @@ export function StockPageClient({
             <ValuationWidget
               eps={metrics?.eps ?? null}
               bvps={metrics?.book_value_per_share ?? null}
-              fcf={latestYear?.free_cash_flow ?? null}
+              fcf={dcfFcf}
+              dividends={dcfDividends}
+              netIncome={dcfNetIncome}
               currentPrice={latestPrice}
-              shares={shares}
+              shares={dcfShares}
               defaultGrowthRate={defaultGrowth}
             />
           </div>
@@ -147,7 +161,13 @@ export function StockPageClient({
       />
       <div className="flex flex-col gap-0">
         <div className="px-12 py-2">
-          <BrokerActivityWidget ticker={header.ticker} initialData={brokerSummary} />
+          <BrokerActivityWidget
+            ticker={header.ticker}
+            initialData={brokerSummary}
+            insiderTransactions={insiderTransactions}
+            dailyBrokerFlow={dailyBrokerFlow}
+            brokerConcentration={brokerConcentration}
+          />
         </div>
         <div className="py-2 px-12 flex gap-2 items-start">
           <div className="flex-1">

@@ -15,7 +15,7 @@ import {
   getMajorShareholderHistory,
 } from '@/lib/queries/company'
 import { getDataQuality } from '@/lib/queries/completeness'
-import { getStockBrokerSummary } from '@/lib/queries/broker'
+import { getStockBrokerSummary, getInsiderTransactions, getDailyBrokerFlowByType, getBrokerConcentration } from '@/lib/queries/broker'
 import { computeCAGR } from '@/lib/calculations/cagr'
 import { computeHealthScores } from '@/lib/calculations/health-score'
 import { StockPageClient } from '@/components/stock/StockPageClient'
@@ -41,6 +41,9 @@ export default async function StockPage({
     majorShareholders,
     shareholderHistory,
     brokerSummary,
+    insiderTransactions,
+    dailyBrokerFlow,
+    brokerConcentration,
   ] = await Promise.all([
     getStockHeader(t),
     getLatestMetrics(t),
@@ -53,7 +56,10 @@ export default async function StockPage({
     getShareholders(t),
     getMajorShareholders(t),
     getMajorShareholderHistory(t),
-    getStockBrokerSummary(t),
+    getStockBrokerSummary(t, 30),
+    getInsiderTransactions(t),
+    getDailyBrokerFlowByType(t, 30),
+    getBrokerConcentration(t, 30),
   ])
 
   if (!header) notFound()
@@ -64,6 +70,20 @@ export default async function StockPage({
   const cagr   = computeCAGR(series)
   const latest = series.at(-1) ?? null
   const health = latest ? computeHealthScores(latest) : []
+
+  // Pre-compute DCF inputs server-side for reliable serialization
+  const latestPrice = priceHistory.at(-1)?.close ?? metrics?.price ?? null
+  const dcfFcf = latest?.free_cash_flow
+    ?? (latest?.operating_cash_flow != null
+      ? latest.operating_cash_flow - Math.abs(latest.capex ?? 0)
+      : null)
+  const dcfShares = header?.listed_shares
+    ?? (header?.market_cap && latestPrice && latestPrice > 0
+      ? header.market_cap / latestPrice
+      : null)
+    ?? (metrics?.eps && metrics.eps > 0 && latest?.net_income
+      ? Math.round(latest.net_income / metrics.eps)
+      : null)
 
   return (
     <StockPageClient
@@ -82,6 +102,17 @@ export default async function StockPage({
       cagr={cagr}
       health={health}
       brokerSummary={brokerSummary}
+      insiderTransactions={insiderTransactions}
+      dailyBrokerFlow={dailyBrokerFlow}
+      brokerConcentration={brokerConcentration}
+      dcfFcf={dcfFcf}
+      dcfDividends={(() => {
+        // Latest year (TTM) often has null dividends — fall back to most recent year with data
+        const divRow = [...series].reverse().find((r) => r.dividends_paid != null)
+        return divRow?.dividends_paid != null ? Math.abs(divRow.dividends_paid) : null
+      })()}
+      dcfNetIncome={latest?.net_income ?? null}
+      dcfShares={dcfShares}
     />
   )
 }

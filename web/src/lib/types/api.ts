@@ -33,6 +33,7 @@ export interface StockHeader {
   is_lq45: boolean
   is_idx30: boolean
   market_cap: number | null
+  listed_shares: number | null
   status: string
 }
 

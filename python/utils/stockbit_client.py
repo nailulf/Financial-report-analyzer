@@ -677,6 +677,106 @@ class StockbitClient:
         return {"top_broker_buy": buy_list, "top_broker_sell": sell_list}
 
     # ------------------------------------------------------------------
+    # Market detector — broker flow + bandar signals (single call)
+    # ------------------------------------------------------------------
+
+    def get_market_detector(
+        self,
+        ticker: str,
+        date: str | None = None,
+        limit: int = 25,
+    ) -> dict:
+        """
+        Fetch broker summary + bandar detector signals from marketdetectors.
+
+        Single call replaces the 2-call get_broker_distribution() approach.
+        Returns both broker buy/sell arrays and pre-computed bandar signals.
+
+        Endpoint: exodus.stockbit.com/marketdetectors/{ticker}
+
+        Args:
+            ticker: IDX ticker code (e.g. 'ADRO')
+            date:   Trading date YYYY-MM-DD (None = latest)
+            limit:  Max brokers to return (default 25)
+
+        Returns:
+            {
+              'bandar_detector': { 'broker_accdist': ..., 'top1_accdist': ..., ... },
+              'broker_summary': {
+                'brokers_buy':  [{'code':'BK', 'blot':'53268', 'bval':'5.48e+08', ...}],
+                'brokers_sell': [{'code':'ZP', 'slot':'-42000', 'sval':'-4.2e+08', ...}],
+              }
+            }
+            or {} on failure.
+        """
+        if not self._token:
+            logger.debug("Stockbit market detector skipped — no token")
+            return {}
+
+        params: dict[str, Any] = {
+            "transaction_type": "TRANSACTION_TYPE_NET",
+            "market_board": "MARKET_BOARD_REGULER",
+            "investor_type": "INVESTOR_TYPE_ALL",
+            "limit": limit,
+        }
+        if date:
+            params["from"] = date
+            params["to"] = date
+
+        try:
+            data = self._get_exodus(f"marketdetectors/{ticker}", params=params)
+            return data.get("data") or {}
+        except Exception as e:
+            logger.warning("Stockbit market detector failed for %s: %s", ticker, e)
+            return {}
+
+    # ------------------------------------------------------------------
+    # Insider / major holder movements (KSEI data)
+    # ------------------------------------------------------------------
+
+    def get_insider_movements(
+        self,
+        ticker: str,
+        page: int = 1,
+        limit: int = 20,
+        action_type: str = "ACTION_TYPE_UNSPECIFIED",
+        source_type: str = "SOURCE_TYPE_UNSPECIFIED",
+    ) -> dict:
+        """
+        Fetch KSEI major shareholder movements.
+
+        Endpoint: exodus.stockbit.com/insider/company/majorholder
+
+        Args:
+            ticker:      IDX ticker code
+            page:        Page number (1-based)
+            limit:       Results per page
+            action_type: Filter by action (ACTION_TYPE_UNSPECIFIED = all)
+            source_type: Filter by source (SOURCE_TYPE_UNSPECIFIED = all)
+
+        Returns:
+            {'movement': [...], ...} or {} on failure.
+        """
+        if not self._token:
+            logger.debug("Stockbit insider movements skipped — no token")
+            return {}
+
+        params = {
+            "symbols": ticker,
+            "page": page,
+            "limit": limit,
+            "action_type": action_type,
+            "source_type": source_type,
+        }
+
+        try:
+            data = self._get_exodus("insider/company/majorholder", params=params)
+            return data.get("data") or {}
+        except Exception as e:
+            logger.warning("Stockbit insider movements failed for %s: %s", ticker, e)
+            return {}
+
+    # ------------------------------------------------------------------
     # Authenticated endpoints — require STOCKBIT_BEARER_TOKEN
     # ------------------------------------------------------------------
 

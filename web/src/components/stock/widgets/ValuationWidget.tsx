@@ -4,13 +4,15 @@ interface Props {
   eps: number | null
   bvps: number | null
   fcf: number | null
+  dividends: number | null
+  netIncome: number | null
   currentPrice: number | null
   shares: number | null
   defaultGrowthRate: number
 }
 
-export function ValuationWidget({ eps, bvps, fcf, currentPrice, shares, defaultGrowthRate }: Props) {
-  if (!eps && !bvps && !fcf) return null
+export function ValuationWidget({ eps, bvps, fcf, dividends, netIncome, currentPrice, shares, defaultGrowthRate }: Props) {
+  if (!eps && !bvps && !fcf && !dividends && !netIncome) return null
 
   return (
     <div className="bg-white border border-[#E0E0E5] flex flex-col">
@@ -24,6 +26,8 @@ export function ValuationWidget({ eps, bvps, fcf, currentPrice, shares, defaultG
           eps={eps}
           bvps={bvps}
           fcf={fcf}
+          dividends={dividends}
+          netIncome={netIncome}
           currentPrice={currentPrice}
           shares={shares}
           defaultGrowthRate={defaultGrowthRate}

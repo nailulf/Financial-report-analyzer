@@ -136,10 +136,34 @@ export async function getForeignFlowLeaderboard(
 
 export async function getBrokerDates(ticker: string): Promise<string[]> {
   const supabase = await createClient()
+  const t = ticker.toUpperCase()
+
+  // Try broker_flow first (Stockbit data)
+  const { data: flowDates } = await supabase
+    .from('broker_flow')
+    .select('trade_date')
+    .eq('ticker', t)
+    .order('trade_date', { ascending: false })
+    .limit(50)
+
+  if (flowDates && flowDates.length > 0) {
+    const seen = new Set<string>()
+    const dates: string[] = []
+    for (const row of flowDates as any[]) {
+      if (!seen.has(row.trade_date)) {
+        seen.add(row.trade_date)
+        dates.push(row.trade_date)
+      }
+      if (dates.length >= 5) break
+    }
+    return dates
+  }
+
+  // Fallback to broker_summary
   const { data, error } = await supabase
     .from('broker_summary')
     .select('date')
-    .eq('ticker', ticker.toUpperCase())
+    .eq('ticker', t)
     .order('date', { ascending: false })
     .limit(50)
 
@@ -161,10 +185,34 @@ export async function getBrokerDates(ticker: string): Promise<string[]> {
 
 export async function getBrokerActivity(ticker: string, date: string): Promise<BrokerRow[]> {
   const supabase = await createClient()
+  const t = ticker.toUpperCase()
+
+  // Try broker_flow first
+  const { data: flowData } = await supabase
+    .from('broker_flow')
+    .select('broker_code, broker_type, buy_value, sell_value, net_value, buy_lot, sell_lot, frequency')
+    .eq('ticker', t)
+    .eq('trade_date', date)
+    .order('buy_value', { ascending: false, nullsFirst: false })
+    .limit(30)
+
+  if (flowData && flowData.length > 0) {
+    return (flowData as any[]).map((r) => ({
+      broker_code: r.broker_code,
+      broker_name: r.broker_type ?? null,
+      total_value: parseBigInt(r.buy_value),
+      sell_value: parseBigInt(r.sell_value),
+      net_value: parseBigInt(r.net_value),
+      total_volume: parseBigInt(r.buy_lot),
+      frequency: r.frequency ?? null,
+    }))
+  }
+
+  // Fallback to broker_summary
   const { data, error } = await supabase
     .from('broker_summary')
     .select('broker_code, broker_name, buy_value, buy_volume, frequency')
-    .eq('ticker', ticker.toUpperCase())
+    .eq('ticker', t)
     .eq('date', date)
     .order('buy_value', { ascending: false, nullsFirst: false })
     .limit(30)
@@ -188,17 +236,32 @@ export async function getBrokerActivityRange(
   to: string,
 ): Promise<BrokerRow[]> {
   const supabase = await createClient()
-  const { data, error } = await supabase
-    .from('broker_summary')
-    .select('broker_code, broker_name, buy_value, buy_volume, sell_value, sell_volume, net_value, frequency')
-    .eq('ticker', ticker.toUpperCase())
-    .gte('date', from)
-    .lte('date', to)
+  const t = ticker.toUpperCase()
+
+  // Try broker_flow first
+  const { data: flowData } = await supabase
+    .from('broker_flow')
+    .select('broker_code, broker_type, buy_value, sell_value, net_value, buy_lot, sell_lot, frequency')
+    .eq('ticker', t)
+    .gte('trade_date', from)
+    .lte('trade_date', to)
     .limit(50_000)
 
-  if (error || !data || data.length === 0) return []
+  const rawData = (flowData && flowData.length > 0)
+    ? flowData
+    : await supabase
+        .from('broker_summary')
+        .select('broker_code, broker_name, buy_value, buy_volume, sell_value, sell_volume, net_value, frequency')
+        .eq('ticker', t)
+        .gte('date', from)
+        .lte('date', to)
+        .limit(50_000)
+        .then((r) => r.data)
 
-  // Aggregate per broker in JS
+  if (!rawData || rawData.length === 0) return []
+
+  const usesFlow = flowData && flowData.length > 0
+
   const map = new Map<string, {
     broker_code: string
     broker_name: string | null
@@ -209,23 +272,23 @@ export async function getBrokerActivityRange(
     freq: number
   }>()
 
-  for (const row of data as any[]) {
+  for (const row of rawData as any[]) {
     const code: string = row.broker_code
     const entry = map.get(code) ?? {
       broker_code: code,
-      broker_name: row.broker_name ?? null,
+      broker_name: usesFlow ? (row.broker_type ?? null) : (row.broker_name ?? null),
       buy: 0, sell: 0, net: 0, volume: 0, freq: 0,
     }
     entry.buy    += parseBigInt(row.buy_value)   ?? 0
     entry.sell   += parseBigInt(row.sell_value)  ?? 0
     entry.net    += parseBigInt(row.net_value)   ?? 0
-    entry.volume += parseBigInt(row.buy_volume)  ?? 0
+    entry.volume += parseBigInt(usesFlow ? row.buy_lot : row.buy_volume) ?? 0
     entry.freq   += (row.frequency as number)    ?? 0
     map.set(code, entry)
   }
 
   return Array.from(map.values())
-    .sort((a, b) => Math.abs(b.net) - Math.abs(a.net))  // sort by net absolute activity
+    .sort((a, b) => Math.abs(b.net) - Math.abs(a.net))
     .slice(0, 30)
     .map((e) => ({
       broker_code: e.broker_code,

@@ -20,8 +20,10 @@ Run:
 import argparse
 import logging
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import yfinance as yf
@@ -156,6 +158,98 @@ def _parse_batch_df(df: pd.DataFrame, tickers: list[str]) -> list[dict]:
 
 
 # ------------------------------------------------------------------
+# Market data enrichment (market_cap + listed_shares → stocks table)
+# ------------------------------------------------------------------
+
+def _enrich_market_data(tickers: list[str]) -> tuple[int, int]:
+    """
+    Fetch market_cap and shares_outstanding from yfinance fast_info
+    for each ticker and upsert into the stocks table.
+
+    Returns (enriched_count, failed_count).
+    """
+    updates: list[dict] = []
+    failed = 0
+
+    for i, ticker in enumerate(tickers):
+        try:
+            info = yf.Ticker(_yf_ticker(ticker)).fast_info
+            market_cap = getattr(info, "market_cap", None)
+            shares = getattr(info, "shares", None)
+
+            row: dict[str, Any] = {"ticker": ticker}
+            has_data = False
+
+            if market_cap and market_cap > 0:
+                row["market_cap"] = int(market_cap)
+                has_data = True
+            if shares and shares > 0:
+                row["listed_shares"] = int(shares)
+                has_data = True
+
+            if has_data:
+                updates.append(row)
+            else:
+                logger.debug("No market data from yfinance for %s", ticker)
+
+        except Exception as e:
+            logger.debug("fast_info failed for %s: %s", ticker, e)
+            failed += 1
+
+        if RATE_LIMIT_YFINANCE_SECONDS > 0 and i < len(tickers) - 1:
+            time.sleep(RATE_LIMIT_YFINANCE_SECONDS)
+
+    if updates:
+        bulk_upsert("stocks", updates, on_conflict="ticker")
+        logger.info("Enriched market_cap/listed_shares for %d stocks", len(updates))
+
+    return len(updates), failed
+
+
+def _sync_latest_prices(tickers: list[str]) -> int:
+    """
+    Copy the latest closing price from daily_prices into
+    stocks.current_price / stocks.price_date for fast screener queries.
+
+    Returns number of stocks updated.
+    """
+    from utils.supabase_client import get_client
+    client = get_client()
+
+    # Fetch the most recent price row per ticker (already downloaded above)
+    resp = (
+        client.table("daily_prices")
+        .select("ticker, close, date")
+        .in_("ticker", tickers)
+        .order("date", desc=True)
+        .execute()
+    )
+
+    # Keep only the latest row per ticker
+    latest: dict[str, dict] = {}
+    for row in (resp.data or []):
+        t = row["ticker"]
+        if t not in latest:
+            latest[t] = row
+
+    updates = [
+        {
+            "ticker": t,
+            "current_price": float(r["close"]),
+            "price_date": r["date"],
+        }
+        for t, r in latest.items()
+        if r.get("close") is not None
+    ]
+
+    if updates:
+        bulk_upsert("stocks", updates, on_conflict="ticker")
+        logger.info("Synced current_price for %d stocks", len(updates))
+
+    return len(updates)
+
+
+# ------------------------------------------------------------------
 # Main scraper
 # ------------------------------------------------------------------
 
@@ -251,6 +345,15 @@ def run(
                 logger.error("Batch download failed (start=%s): %s", start_date, e)
                 for t in batch:
                     result.fail(t, str(e))
+
+    # --- Enrich market_cap + listed_shares in stocks table ---
+    logger.info("Enriching market_cap / listed_shares for %d tickers …", len(ticker_list))
+    enriched, enrich_failed = _enrich_market_data(ticker_list)
+    logger.info("Market data enrichment: %d updated, %d failed", enriched, enrich_failed)
+
+    # --- Sync latest price into stocks table (for screener) ---
+    price_synced = _sync_latest_prices(ticker_list)
+    logger.info("Synced current_price for %d stocks", price_synced)
 
     result.print_summary()
     finish_run(run_id, **result.to_db_kwargs())

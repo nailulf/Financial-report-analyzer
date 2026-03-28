@@ -260,6 +260,57 @@ def _enrich_ticker(
 
 
 # ---------------------------------------------------------------------------
+# Screener denormalization — copy latest annual ratios → stocks table
+# ---------------------------------------------------------------------------
+
+_SCREENER_RATIO_COLS = ["pe_ratio", "pbv_ratio", "roe", "net_margin", "dividend_yield"]
+
+
+def _sync_screener_ratios(client, tickers: list[str]) -> int:
+    """
+    For each ticker, read the latest annual financials row (quarter=0)
+    and copy the 5 key screener ratios into the stocks table.
+    Returns number of stocks updated.
+    """
+    from utils.supabase_client import bulk_upsert
+
+    # Fetch latest annual financials for the given tickers
+    select_cols = "ticker, year, " + ", ".join(_SCREENER_RATIO_COLS)
+    resp = (
+        client.table("financials")
+        .select(select_cols)
+        .in_("ticker", tickers)
+        .eq("quarter", 0)
+        .order("year", desc=True)
+        .execute()
+    )
+
+    # Keep only the latest year per ticker
+    latest: dict[str, dict] = {}
+    for row in (resp.data or []):
+        t = row["ticker"]
+        if t not in latest:
+            latest[t] = row
+
+    updates: list[dict] = []
+    for ticker, row in latest.items():
+        update: dict[str, Any] = {"ticker": ticker}
+        has_data = False
+        for col in _SCREENER_RATIO_COLS:
+            v = row.get(col)
+            if v is not None:
+                update[col] = v
+                has_data = True
+        if has_data:
+            updates.append(update)
+
+    if updates:
+        bulk_upsert("stocks", updates, on_conflict="ticker")
+
+    return len(updates)
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -325,6 +376,11 @@ def run(
         "Ratio enrichment complete: %d rows checked, %d rows updated across %d tickers",
         total_checked, total_updated, len(ticker_list),
     )
+
+    # --- Sync screener ratios into the stocks table ---
+    if not dry_run:
+        synced = _sync_screener_ratios(client, ticker_list)
+        logger.info("Synced screener ratios for %d stocks", synced)
 
     result.print_summary()
     finish_run(run_id, **result.to_db_kwargs())

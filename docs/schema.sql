@@ -22,11 +22,21 @@ CREATE TABLE IF NOT EXISTS stocks (
     is_lq45         BOOLEAN DEFAULT FALSE,
     is_idx30        BOOLEAN DEFAULT FALSE,
     status          TEXT DEFAULT 'Active', -- 'Active', 'Suspended', 'Delisted'
+    -- Denormalized screener fields (updated by scrapers, avoids slow view joins)
+    current_price   DECIMAL(12,2),    -- latest close from daily_prices
+    price_date      DATE,             -- date of latest close
+    pe_ratio        DECIMAL(10,4),    -- from latest annual financials
+    pbv_ratio       DECIMAL(10,4),
+    roe             DECIMAL(10,4),
+    net_margin      DECIMAL(10,4),
+    dividend_yield  DECIMAL(10,4),
     last_updated    TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_stocks_sector ON stocks(sector);
 CREATE INDEX IF NOT EXISTS idx_stocks_status ON stocks(status);
+CREATE INDEX IF NOT EXISTS idx_stocks_market_cap ON stocks(market_cap DESC NULLS LAST) WHERE status = 'Active';
+CREATE INDEX IF NOT EXISTS idx_stocks_screener ON stocks(status, sector, board);
 
 -- =============================================================================
 -- LAYER 2: Daily Market Data

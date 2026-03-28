@@ -255,8 +255,10 @@ function scoreBrokerConcentration(
 
   const polarity = phaseToPolarity(phase)
 
-  // Top 3 by absolute net value
-  const sorted = [...concentration].sort((a, b) => Math.abs(b.total_net_value) - Math.abs(a.total_net_value))
+  // Top 3 non-platform by absolute net value
+  const sorted = [...concentration]
+    .filter((r) => !r.is_platform)
+    .sort((a, b) => Math.abs(b.total_net_value) - Math.abs(a.total_net_value))
   const top3 = sorted.slice(0, 3)
   const top3Concentration = top3.reduce((s, r) => s + r.concentration_pct, 0)
   const top3NetValue = top3.reduce((s, r) => s + r.total_net_value, 0)
@@ -280,15 +282,40 @@ function scoreBrokerConcentration(
     score = 5
   }
 
-  // Bonus for kandidat_bandar or asing in top 3
-  const hasBandar = top3.some((r) => r.status === 'kandidat_bandar')
+  // Tier bonus (replaces old flat +2 for kandidat_bandar)
+  const bestTier = top3.reduce<string | null>((best, r) => {
+    if (!r.tier) return best
+    if (!best) return r.tier
+    const order: Record<string, number> = { A: 3, A2: 2, B: 1 }
+    return (order[r.tier] ?? 0) > (order[best] ?? 0) ? r.tier : best
+  }, null)
+  if (aligned && bestTier === 'A') score = Math.min(15, score + 3)
+  else if (aligned && bestTier === 'A2') score = Math.min(15, score + 2)
+  else if (aligned && bestTier === 'B') score = Math.min(15, score + 1)
+
+  // Specificity bonus
+  const hasSpecific = top3.some((r) => r.specificity_label === 'SPECIFIC')
+  const hasElevated = top3.some((r) => r.specificity_label === 'ELEVATED')
+  if (aligned && hasSpecific) score = Math.min(15, score + 2)
+  else if (aligned && hasElevated) score = Math.min(15, score + 1)
+
+  // Asing bonus
   const hasAsing = top3.some((r) => r.status === 'asing')
-  if (aligned && hasBandar) score = Math.min(15, score + 2)
   if (aligned && hasAsing) score = Math.min(15, score + 1)
+
+  // Counter-retail bonus
+  const hasCR = top3.some((r) => r.counter_retail)
+  if (aligned && hasCR) score = Math.min(15, score + 1)
 
   const direction = top3Bullish ? 'net beli' : 'net jual'
   const alignLabel = aligned ? 'sesuai' : 'berlawanan'
-  const extras = [hasBandar && 'bandar', hasAsing && 'asing'].filter(Boolean).join('+')
+  const extras = [
+    bestTier && `tier-${bestTier}`,
+    hasSpecific && 'spesifik',
+    hasElevated && !hasSpecific && 'elevated',
+    hasAsing && 'asing',
+    hasCR && 'counter-retail',
+  ].filter(Boolean).join('+')
 
   return {
     score: clamp(score, 0, 15),
@@ -355,12 +382,68 @@ function fmtActor(label: string, v: number): string {
   return `${label} ${formatIDRCompact(v)}`
 }
 
+// ─── Bandar context extraction ──────────────────────────────────────────────
+
+interface BandarContext {
+  accumulators: Array<{ code: string; name: string; conc: number; spec: number; cr: boolean }>
+  distributors: Array<{ code: string; name: string; conc: number; spec: number; cr: boolean }>
+  hasStrong: boolean       // at least one SPECIFIC + tier A/A2
+  hasMixed: boolean        // both accumulators and distributors present
+  summary: string          // short sentence for conclusion
+  detail: string           // full sentence for tooltip
+}
+
+function extractBandarContext(concentration: BrokerConcentrationRow[]): BandarContext {
+  const candidates = concentration.filter(
+    (r) => r.status === 'kandidat_bandar' && r.tier !== null,
+  )
+
+  const accumulators = candidates
+    .filter((r) => r.net_direction === 'BUY')
+    .map((r) => ({ code: r.broker_code, name: r.broker_name ?? r.broker_code, conc: r.concentration_pct, spec: r.specificity ?? 0, cr: r.counter_retail }))
+
+  const distributors = candidates
+    .filter((r) => r.net_direction === 'SELL')
+    .map((r) => ({ code: r.broker_code, name: r.broker_name ?? r.broker_code, conc: r.concentration_pct, spec: r.specificity ?? 0, cr: r.counter_retail }))
+
+  const hasStrong = candidates.some(
+    (r) => (r.tier === 'A' || r.tier === 'A2') && r.specificity_label === 'SPECIFIC',
+  )
+  const hasMixed = accumulators.length > 0 && distributors.length > 0
+
+  // Build summary (short, for conclusion suffix)
+  let summary = ''
+  if (accumulators.length > 0 && distributors.length === 0) {
+    const top = accumulators[0]
+    summary = `Bandar ${top.name} akumulasi${top.cr ? ' (counter-retail)' : ''}`
+  } else if (distributors.length > 0 && accumulators.length === 0) {
+    const top = distributors[0]
+    summary = `Bandar ${top.name} distribusi${top.cr ? ' (counter-retail)' : ''}`
+  } else if (hasMixed) {
+    summary = `Bandar campuran: ${accumulators[0].name} akumulasi, ${distributors[0].name} distribusi`
+  }
+
+  // Build detail (full, for tooltip)
+  const parts: string[] = []
+  for (const a of accumulators) {
+    parts.push(`${a.code} (${a.name}) akumulasi ${a.conc.toFixed(1)}% konsentrasi, spesifisitas ${a.spec.toFixed(1)}x${a.cr ? ', counter-retail' : ''}`)
+  }
+  for (const d of distributors) {
+    parts.push(`${d.code} (${d.name}) distribusi ${d.conc.toFixed(1)}% konsentrasi, spesifisitas ${d.spec.toFixed(1)}x${d.cr ? ', counter-retail' : ''}`)
+  }
+  const detail = parts.length > 0 ? ` Bandar: ${parts.join('; ')}.` : ''
+
+  return { accumulators, distributors, hasStrong, hasMixed, summary, detail }
+}
+
+// ─── Narrative Generator (pattern-based + bandar context) ────────────────────
+
 /**
  * Rule-based narrative that detects money-flow patterns and describes
- * what is actually happening — no AI, pure pattern matching.
+ * what is actually happening — enriched with bandar detection context.
  */
 export function generateNarrative(input: ConfidenceInput): Narrative {
-  const { asingNetFlow: asing, lokalNetFlow: lokal, pemerintahNetFlow: bumn, netFlow, totalTradingValue, insiderTransactions } = input
+  const { asingNetFlow: asing, lokalNetFlow: lokal, pemerintahNetFlow: bumn, netFlow, totalTradingValue, insiderTransactions, concentration } = input
 
   const aDir = dir(asing)
   const lDir = dir(lokal)
@@ -392,16 +475,41 @@ export function generateNarrative(input: ConfidenceInput): Narrative {
     ? ` Insider: ${[insiderBuys > 0 && `${insiderBuys} BUY`, insiderSells > 0 && `${insiderSells} SELL`].filter(Boolean).join(', ')}.`
     : ''
 
-  // Helper: build { conclusion, detail }
-  const mk = (conclusion: string, detail: string): Narrative => ({
-    conclusion,
-    detail: detail + insiderSuffix,
-  })
+  // Bandar context
+  const bandar = extractBandarContext(concentration)
+
+  // Helper: build { conclusion, detail } with bandar enrichment
+  // - If bandar is strong and aligned → override conclusion
+  // - If bandar is mixed → append context
+  // - Always append bandar detail to tooltip
+  const mk = (baseConclusion: string, baseDetail: string): Narrative => {
+    let conclusion = baseConclusion
+    const detail = baseDetail + bandar.detail + insiderSuffix
+
+    if (bandar.hasStrong && !bandar.hasMixed && bandar.summary) {
+      // Strong unidirectional bandar → prepend to conclusion
+      conclusion = `${bandar.summary} — ${baseConclusion.charAt(0).toLowerCase()}${baseConclusion.slice(1)}`
+    } else if (bandar.summary && !bandar.hasMixed) {
+      // Weaker bandar but still present → append
+      conclusion = `${baseConclusion}. ${bandar.summary}`
+    } else if (bandar.hasMixed) {
+      // Mixed bandar → append as context
+      conclusion = `${baseConclusion}. ${bandar.summary}`
+    }
+
+    return { conclusion, detail }
+  }
 
   // ── Pattern detection (ordered by specificity) ──
 
-  // All actors neutral
+  // All actors neutral — but check if bandar is active
   if (aDir === 'netral' && lDir === 'netral' && bDir === 'netral') {
+    if (bandar.hasStrong && bandar.accumulators.length > 0) {
+      return mk('Pasar sepi, tapi bandar aktif akumulasi', 'Semua aktor netral, namun terdeteksi bandar spesifik sedang mengumpulkan barang.')
+    }
+    if (bandar.hasStrong && bandar.distributors.length > 0) {
+      return mk('Pasar sepi, tapi bandar aktif distribusi', 'Semua aktor netral, namun terdeteksi bandar spesifik sedang melepas barang.')
+    }
     return mk('Tidak ada pergerakan signifikan', 'Semua aktor netral — pasar sepi.')
   }
 

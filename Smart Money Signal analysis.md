@@ -1,303 +1,351 @@
-# Smart Money Signal — Implementation Spec
+# Smart Money Signal — Functional Requirements Document
+
+**Version:** 2.0
+**Status:** Implemented
+**Last Updated:** March 2026
 
 ## Stack
-NextJS + Supabase (PostgreSQL). Python for scraping. Personal use, 800+ IDX tickers.
+NextJS 16 + Supabase (PostgreSQL). Python for scraping. Personal use, 800+ IDX tickers.
 
 ---
 
 ## Data Sources
 
-### 1. Broker Summary
-- **Endpoint:** `https://idx.co.id/api/broker-summary/{ticker}/{date}` (undocumented)
-- **Auth:** None, but requires `curl_cffi` Chrome impersonation
-- **Cadence:** Daily, available ~17:30 WIB after market close
-- **Scrape strategy:** 1 request per (ticker, date), 1–2s delay, save raw JSON before parsing
+### 1. Broker Flow + Bandar Detection (Stockbit API)
+- **Endpoint:** Stockbit marketdetectors API (undocumented Exodus API)
+- **Auth:** Bearer token, managed by `python/utils/token_manager.py` (cached + interactive refresh)
+- **Data provided:** Per-broker buy/sell lots + values, broker type (Lokal/Asing/Pemerintah), pre-computed bandar_detector signals at 4 concentration levels (top 1/3/5/10 brokers)
+- **Cadence:** Daily backfill via `run_all.py --broker-backfill`, configurable window (default 30 days)
+- **Rate limit:** 0.8s between requests (configured in `python/config.py`)
+- **Why Stockbit over direct IDX scraping:** Richer data — includes buy/sell split per broker (IDX API only provides combined totals), broker type classification, and pre-computed bandar accumulation/distribution signals. Eliminates the need for manual bandar broker labeling.
 
-### 2. Insider Trading Filing
-- **Endpoint:** `https://idx.co.id/api/announcement` (category: keterbukaan insider) or `https://erep.ojk.go.id`
-- **Format:** JSON or PDF — use `pdfplumber` for PDF parsing
-- **Cadence:** Daily scan, filings appear within T+3 business days
-- **Filter:** Only `on-market` and `off-market`; exclude hibah, warisan, ESOP exercise (`is_significant = false`)
+### 2. Insider Transactions (KSEI via Stockbit)
+- **Endpoint:** Stockbit insider/company/majorholder API
+- **Auth:** Same bearer token as broker flow
+- **Data provided:** Major holder (≥1%) buy/sell activity — share changes, ownership before/after percentages, nationality, broker used
+- **Cadence:** Via `run_all.py --insider`, paginated (default 5 pages per ticker)
+- **Why Stockbit/KSEI over IDX/OJK:** Structured JSON data (no PDF parsing needed), includes ownership percentage changes, and covers all major holder movements reported to KSEI
+
+### 3. Foreign Investor Flow (IDX API — supplementary)
+- **Endpoint:** IDX API via `money_flow.py`
+- **Auth:** `curl_cffi` with Chrome impersonation
+- **Data provided:** Daily foreign buy/sell values stored in `daily_prices.foreign_buy/sell/net`
+- **Cadence:** Daily via `run_all.py --daily`
 
 ---
 
 ## Database Schema
 
+Defined in `docs/schema-v9-smart-money.sql`. Three tables + one SQL function:
+
 ```sql
--- 1. Raw broker flow (scraped daily)
+-- 1. broker_flow — per-broker buy/sell data from Stockbit marketdetectors
 CREATE TABLE broker_flow (
-  ticker        VARCHAR(10)  NOT NULL,
-  trade_date    DATE         NOT NULL,
-  broker_code   VARCHAR(10)  NOT NULL,
-  buy_lot       BIGINT       NOT NULL DEFAULT 0,
-  sell_lot      BIGINT       NOT NULL DEFAULT 0,
-  buy_value     BIGINT       NOT NULL DEFAULT 0,  -- IDR as BIGINT
-  sell_value    BIGINT       NOT NULL DEFAULT 0,
-  net_lot       BIGINT GENERATED ALWAYS AS (buy_lot - sell_lot) STORED,
-  net_value     BIGINT GENERATED ALWAYS AS (buy_value - sell_value) STORED,
-  created_at    TIMESTAMPTZ  DEFAULT now(),
-  PRIMARY KEY (ticker, trade_date, broker_code),
-  FOREIGN KEY (ticker) REFERENCES stock_universe(ticker)
+    ticker         VARCHAR(10)  NOT NULL REFERENCES stocks(ticker) ON DELETE CASCADE,
+    trade_date     DATE         NOT NULL,
+    broker_code    VARCHAR(10)  NOT NULL,
+    broker_type    VARCHAR(15),              -- Lokal, Asing, Pemerintah
+    buy_lot        BIGINT       NOT NULL DEFAULT 0,
+    sell_lot       BIGINT       NOT NULL DEFAULT 0,
+    buy_value      BIGINT       NOT NULL DEFAULT 0,   -- IDR
+    sell_value     BIGINT       NOT NULL DEFAULT 0,   -- IDR
+    buy_avg_price  DECIMAL(12,2),
+    sell_avg_price DECIMAL(12,2),
+    frequency      INTEGER,
+    net_lot        BIGINT GENERATED ALWAYS AS (buy_lot - sell_lot) STORED,
+    net_value      BIGINT GENERATED ALWAYS AS (buy_value - sell_value) STORED,
+    created_at     TIMESTAMPTZ  DEFAULT now(),
+    PRIMARY KEY (ticker, trade_date, broker_code)
 );
-CREATE INDEX idx_bf_ticker_date ON broker_flow(ticker, trade_date DESC);
-CREATE INDEX idx_bf_broker      ON broker_flow(broker_code, trade_date DESC);
 
--- 2. Insider transactions (scraped daily)
+-- 2. bandar_signal — Stockbit pre-computed accumulation/distribution signals
+CREATE TABLE bandar_signal (
+    ticker              VARCHAR(10) NOT NULL REFERENCES stocks(ticker) ON DELETE CASCADE,
+    trade_date          DATE        NOT NULL,
+    broker_accdist      VARCHAR(20),    -- overall: "Big Acc", "Acc", "Normal Acc", "Dist", etc.
+    top1_accdist        VARCHAR(20),    -- top 1 broker signal
+    top3_accdist        VARCHAR(20),    -- top 3 brokers signal
+    top5_accdist        VARCHAR(20),    -- top 5 brokers signal
+    top10_accdist       VARCHAR(20),    -- top 10 brokers signal
+    total_buyer         INTEGER,
+    total_seller        INTEGER,
+    total_value         BIGINT,
+    total_volume        BIGINT,
+    raw_json            JSONB,          -- full bandar_detector block for debugging
+    created_at          TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (ticker, trade_date)
+);
+
+-- 3. insider_transactions — KSEI major holder movements via Stockbit
 CREATE TABLE insider_transactions (
-  id               SERIAL       PRIMARY KEY,
-  ticker           VARCHAR(10)  NOT NULL,
-  filing_date      DATE         NOT NULL,
-  transaction_date DATE         NOT NULL,
-  insider_name     TEXT         NOT NULL,
-  insider_role     VARCHAR(100),
-  action           VARCHAR(4)   NOT NULL CHECK (action IN ('BUY','SELL')),
-  lot_amount       BIGINT       NOT NULL,
-  price_per_lot    BIGINT,
-  total_value      BIGINT,
-  method           VARCHAR(50)  DEFAULT 'on-market',
-  is_significant   BOOLEAN      DEFAULT true,
-  created_at       TIMESTAMPTZ  DEFAULT now(),
-  FOREIGN KEY (ticker) REFERENCES stock_universe(ticker)
-);
-CREATE INDEX idx_it_ticker_date ON insider_transactions(ticker, transaction_date DESC);
-
--- 3. Bandar broker labels (semi-manual, updated weekly)
-CREATE TABLE bandar_brokers (
-  ticker        VARCHAR(10)  NOT NULL,
-  broker_code   VARCHAR(10)  NOT NULL,
-  confidence    DECIMAL(3,2) DEFAULT 0.50,  -- 0.0–1.0
-  identified_at DATE         NOT NULL,
-  notes         TEXT,
-  PRIMARY KEY (ticker, broker_code)
-);
-
--- 4. Computed signals (recomputed nightly)
-CREATE TABLE ownership_signals (
-  ticker               VARCHAR(10)  NOT NULL,
-  signal_date          DATE         NOT NULL,
-  bandar_net_flow_30d  BIGINT,
-  bandar_net_flow_7d   BIGINT,
-  foreign_net_flow_30d BIGINT,
-  insider_action_30d   VARCHAR(10),  -- 'buy'|'sell'|'mixed'|'none'
-  insider_value_30d    BIGINT,
-  smart_money_signal   VARCHAR(30),
-  signal_confidence    DECIMAL(3,2),
-  bandar_phase         VARCHAR(20),  -- ACCUMULATION|MARKUP|DISTRIBUTION|DANGER
-  updated_at           TIMESTAMPTZ  DEFAULT now(),
-  PRIMARY KEY (ticker, signal_date)
+    id                    SERIAL PRIMARY KEY,
+    ticker                VARCHAR(10) NOT NULL REFERENCES stocks(ticker) ON DELETE CASCADE,
+    insider_id            TEXT,                -- Stockbit record ID for dedup
+    insider_name          TEXT        NOT NULL,
+    transaction_date      DATE        NOT NULL,
+    action                VARCHAR(4)  NOT NULL CHECK (action IN ('BUY','SELL')),
+    share_change          BIGINT      NOT NULL,
+    shares_before         BIGINT,
+    shares_after          BIGINT,
+    ownership_before_pct  DECIMAL(8,4),
+    ownership_after_pct   DECIMAL(8,4),
+    ownership_change_pct  DECIMAL(8,4),
+    nationality           VARCHAR(20),
+    broker_code           VARCHAR(10),
+    broker_group          VARCHAR(30),
+    data_source           VARCHAR(20) DEFAULT 'KSEI',
+    price                 BIGINT,
+    created_at            TIMESTAMPTZ DEFAULT now(),
+    UNIQUE (ticker, insider_name, transaction_date, action, share_change)
 );
 ```
+
+**Deviation from original spec:**
+- `bandar_brokers` (manual labeling table) — **superseded** by automated `bandar_signal` from Stockbit's bandar_detector. No manual labeling needed.
+- `ownership_signals` (nightly computed signals) — **superseded** by on-demand frontend computation in `signal-confidence.ts`. Signal scoring happens at query time, not as a batch job.
 
 ---
 
 ## Calculation Logic
 
-### Step 1 — Identify bandar brokers (heuristic, weekly)
-```sql
--- Candidate: broker with >15% of ticker's total volume over 6 months
--- AND net buy dominant when price was low AND net sell dominant when price was high
--- → INSERT into bandar_brokers with confidence = 0.7
--- Manual review raises confidence to 0.9+
--- Start with LQ45 tickers only
+### Architecture Change
+
+The original spec planned SQL-side nightly batch computation. The actual implementation uses a **hybrid approach**:
+- **Data collection**: Python scrapers populate `broker_flow`, `bandar_signal`, and `insider_transactions` tables
+- **Signal scoring**: TypeScript module `web/src/lib/calculations/signal-confidence.ts` computes scores **on-demand** at query time
+- **SQL function**: `compute_smart_money_signal()` exists in the database (from the original spec) but the primary scoring uses the richer TypeScript implementation
+
+### Step 1 — Bandar Identification (automated, via Stockbit)
+
+**Original plan:** Manual heuristic — broker with >15% volume over 6 months, manually reviewed.
+
+**Actual implementation:** Automated via Stockbit's `bandar_detector` block. Stockbit pre-computes accumulation/distribution signals at 4 concentration levels:
+- `broker_accdist`: Overall signal (e.g., "Big Acc", "Acc", "Normal Acc", "Dist", "Big Dist")
+- `top1_accdist`: Top 1 broker by volume
+- `top3_accdist`: Top 3 brokers
+- `top5_accdist`: Top 5 brokers
+- `top10_accdist`: Top 10 brokers
+
+Additionally, the frontend computes **broker concentration** (`getBrokerConcentration()` in `web/src/lib/queries/broker.ts`):
+- Aggregates broker_flow over N days
+- Classifies brokers as `kandidat_bandar` (≥10% concentration + net position), `asing`, or `retail`
+- Returns top 15 brokers by absolute net value
+
+### Step 2 — Broker Flow Aggregation (on-demand)
+
+Data is fetched via `getSmartMoneyData()` in `broker.ts`:
+- Queries `broker_flow` for N days (default 30), batched to avoid PostgREST row cap
+- Aggregates by broker type: `asing_net`, `lokal_net`, `pemerintah_net`
+- Provides daily flow breakdown for charts via `getDailyBrokerFlowByType()`
+
+### Step 3 — Insider Action (on-demand)
+
+Data fetched via `getInsiderTransactions()` in `broker.ts`:
+- Queries `insider_transactions` table (most recent 20 by default)
+- Computes `total_value = share_change × price` for each transaction
+- Frontend aggregates buy/sell values and determines net direction
+
+### Step 4 — Phase Detection
+
+Three phases, determined by overall broker flow direction:
+
+| Phase | Indonesian | Condition |
+|-------|-----------|-----------|
+| `akumulasi` | Akumulasi | Net broker flow is positive (buying dominant) |
+| `distribusi` | Distribusi | Net broker flow is negative (selling dominant) |
+| `netral` | Netral | Net flow near zero |
+
+### Step 5 — Signal Confidence Score (0–100)
+
+Implemented in `web/src/lib/calculations/signal-confidence.ts` → `computeConfidence()`.
+
+Five weighted components:
+
+| Component | Max Points | What It Measures |
+|-----------|-----------|-----------------|
+| **Broker Magnitude** | 25 | `abs(netFlow) / totalTradingValue` — how significant is the net flow? |
+| **Foreign Alignment** | 25 | Does foreign flow direction align with the overall signal phase? |
+| **Bandar Confirmation** | 20 | Does Stockbit's bandar_detector signal (overall + top5) align with the phase? |
+| **Insider Weight** | 15 | Do insider buy/sell transactions align? Bonus for material ownership changes. |
+| **Broker Concentration** | 15 | Top 3 brokers: how concentrated, and does their direction align? |
+
+**Scoring thresholds for Broker Magnitude (example):**
+```
+ratio ≥ 10%  → 25 pts
+ratio ≥  5%  → 20 pts
+ratio ≥  2%  → 15 pts
+ratio ≥ 0.5% → 10 pts
+ratio <  0.5% → 5 pts
 ```
 
-### Step 2 — Bandar net flow (rolling 30d)
-```sql
-SELECT SUM(net_value)
-FROM broker_flow
-WHERE ticker = :ticker
-  AND trade_date BETWEEN (signal_date - 30) AND signal_date
-  AND broker_code IN (
-    SELECT broker_code FROM bandar_brokers
-    WHERE ticker = :ticker AND confidence >= 0.7
-  );
--- Threshold (mid-cap default): net_beli > +5_000_000, net_jual < -5_000_000
--- Store threshold per ticker in stock_universe.flow_threshold
-```
+**Strength labels:**
+| Score | Label | Color |
+|-------|-------|-------|
+| ≥80 | Sangat Kuat | #006633 |
+| ≥60 | Kuat | #155724 |
+| ≥40 | Sedang | #856404 |
+| ≥20 | Lemah | #CC6600 |
+| <20 | Sangat Lemah | #721C24 |
 
-### Step 3 — Insider action (rolling 30d)
-```sql
-SELECT
-  SUM(CASE WHEN action='BUY'  THEN total_value ELSE 0 END) AS buy_val,
-  SUM(CASE WHEN action='SELL' THEN total_value ELSE 0 END) AS sell_val,
-  COUNT(*) AS filing_count
-FROM insider_transactions
-WHERE ticker = :ticker
-  AND transaction_date BETWEEN (signal_date - 30) AND signal_date
-  AND is_significant = true;
+Each component returns both a numeric score and an Indonesian-language explanation string used in the UI tooltip.
 
--- Classification:
--- buy_val > 0 AND sell_val = 0  → 'buy'
--- buy_val = 0 AND sell_val > 0  → 'sell'
--- both > 0                      → 'mixed' (treated as 'sell')
--- both = 0                      → 'none'
-```
+### Step 6 — Narrative Generation (rule-based)
 
-### Step 4 — Signal mapping (truth table)
-```sql
-CREATE OR REPLACE FUNCTION compute_smart_money_signal(
-  p_bandar_net_flow  BIGINT,
-  p_insider_action   VARCHAR,
-  p_flow_threshold   BIGINT DEFAULT 5000000
-) RETURNS VARCHAR AS $$
-DECLARE v_broker VARCHAR(10);
-BEGIN
-  v_broker := CASE
-    WHEN p_bandar_net_flow >  p_flow_threshold THEN 'net_beli'
-    WHEN p_bandar_net_flow < -p_flow_threshold THEN 'net_jual'
-    ELSE 'netral'
-  END;
-  RETURN CASE
-    WHEN v_broker='net_beli' AND p_insider_action='buy'              THEN 'STRONG_BUY'
-    WHEN v_broker='net_beli' AND p_insider_action='none'             THEN 'ACCUMULATION'
-    WHEN v_broker='net_beli' AND p_insider_action IN ('sell','mixed') THEN 'CONFLICT'
-    WHEN v_broker='netral'   AND p_insider_action='buy'              THEN 'EARLY_SIGNAL'
-    WHEN v_broker='netral'   AND p_insider_action='none'             THEN 'NEUTRAL'
-    WHEN v_broker='netral'   AND p_insider_action IN ('sell','mixed') THEN 'CAUTION'
-    WHEN v_broker='net_jual' AND p_insider_action='buy'              THEN 'TRAP'
-    WHEN v_broker='net_jual' AND p_insider_action='none'             THEN 'DISTRIBUTION'
-    WHEN v_broker='net_jual' AND p_insider_action IN ('sell','mixed') THEN 'DANGER'
-    ELSE 'NEUTRAL'
-  END;
-END;
-$$ LANGUAGE plpgsql IMMUTABLE;
-```
+Implemented in `signal-confidence.ts` → `generateNarrative()`.
 
-### Step 5 — Confidence score (0.0–1.0)
-```sql
-confidence = LEAST(1.0,
-  (ABS(bandar_net_flow_30d)::float / flow_threshold * 0.40)  -- magnitude
-  + (LEAST(filing_count / 3.0, 1.0) * 0.35)                 -- insider count
-  + CASE WHEN sign(bandar_net_flow_7d) = sign(bandar_net_flow_30d)
-         THEN 0.25 ELSE -0.10 END                            -- consistency
-);
-```
+Pattern-based system that detects money-flow patterns and describes what is happening in Indonesian. Patterns detected (ordered by specificity):
 
-### Step 6 — Bandar phase detection (60d rolling)
-| Phase | Condition |
-|---|---|
-| `ACCUMULATION` | Cumulative bandar flow rising 20+ days; price flat or down |
-| `MARKUP` | Cumulative flow peaked; price up >15% from low; volume spike |
-| `DISTRIBUTION` | Cumulative flow declining; price still near peak |
-| `DANGER` | Cumulative flow down >20% from peak AND insider filing sell |
+| Pattern | Conclusion |
+|---------|-----------|
+| All actors neutral | "Tidak ada pergerakan signifikan" |
+| All actors accumulating | "Semua aktor selaras masuk" |
+| All actors distributing | "Semua aktor selaras keluar" |
+| Foreign exit absorbed domestically (low net) | "Perpindahan kepemilikan, bukan distribusi" |
+| Asing + BUMN selling, retail absorbing | "Potensi distribusi ke retail" |
+| Asing + BUMN buying, retail selling | "Smart money masuk" |
+| Foreign-dominant accumulation | "Foreign smart money masuk" |
+| Foreign-dominant distribution, absorbed | "Waspada jika tekanan asing berlanjut" |
+| Foreign-dominant distribution, unabsorbed | "Tekanan jual asing dominan" |
+| Retail-dominant accumulation | "Retail masuk, perlu konfirmasi smart money" |
+| Retail-dominant distribution + asing buying | "Potensi akumulasi smart money" |
+| Mixed buying/selling | "Belum ada konsensus arah" |
+
+Each narrative includes an insider activity suffix when data is available (e.g., "Insider: 2 BUY, 1 SELL").
+
+### Legacy: SQL Signal Function
+
+The `compute_smart_money_signal()` SQL function from the original spec remains in the database (`docs/schema-v9-smart-money.sql`) for potential future batch computation. It implements the 3×3 truth table:
+
+| Broker \ Insider | buy | none | sell/mixed |
+|-----------------|-----|------|-----------|
+| **net_beli** | STRONG_BUY | ACCUMULATION | CONFLICT |
+| **netral** | EARLY_SIGNAL | NEUTRAL | CAUTION |
+| **net_jual** | TRAP | DISTRIBUTION | DANGER |
 
 ---
 
-## Nightly Compute Job
+## Data Pipeline (replaces "Nightly Compute Job")
 
-```sql
--- Run after scraping completes (~20:00 WIB)
--- For each ticker in stock_universe:
-INSERT INTO ownership_signals (
-  ticker, signal_date,
-  bandar_net_flow_30d, bandar_net_flow_7d, foreign_net_flow_30d,
-  insider_action_30d, insider_value_30d,
-  smart_money_signal, signal_confidence, bandar_phase
-)
-SELECT
-  ticker,
-  CURRENT_DATE AS signal_date,
-  -- bandar_net_flow_30d: Step 2 query
-  -- bandar_net_flow_7d:  same query with 7-day window
-  -- foreign_net_flow_30d: same but broker_code IN known foreign brokers
-  -- insider_action_30d:  Step 3 classification
-  -- insider_value_30d:   sum of total_value from Step 3
-  compute_smart_money_signal(bandar_net_flow_30d, insider_action_30d, flow_threshold),
-  -- confidence: Step 5 formula
-  -- bandar_phase: Step 6 logic
-  now()
-ON CONFLICT (ticker, signal_date) DO UPDATE SET
-  smart_money_signal  = EXCLUDED.smart_money_signal,
-  signal_confidence   = EXCLUDED.signal_confidence,
-  bandar_phase        = EXCLUDED.bandar_phase,
-  updated_at          = now();
+**Original plan:** Nightly SQL batch job computing signals for all tickers into `ownership_signals` table.
+
+**Actual implementation:** Two-stage architecture — data collection is batched, signal scoring is on-demand.
+
+### Stage 1: Data Collection (Python, scheduled)
+
+Run via `run_all.py`:
+
+```bash
+# Daily broker flow + bandar signals (after market close ~17:30 WIB)
+python run_all.py --broker-backfill --backfill-days 1
+
+# Insider transactions (weekly or on-demand)
+python run_all.py --insider
+
+# Can also run as part of single-ticker refresh
+python run_all.py --full --ticker BBRI --scrapers broker_backfill
 ```
+
+The `money_flow.py` scraper handles three Stockbit endpoints:
+1. **marketdetectors** → `broker_flow` + `bandar_signal` tables
+2. **insider/company/majorholder** → `insider_transactions` table
+
+### Stage 2: Signal Scoring (TypeScript, on-demand)
+
+When a user views a stock's broker activity widget, the frontend:
+
+1. Calls `getSmartMoneyData(ticker, days)` → fetches broker_flow, bandar_signal, insider data in parallel
+2. Determines signal phase (akumulasi/distribusi/netral)
+3. Calls `computeConfidence(input)` → 100-point score with 5 components
+4. Calls `generateNarrative(input)` → Indonesian-language explanation
+
+This avoids maintaining a separate computed signals table and ensures scores always reflect the latest data.
 
 ---
 
-## Python Scraper Outline
+## Python Scraper Implementation
 
-```python
-# scraper/broker_flow.py
-import curl_cffi.requests as requests
-from datetime import date, timedelta
-import time, json
+All smart money scraping is handled by `python/scrapers/money_flow.py` which exposes two entry points used by `run_all.py`:
 
-HEADERS = {"User-Agent": "Mozilla/5.0 ..."}  # curl_cffi handles impersonation
+### `run_broker_backfill(tickers, days, offset, limit)`
+- Iterates tickers (default: all stocks sorted by market cap)
+- For each ticker, calls Stockbit marketdetectors endpoint for N days of history
+- Parses response into `broker_flow` rows (per-broker buy/sell) and `bandar_signal` rows (bandar_detector block)
+- Upserts both tables via `supabase_client.py`
+- Rate limited at 0.8s between requests
+- Supports offset/limit for batching large runs
 
-def scrape_broker_flow(ticker: str, trade_date: date) -> list[dict]:
-    url = f"https://idx.co.id/api/broker-summary/{ticker}/{trade_date}"
-    r = requests.get(url, impersonate="chrome110", headers=HEADERS, timeout=15)
-    r.raise_for_status()
-    raw = r.json()
-    # Save raw: json.dump(raw, open(f"raw/{ticker}_{trade_date}.json", "w"))
-    return [
-        {
-            "ticker": ticker,
-            "trade_date": trade_date,
-            "broker_code": row["broker_code"],
-            "buy_lot":    row["buy_lot"],
-            "sell_lot":   row["sell_lot"],
-            "buy_value":  row["buy_value"],
-            "sell_value": row["sell_value"],
-        }
-        for row in raw.get("data", [])
-    ]
+### `run_insider_scrape(tickers, max_pages, offset, limit)`
+- Iterates tickers, calls Stockbit insider/company/majorholder endpoint
+- Paginated: fetches up to `max_pages` per ticker (default 5)
+- Parses major holder buy/sell transactions
+- Deduplicates via composite unique key: (ticker, insider_name, transaction_date, action, share_change)
+- Upserts to `insider_transactions` table
 
-def run_daily(tickers: list[str], trade_date: date):
-    for ticker in tickers:
-        rows = scrape_broker_flow(ticker, trade_date)
-        # upsert to Supabase: supabase.table("broker_flow").upsert(rows).execute()
-        time.sleep(1.5)
-
-# scraper/insider_filing.py
-def scrape_insider_filings(trade_date: date) -> list[dict]:
-    # Scan IDX announcement API for insider category
-    # Parse PDF if format is PDF (use pdfplumber)
-    # Filter: method in ('on-market', 'off-market') → is_significant = True
-    # Normalize insider_name for deduplication
-    pass
-```
+### Key utilities
+- `python/utils/stockbit_client.py` — Stockbit API wrapper
+- `python/utils/token_manager.py` — Bearer token caching + interactive refresh
 
 ---
 
-## NextJS API Routes
+## NextJS Integration
+
+### API Route
 
 ```
-GET /api/smart-money/[ticker]
-  → ownership_signals for ticker, last 30 rows + current signal
-
-GET /api/broker-flow/[ticker]
-  → broker_flow grouped by date, filtered by bandar_brokers if ?bandar_only=true
-
-GET /api/insider/[ticker]
-  → insider_transactions where is_significant=true, last 60 days
-
-GET /api/screener/smart-money
-  → ownership_signals WHERE signal_date = today
-    ORDER BY signal_confidence DESC
-    optional filter: ?signal=ACCUMULATION&min_confidence=0.6
+GET /api/stocks/[ticker]/broker?mode=smart-money&days=30
+  → Full smart money data: broker summary, daily flow by type, concentration,
+    bandar signal, insider transactions
 ```
 
-All routes use Supabase server client (service key stays server-side only).
+All data is fetched server-side via Supabase server client (service key stays server-side only).
+
+### Query Module: `web/src/lib/queries/broker.ts`
+
+Key exported functions:
+- `getSmartMoneyData(ticker, days)` — combines all queries below into one response
+- `getStockBrokerSummary(ticker, days)` — top buyers/sellers/net, with bandar signal
+- `getDailyBrokerFlowByType(ticker, days)` — daily asing/lokal/pemerintah flow for charts
+- `getBrokerConcentration(ticker, days)` — top 15 brokers with concentration % and bandar/asing/retail classification
+- `getBandarSignal(ticker, date)` — latest bandar_signal row
+- `getInsiderTransactions(ticker, limit)` — recent major holder transactions
+
+### Calculation Module: `web/src/lib/calculations/signal-confidence.ts`
+
+Key exported functions:
+- `computeConfidence(input)` → `ConfidenceScore` (total 0–100, per-component scores + explanations)
+- `generateNarrative(input)` → `Narrative` (conclusion + detail in Indonesian)
+
+### UI Widget: `BrokerActivityWidget.tsx`
+
+Located at `web/src/components/stock/widgets/BrokerActivityWidget.tsx`. Renders:
+- Smart money confidence score badge with strength label
+- Narrative conclusion + expandable detail
+- Daily flow chart (asing vs lokal vs pemerintah)
+- Top brokers table with concentration % and bandar candidate flags
+- Insider transaction list with ownership changes
 
 ---
 
-## Acceptance Criteria (Phase 1)
+## Acceptance Criteria
 
-- [ ] `broker_flow` populated for 60 days × LQ45 tickers (45 stocks minimum)
-- [ ] `insider_transactions` populated for 90 days, `is_significant` correctly filtered
-- [ ] `bandar_brokers` has ≥1 labeled broker for ≥20 LQ45 tickers
-- [ ] `compute_smart_money_signal()` unit tested for all 9 input combinations
-- [ ] Nightly job runs without error; `ownership_signals` populated for `CURRENT_DATE - 1`
-- [ ] Screener query returns plausible output:
-  ```sql
-  SELECT ticker, smart_money_signal, signal_confidence
-  FROM ownership_signals
-  WHERE signal_date = CURRENT_DATE - 1
-  ORDER BY signal_confidence DESC
-  LIMIT 20;
-  ```
+### Data Pipeline ✅
+- [x] `broker_flow` populated via Stockbit backfill (configurable days × tickers)
+- [x] `bandar_signal` populated with multi-level acc/dist signals (top 1/3/5/10)
+- [x] `insider_transactions` populated via KSEI data with deduplication
+- [x] `compute_smart_money_signal()` SQL function deployed
+- [x] Pipeline runs via `run_all.py --broker-backfill` and `--insider` without error
+
+### Frontend Signal Scoring ✅
+- [x] 100-point confidence score computed with 5 weighted components
+- [x] Indonesian-language narrative generated for all detected patterns
+- [x] Phase detection (akumulasi/distribusi/netral) working
+- [x] Broker concentration analysis with bandar candidate detection
+- [x] All components return per-item explanations for UI tooltips
+
+### UI Integration ✅
+- [x] BrokerActivityWidget renders smart money data on stock detail page
+- [x] Daily flow chart shows asing/lokal/pemerintah breakdown
+- [x] Insider transactions displayed with ownership change percentages
 
 ---
 
@@ -305,8 +353,10 @@ All routes use Supabase server client (service key stays server-side only).
 
 | Issue | Mitigation |
 |---|---|
-| Bandar broker ID is heuristic, not ground truth | Start LQ45 only; manual review before scaling |
-| Insider filing delay up to T+3 (often late) | Store both `filing_date` and `transaction_date`; flag late filings |
-| IDX endpoint undocumented, may change | Save raw JSON before parsing; alert on schema change |
-| Bandar may split orders across multiple brokers | Correlation analysis: brokers moving in sync = likely affiliates |
-| `flow_threshold` is size-dependent | Store per-ticker in `stock_universe.flow_threshold`; default 5_000_000 |
+| Stockbit bearer token expires periodically | `token_manager.py` caches tokens; interactive refresh when expired |
+| Stockbit API is undocumented, may change | `raw_json` column in `bandar_signal` preserves full response for debugging |
+| Bandar detection relies on Stockbit's algorithm | Multi-level signals (top 1/3/5/10) provide redundancy; frontend also computes concentration-based bandar candidates independently |
+| KSEI insider data may have delays | Transactions are stored by `transaction_date` not filing date; stale data is acceptable for 30-day rolling windows |
+| PostgREST row cap (1000) truncates broker_flow queries | Batched fetching in `_fetchBrokerFlowBatched()`; date lookups via `bandar_signal` (1 row/date) instead of `broker_flow` (~50 rows/date) |
+| Signal confidence is relative, not absolute | Strength labels (Sangat Kuat → Sangat Lemah) help users interpret; narrative provides qualitative context |
+| Broker type classification comes from Stockbit | May not be 100% accurate for all brokers; `kandidat_bandar` status is supplemented by concentration analysis |

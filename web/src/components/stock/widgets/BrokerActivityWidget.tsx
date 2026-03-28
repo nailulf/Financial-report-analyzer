@@ -20,6 +20,9 @@ const DURATION_PRESETS = [
   { label: '20D', days: 20 },
   { label: '30D', days: 30 },
   { label: '60D', days: 60 },
+  { label: '90D', days: 90 },
+  { label: '120D', days: 120 },
+  { label: '200D', days: 200 },
 ]
 
 const TABS = [
@@ -322,14 +325,50 @@ function SignalSummaryCard({ signal, confidence, narrative }: {
 
 /* ─── daily flow bar chart (Tab 1) — diverging stacked ──────────────── */
 
+/** Aggregate daily flow rows into ISO-week buckets (Mon–Fri).
+ *  Returns summed flows + last close_price per week. */
+function aggregateToWeekly(data: DailyFlowByType[]): DailyFlowByType[] {
+  const weeks = new Map<string, DailyFlowByType & { _count: number }>()
+  for (const d of data) {
+    // ISO week key: get Monday of the week
+    const dt = new Date(d.trade_date + 'T00:00:00')
+    const day = dt.getDay()
+    const diff = day === 0 ? -6 : 1 - day // shift to Monday
+    const mon = new Date(dt)
+    mon.setDate(dt.getDate() + diff)
+    const weekKey = mon.toISOString().slice(0, 10)
+
+    const existing = weeks.get(weekKey)
+    if (existing) {
+      existing.asing_net += d.asing_net
+      existing.lokal_net += d.lokal_net
+      existing.pemerintah_net += d.pemerintah_net
+      existing.asing_buy += d.asing_buy
+      existing.asing_sell += d.asing_sell
+      existing.lokal_buy += d.lokal_buy
+      existing.lokal_sell += d.lokal_sell
+      existing.close_price = d.close_price ?? existing.close_price // last price in the week
+      existing._count++
+    } else {
+      weeks.set(weekKey, { ...d, trade_date: weekKey, _count: 1 })
+    }
+  }
+  return Array.from(weeks.values())
+    .sort((a, b) => a.trade_date.localeCompare(b.trade_date))
+}
+
 function DailyFlowChart({ data }: { data: DailyFlowByType[] }) {
   const [mounted, setMounted] = useState(false)
   useEffect(() => { setMounted(true) }, [])
 
+  // Aggregate to weekly when > 90 data points to keep bars readable
+  const isWeekly = data.length > 90
+
   // Split each type into _pos / _neg so positive bars stack upward,
   // negative bars stack downward — true diverging bar chart.
-  const chartData = useMemo(() =>
-    data.map((d) => {
+  const chartData = useMemo(() => {
+    const source = isWeekly ? aggregateToWeekly(data) : data
+    return source.map((d) => {
       const asing = d.asing_net / 1e6
       const bumn  = d.pemerintah_net / 1e6
       const retail = d.lokal_net / 1e6
@@ -343,9 +382,8 @@ function DailyFlowChart({ data }: { data: DailyFlowByType[] }) {
         retail_neg:  retail < 0 ? retail : 0,
         harga:       d.close_price,
       }
-    }),
-    [data],
-  )
+    })
+  }, [data, isWeekly])
 
   if (!mounted) {
     return <div className="h-[300px] bg-[#F0F0F0] rounded animate-pulse" />
@@ -507,6 +545,141 @@ function CumulativeFlowChart({ data }: { data: DailyFlowByType[] }) {
 
 /* ─── broker identification table (Tab 3) ──────────────────────────── */
 
+function BandarExplanationBox() {
+  const [expanded, setExpanded] = useState(false)
+
+  return (
+    <div className="border border-[#E0E0E5] bg-[#FAFAFA] px-4 py-3 mt-1">
+      <div className="font-mono text-[10px] text-[#888888] leading-relaxed flex flex-col gap-2">
+        <div>
+          <strong className="text-[#666666]">Cara baca tabel:</strong> Broker dengan badge{' '}
+          <span className="text-red-700 font-bold">Kandidat bandar</span> memiliki konsentrasi tinggi,
+          arah konsisten, dan spesifik di saham ini. Platform broker (CC, YP, XL, XC, PD) diabaikan
+          karena mewakili order retail yang tersebar.
+        </div>
+
+        {!expanded && (
+          <button
+            onClick={() => setExpanded(true)}
+            className="text-left text-[10px] font-bold text-blue-600 hover:text-blue-800 font-mono"
+          >
+            Selengkapnya...
+          </button>
+        )}
+
+        {expanded && (
+          <>
+            <div className="border-t border-[#E0E0E5] pt-2 flex flex-col gap-2">
+              <div>
+                <strong className="text-[#555555]">TIER</strong> — Seberapa besar dan konsisten arah broker:
+                <ul className="list-disc pl-4 mt-0.5 space-y-0.5">
+                  <li><span className="text-red-700 font-bold">A</span> — Konsentrasi &ge;8% + arah konsisten &ge;65% hari</li>
+                  <li><span className="text-orange-700 font-bold">A2</span> — Konsentrasi &ge;5% + arah konsisten &ge;70% hari</li>
+                  <li><span className="text-yellow-700 font-bold">B</span> — Konsentrasi &ge;3% + arah konsisten &ge;75% hari</li>
+                </ul>
+              </div>
+
+              <div>
+                <strong className="text-[#555555]">SPESIFIK</strong> — Apakah broker ini fokus di saham ini atau aktif di mana-mana?
+                <br />Dihitung: volume broker di saham ini / rata-rata volume broker di semua saham.
+                <ul className="list-disc pl-4 mt-0.5 space-y-0.5">
+                  <li><span className="text-emerald-700 font-bold">&ge;3.0x</span> SPECIFIC — broker ini menaruh uang jauh lebih banyak di saham ini dari biasanya</li>
+                  <li><span className="text-amber-700 font-bold">&ge;1.5x</span> ELEVATED — di atas rata-rata, perlu diperhatikan</li>
+                  <li><span className="text-gray-400 font-bold">&lt;1.5x</span> UBIQ — broker ini sama aktifnya di mana-mana (bukan sinyal bandar)</li>
+                </ul>
+              </div>
+
+              <div>
+                <strong className="text-[#555555]">CR (Counter-Retail)</strong> — Broker bergerak berlawanan arah dengan platform retail.
+                <br />Contoh: retail (CC, XL, YP) net jual, tapi broker ini net beli = potensi akumulasi saat retail panik.
+              </div>
+
+              <div className="border-t border-[#E0E0E5] pt-2 flex flex-col gap-1">
+                <div>
+                  <strong className="text-[#555555]">Kesimpulan:</strong> Broker dengan tier A/A2 + SPECIFIC + counter-retail = kandidat bandar paling kuat.
+                  Broker UBIQ (spesifisitas rendah) meskipun tier A biasanya hanya institusi besar yang aktif di semua saham.
+                </div>
+                <div>
+                  <span className="inline-block w-3 h-2 bg-amber-400 mr-1 align-middle" />
+                  <span className="text-amber-600 font-bold">(Big Player)</span> — broker dengan konsentrasi &ge;15%.
+                  Uang sebesar ini tidak bisa disembunyikan — perhatikan arah dan konsistensinya.
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setExpanded(false)}
+              className="text-left text-[10px] font-bold text-blue-600 hover:text-blue-800 font-mono"
+            >
+              Sembunyikan
+            </button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ThTip({ children, tip, align = 'left' }: { children: React.ReactNode; tip: string; align?: 'left' | 'right' | 'center' }) {
+  const textAlign = align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left'
+  return (
+    <th className={`${textAlign} px-2 py-2 font-bold text-[#888888] text-[10px]`}>
+      <span className="relative group border-b border-dashed border-[#BBBBBB] cursor-help">
+        {children}
+        <span className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-full mt-1.5 z-50 w-52 px-2.5 py-1.5 rounded bg-[#1A1A1A] text-[9px] text-white font-normal leading-snug text-left opacity-0 group-hover:opacity-100 transition-opacity duration-100 whitespace-normal shadow-lg">
+          {tip}
+        </span>
+      </span>
+    </th>
+  )
+}
+
+function TierBadge({ tier }: { tier: BrokerConcentrationRow['tier'] }) {
+  if (!tier) return <span className="font-mono text-[10px] text-[#CCCCCC]">--</span>
+  const cfg = {
+    A:  { bg: 'bg-red-50',    text: 'text-red-700',    dot: 'bg-red-500' },
+    A2: { bg: 'bg-orange-50', text: 'text-orange-700', dot: 'bg-orange-500' },
+    B:  { bg: 'bg-yellow-50', text: 'text-yellow-700', dot: 'bg-yellow-500' },
+  }
+  const c = cfg[tier]
+  return (
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono ${c.bg} ${c.text}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />
+      {tier}
+    </span>
+  )
+}
+
+function SpecificityBadge({ label, value }: { label: BrokerConcentrationRow['specificity_label']; value: number | null }) {
+  if (!label || value == null) return <span className="font-mono text-[10px] text-[#CCCCCC]">--</span>
+  const cfg = {
+    SPECIFIC: { bg: 'bg-emerald-50', text: 'text-emerald-700' },
+    ELEVATED: { bg: 'bg-amber-50',   text: 'text-amber-700' },
+    UBIQ:     { bg: 'bg-gray-100',   text: 'text-gray-400' },
+  }
+  const c = cfg[label]
+  return (
+    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono ${c.bg} ${c.text}`}>
+      {value.toFixed(1)}x
+    </span>
+  )
+}
+
+function StatusBadge({ status }: { status: BrokerConcentrationRow['status'] }) {
+  const config = {
+    kandidat_bandar: { label: 'Kandidat bandar', bg: 'bg-red-50', text: 'text-red-700', dot: 'bg-red-500' },
+    asing:           { label: 'Asing',           bg: 'bg-emerald-50', text: 'text-emerald-700', dot: 'bg-emerald-500' },
+    retail:          { label: 'Retail/domestik', bg: 'bg-gray-50', text: 'text-gray-600', dot: 'bg-gray-400' },
+  }
+  const c = config[status]
+  return (
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold font-mono ${c.bg} ${c.text}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />
+      {c.label}
+    </span>
+  )
+}
+
 function BrokerIdentificationTable({
   rows,
   daysCount,
@@ -522,63 +695,98 @@ function BrokerIdentificationTable({
     )
   }
 
-  function StatusBadge({ status }: { status: BrokerConcentrationRow['status'] }) {
-    const config = {
-      kandidat_bandar: { label: 'Kandidat bandar', bg: 'bg-red-50', text: 'text-red-700', dot: 'bg-red-500' },
-      asing:           { label: 'Asing',           bg: 'bg-emerald-50', text: 'text-emerald-700', dot: 'bg-emerald-500' },
-      retail:          { label: 'Retail/domestik',  bg: 'bg-gray-50', text: 'text-gray-600', dot: 'bg-gray-400' },
-    }
-    const c = config[status]
-    return (
-      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold font-mono ${c.bg} ${c.text}`}>
-        <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />
-        {c.label}
-      </span>
-    )
-  }
-
   return (
     <div className="flex flex-col gap-2">
       <span className="font-mono text-[10px] text-[#888888] leading-relaxed">
-        Top broker berdasarkan total flow {daysCount} hari — broker dengan net sell dominan + selalu muncul di hari volume tinggi = kandidat bandar
+        Algoritma 3-layer analisis {daysCount} hari: konsentrasi + konsistensi arah + spesifisitas saham + counter-retail
       </span>
-      <div className="overflow-x-auto max-h-[360px] overflow-y-auto">
-        <table className="w-full text-[12px] font-mono">
+      <div className="overflow-x-auto max-h-[420px] overflow-y-auto">
+        <table className="w-full text-[11px] font-mono">
           <thead className="sticky top-0 z-10">
             <tr className="border-b border-[#E0E0E5] bg-[#F5F5F8]">
-              <th className="text-left px-3 py-2 font-bold text-[#888888] text-[11px]">KODE BROKER</th>
-              <th className="text-right px-3 py-2 font-bold text-[#888888] text-[11px]">TOTAL BELI</th>
-              <th className="text-right px-3 py-2 font-bold text-[#888888] text-[11px]">TOTAL JUAL</th>
-              <th className="text-right px-3 py-2 font-bold text-[#888888] text-[11px]">NET FLOW</th>
-              <th className="text-right px-3 py-2 font-bold text-[#888888] text-[11px]">KONSENTRASI%</th>
-              <th className="text-right px-3 py-2 font-bold text-[#888888] text-[11px]">STATUS</th>
+              <th className="text-left px-2 py-2 font-bold text-[#888888] text-[10px]">BROKER</th>
+              <ThTip align="right" tip="Total nilai transaksi neto (beli - jual) dalam Rupiah selama periode terpilih">NET FLOW</ThTip>
+              <ThTip align="right" tip="Rata-rata harga beli (B) dan jual (S) per lembar saham — menunjukkan di level harga berapa broker ini bertransaksi">AVG PRICE</ThTip>
+              <ThTip align="right" tip="Jumlah lot neto yang dikumpulkan (+) atau dilepas (-) oleh broker — menunjukkan seberapa besar posisi yang dibangun">NET LOT</ThTip>
+              <ThTip align="right" tip="Persentase volume transaksi broker ini dibanding total semua broker — semakin besar, semakin dominan">KONSEN%</ThTip>
+              <ThTip align="right" tip="Seberapa konsisten arah transaksi harian — contoh: 80% berarti 8 dari 10 hari broker ini net beli (atau jual) terus-menerus">KONSIST%</ThTip>
+              <ThTip align="center" tip="Klasifikasi kekuatan sinyal: A (konsen &ge;8% + konsist &ge;65%), A2 (5%+70%), B (3%+75%)">TIER</ThTip>
+              <ThTip align="center" tip="Seberapa spesifik broker fokus di saham ini vs saham lain — 3.0x berarti broker ini menaruh 3x lebih banyak uang di sini dari biasanya">SPESIFIK</ThTip>
+              <ThTip align="center" tip="Counter-Retail — broker bergerak berlawanan arah dengan platform retail (CC, YP, XL, XC, PD)">CR</ThTip>
+              <ThTip align="right" tip="Kesimpulan: Kandidat bandar (tier + spesifik), Asing (institusi asing), atau Retail/domestik">STATUS</ThTip>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => {
               const netColor = r.total_net_value > 0 ? 'text-emerald-600' : r.total_net_value < 0 ? 'text-red-500' : 'text-[#888888]'
+              const rowOpacity = r.is_platform ? 'opacity-50' : ''
+              const highConc = !r.is_platform && r.concentration_pct >= 15
               return (
-                <tr key={r.broker_code} className="border-b border-[#E0E0E5] last:border-0">
-                  <td className="px-3 py-2.5 font-bold text-[#1A1A1A]">{r.broker_code}</td>
-                  <td className="px-3 py-2.5 text-right text-[#888888]">{formatIDRCompact(r.total_buy_value)}</td>
-                  <td className="px-3 py-2.5 text-right text-[#888888]">{formatIDRCompact(r.total_sell_value)}</td>
-                  <td className={`px-3 py-2.5 text-right font-semibold ${netColor}`}>
-                    {r.total_net_value > 0 ? '+' : ''}{formatIDRCompact(r.total_net_value)}
+                <tr key={r.broker_code} className={`border-b last:border-0 ${rowOpacity} ${highConc ? 'border-l-2 border-l-amber-400 bg-amber-50/40 border-b-[#E0E0E5]' : 'border-b-[#E0E0E5]'}`}>
+                  <td className="px-2 py-2">
+                    <div className="flex flex-col">
+                      <span className="font-bold text-[#1A1A1A]">
+                        {r.broker_code}
+                        {r.is_platform && <span className="ml-1 text-[9px] text-[#AAAAAA] font-normal">(Platform)</span>}
+                        {highConc && <span className="ml-1 text-[9px] text-amber-600 font-bold">(Big Player)</span>}
+                      </span>
+                      {r.broker_name && (
+                        <span className="text-[9px] text-[#AAAAAA] leading-tight">{r.broker_name}</span>
+                      )}
+                    </div>
                   </td>
-                  <td className="px-3 py-2.5 text-right text-[#1A1A1A]">{r.concentration_pct.toFixed(1)}%</td>
-                  <td className="px-3 py-2.5 text-right"><StatusBadge status={r.status} /></td>
+                  <td className={`px-2 py-2 text-right font-semibold ${netColor}`}>
+                    <div className="flex flex-col items-end">
+                      <span>{r.total_net_value > 0 ? '+' : ''}{formatIDRCompact(r.total_net_value)}</span>
+                      <span className="text-[9px] text-[#AAAAAA] font-normal">{r.net_direction}</span>
+                    </div>
+                  </td>
+                  <td className="px-2 py-2 text-right">
+                    <div className="flex flex-col items-end text-[10px]">
+                      {r.avg_buy_price != null
+                        ? <span className="text-emerald-600">B {fmtNumID(r.avg_buy_price)}</span>
+                        : <span className="text-[#CCCCCC]">—</span>}
+                      {r.avg_sell_price != null
+                        ? <span className="text-red-400">S {fmtNumID(r.avg_sell_price)}</span>
+                        : <span className="text-[#CCCCCC]">—</span>}
+                    </div>
+                  </td>
+                  <td className="px-2 py-2 text-right">
+                    <div className="flex flex-col items-end">
+                      <span className={`font-semibold ${r.net_lot > 0 ? 'text-emerald-600' : r.net_lot < 0 ? 'text-red-500' : 'text-[#888888]'}`}>
+                        {r.net_lot > 0 ? '+' : ''}{fmtNumID(r.net_lot)}
+                      </span>
+                      <span className="text-[9px] text-[#AAAAAA]">{fmtNumID(r.net_lot * 100)} shrs</span>
+                    </div>
+                  </td>
+                  <td className="px-2 py-2 text-right text-[#1A1A1A]">{r.concentration_pct.toFixed(1)}%</td>
+                  <td className="px-2 py-2 text-right">
+                    <div className="flex flex-col items-end">
+                      <span className="text-[#1A1A1A]">{r.dir_pct}%</span>
+                      <span className="text-[9px] text-[#AAAAAA]">{r.buy_days}B/{r.sell_days}S/{r.active_days}T</span>
+                    </div>
+                  </td>
+                  <td className="px-2 py-2 text-center">
+                    {r.is_platform ? <span className="text-[10px] text-[#CCCCCC]">--</span> : <TierBadge tier={r.tier} />}
+                  </td>
+                  <td className="px-2 py-2 text-center">
+                    {r.is_platform
+                      ? <span className="text-[10px] text-[#CCCCCC]">--</span>
+                      : <SpecificityBadge label={r.specificity_label} value={r.specificity} />}
+                  </td>
+                  <td className="px-2 py-2 text-center">
+                    {!r.is_platform && r.counter_retail
+                      ? <span className="text-[10px] text-amber-600 font-bold">CR</span>
+                      : <span className="text-[10px] text-[#CCCCCC]">--</span>}
+                  </td>
+                  <td className="px-2 py-2 text-right"><StatusBadge status={r.status} /></td>
                 </tr>
               )
             })}
           </tbody>
         </table>
       </div>
-      <div className="border border-[#E0E0E5] bg-[#FAFAFA] px-4 py-3 mt-1">
-        <span className="font-mono text-[11px] text-[#888888] leading-relaxed">
-          Cara kerja: broker dengan net sell dominan + selalu muncul di hari volume tinggi = bandar.
-          Konfirmasi dengan melihat apakah kode ini juga dominan di periode akumulasi (net buy besar saat harga rendah).
-        </span>
-      </div>
+      <BandarExplanationBox />
     </div>
   )
 }
@@ -1068,7 +1276,7 @@ export function BrokerActivityWidget({
               {activeTab === 'daily' ? (
                 <div className="flex flex-col gap-2">
                   <span className="font-mono text-[10px] text-[#888888] leading-relaxed">
-                    Net flow harian — emas = BUMN, hijau = asing, biru = retail
+                    Net flow {dailyFlow.length > 90 ? 'mingguan (agregasi)' : 'harian'} — emas = BUMN, hijau = asing, biru = retail
                   </span>
                   <DailyFlowChart data={dailyFlow} />
                 </div>
@@ -1088,7 +1296,7 @@ export function BrokerActivityWidget({
               ) : null}
             </div>
 
-            {/* bottom info section */}
+            {/* bottom info section
             <div className="px-6 py-4">
               <div className="border border-[#E0E0E5] px-5 py-4 flex flex-col gap-3">
                 <span className="font-mono text-[13px] font-bold text-[#1A1A1A]">
@@ -1111,7 +1319,7 @@ export function BrokerActivityWidget({
                   </div>
                 </div>
               </div>
-            </div>
+            </div> */}
 
             {/* Signal matrix */}
             {data && (
@@ -1125,10 +1333,10 @@ export function BrokerActivityWidget({
             )}
           </div>
 
-          {/* ── right panel ────────────────────────────────── */}
+          {/* ── right panel ──────────────────────────────────
           <div className="w-[480px] flex flex-col self-stretch">
             <BrokerTable buckets={topBuckets} netBrokerFlow={netFlow} />
-          </div>
+          </div> */}
         </div>
       )}
     </div>

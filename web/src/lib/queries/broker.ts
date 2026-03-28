@@ -1,5 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
 import { parseBigInt } from '@/lib/calculations/formatters'
+import { PLATFORM_BROKERS, BROKER_NAMES } from '@/lib/broker-constants'
 
 export interface StockBrokerBucket {
   broker_code: string
@@ -64,14 +65,33 @@ export interface DailyFlowByType {
   close_price: number | null
 }
 
-/** Broker row for identification table with concentration % */
+/** Broker row for identification table with 3-layer bandar detection */
 export interface BrokerConcentrationRow {
   broker_code: string
+  broker_name: string | null
   broker_type: string | null
   total_buy_value: number
   total_sell_value: number
   total_net_value: number
-  concentration_pct: number    // % of total volume this broker represents
+  concentration_pct: number
+  // Layer 1 — Concentration + Directional Consistency
+  buy_days: number
+  sell_days: number
+  active_days: number
+  dir_pct: number
+  net_direction: 'BUY' | 'SELL'
+  tier: 'A' | 'A2' | 'B' | null
+  // Layer 2 — Stock-Specificity
+  specificity: number | null
+  specificity_label: 'SPECIFIC' | 'ELEVATED' | 'UBIQ' | null
+  // Layer 3 — Counter-Retail
+  counter_retail: boolean
+  // Volume & VWAP per broker
+  net_lot: number                     // buy_lot - sell_lot (in lots, 1 lot = 100 shares)
+  avg_buy_price: number | null
+  avg_sell_price: number | null
+  // Classification
+  is_platform: boolean
   status: 'kandidat_bandar' | 'asing' | 'retail'
 }
 
@@ -464,6 +484,49 @@ export async function getDailyBrokerFlowByType(
 
 // ── Broker concentration for identification table ───────────────────────────
 
+/**
+ * Fetch a broker's global volume across ALL tickers for the given dates.
+ * Used by Layer 2 (stock-specificity) to compute how concentrated a broker
+ * is in one stock vs its average across the market.
+ *
+ * Batches by broker to keep row counts within PostgREST cap.
+ */
+async function _getBrokerGlobalStats(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  brokerCodes: string[],
+  uniqueDates: string[],
+): Promise<Map<string, { totalVolume: number; stockCount: number }>> {
+  const result = new Map<string, { totalVolume: number; stockCount: number }>()
+  if (brokerCodes.length === 0) return result
+
+  const DATES_PER_BATCH = 10
+
+  for (const code of brokerCodes) {
+    const perStock = new Map<string, number>()
+
+    for (let i = 0; i < uniqueDates.length; i += DATES_PER_BATCH) {
+      const batch = uniqueDates.slice(i, i + DATES_PER_BATCH)
+      const { data } = await supabase
+        .from('broker_flow')
+        .select('ticker, buy_value, sell_value')
+        .eq('broker_code', code)
+        .in('trade_date', batch)
+
+      if (data) {
+        for (const r of data) {
+          const vol = (parseBigInt(r.buy_value) ?? 0) + (parseBigInt(r.sell_value) ?? 0)
+          perStock.set(r.ticker, (perStock.get(r.ticker) ?? 0) + vol)
+        }
+      }
+    }
+
+    const totalVolume = Array.from(perStock.values()).reduce((s, v) => s + v, 0)
+    result.set(code, { totalVolume, stockCount: perStock.size })
+  }
+
+  return result
+}
+
 export async function getBrokerConcentration(
   ticker: string,
   days: number = 30,
@@ -475,20 +538,23 @@ export async function getBrokerConcentration(
   const uniqueDates = await _getUniqueBrokerDates(supabase, ticker, days, endDate)
   if (uniqueDates.length === 0) return []
 
-  // 2. Fetch all broker_flow rows (batched to avoid PostgREST row cap)
+  // 2. Fetch all broker_flow rows with trade_date for daily direction tracking
   const rows = await _fetchBrokerFlowBatched<any>(
     supabase, ticker, uniqueDates,
-    'broker_code, broker_type, buy_value, sell_value, net_value',
+    'broker_code, broker_type, buy_value, sell_value, net_value, buy_lot, sell_lot, trade_date',
   )
   if (rows.length === 0) return []
 
-  // 3. Aggregate per broker
+  // 3. Aggregate per broker with daily direction tracking
   const map = new Map<string, {
     broker_code: string
     broker_type: string | null
     buy: number
     sell: number
     net: number
+    buyLot: number
+    sellLot: number
+    dayNets: Map<string, number>  // trade_date → net value for dir tracking
   }>()
 
   let totalVolume = 0
@@ -498,46 +564,157 @@ export async function getBrokerConcentration(
     const buy = parseBigInt(row.buy_value) ?? 0
     const sell = parseBigInt(row.sell_value) ?? 0
     const net = parseBigInt(row.net_value) ?? 0
+    const buyLot = parseBigInt(row.buy_lot) ?? 0
+    const sellLot = parseBigInt(row.sell_lot) ?? 0
+    const tradeDate = row.trade_date as string
     totalVolume += buy + sell
 
     const entry = map.get(code) ?? {
       broker_code: code,
       broker_type: row.broker_type ?? null,
-      buy: 0, sell: 0, net: 0,
+      buy: 0, sell: 0, net: 0, buyLot: 0, sellLot: 0,
+      dayNets: new Map(),
     }
     entry.buy += buy
     entry.sell += sell
     entry.net += net
+    entry.buyLot += buyLot
+    entry.sellLot += sellLot
+    entry.dayNets.set(tradeDate, (entry.dayNets.get(tradeDate) ?? 0) + net)
     if (!entry.broker_type && row.broker_type) entry.broker_type = row.broker_type
     map.set(code, entry)
   }
 
-  // 4. Compute concentration % and classify
-  return Array.from(map.values())
-    .sort((a, b) => Math.abs(b.net) - Math.abs(a.net))
-    .slice(0, 15)
-    .map((e) => {
-      const brokerVolume = e.buy + e.sell
-      const concentration = totalVolume > 0 ? (brokerVolume / totalVolume) * 100 : 0
-      const type = e.broker_type?.toLowerCase() ?? 'lokal'
+  // 4. Compute Layer 1 fields + platform net for Layer 3
+  let platformNet = 0
+  for (const [code, e] of map) {
+    if (PLATFORM_BROKERS.has(code)) platformNet += e.net
+  }
 
-      let status: BrokerConcentrationRow['status'] = 'retail'
-      if (type === 'asing') {
-        status = 'asing'
-      } else if (concentration >= 10 && Math.abs(e.net) > 0) {
-        status = 'kandidat_bandar'
-      }
+  type BrokerEntry = {
+    broker_code: string
+    broker_type: string | null
+    buy: number; sell: number; net: number
+    buyLot: number; sellLot: number
+    concentration: number
+    buyDays: number; sellDays: number; activeDays: number; dirPct: number
+    netDir: 'BUY' | 'SELL'
+    isPlatform: boolean
+    tier: 'A' | 'A2' | 'B' | null
+    counterRetail: boolean
+  }
 
-      return {
-        broker_code: e.broker_code,
-        broker_type: e.broker_type,
-        total_buy_value: e.buy,
-        total_sell_value: e.sell,
-        total_net_value: e.net,
-        concentration_pct: Math.round(concentration * 10) / 10,
-        status,
-      }
-    })
+  const entries: BrokerEntry[] = Array.from(map.values()).map((e) => {
+    const brokerVolume = e.buy + e.sell
+    const concentration = totalVolume > 0 ? (brokerVolume / totalVolume) * 100 : 0
+
+    let buyDays = 0
+    let sellDays = 0
+    for (const dayNet of e.dayNets.values()) {
+      if (dayNet > 0) buyDays++
+      else if (dayNet < 0) sellDays++
+    }
+    const activeDays = e.dayNets.size
+    const dirPct = activeDays > 0 ? (Math.max(buyDays, sellDays) / activeDays) * 100 : 0
+    const netDir: 'BUY' | 'SELL' = e.net >= 0 ? 'BUY' : 'SELL'
+    const isPlatform = PLATFORM_BROKERS.has(e.broker_code)
+
+    // Layer 1: Tier classification (platform brokers never get a tier)
+    let tier: 'A' | 'A2' | 'B' | null = null
+    if (!isPlatform && activeDays >= 5) {
+      if (concentration >= 8 && dirPct >= 65) tier = 'A'
+      else if (concentration >= 5 && dirPct >= 70) tier = 'A2'
+      else if (concentration >= 3 && dirPct >= 75) tier = 'B'
+    }
+
+    // Layer 3: Counter-retail
+    const counterRetail =
+      (platformNet < 0 && e.net > 0) || (platformNet > 0 && e.net < 0)
+
+    return {
+      broker_code: e.broker_code,
+      broker_type: e.broker_type,
+      buy: e.buy, sell: e.sell, net: e.net,
+      buyLot: e.buyLot, sellLot: e.sellLot,
+      concentration,
+      buyDays, sellDays, activeDays, dirPct,
+      netDir, isPlatform, tier, counterRetail,
+    }
+  })
+
+  // Sort by: tier priority desc, then abs(net) desc
+  const tierOrder = (t: string | null) => (t === 'A' ? 3 : t === 'A2' ? 2 : t === 'B' ? 1 : 0)
+  entries.sort((a, b) => tierOrder(b.tier) - tierOrder(a.tier) || Math.abs(b.net) - Math.abs(a.net))
+
+  // Take top 20
+  const top = entries.slice(0, 20)
+
+  // 5. Layer 2: Stock-Specificity (only for brokers that passed any tier)
+  const tieredCodes = top.filter((e) => e.tier !== null).map((e) => e.broker_code)
+  const globalStats = tieredCodes.length > 0
+    ? await _getBrokerGlobalStats(supabase, tieredCodes, uniqueDates)
+    : new Map()
+
+  // 6. Build final rows with all 3 layers
+  //
+  // Layer 2 specificity: compare broker's volume in THIS stock vs its
+  // average volume per stock globally.
+  //   broker_vol_this_stock / (broker_total_vol_all_stocks / stock_count)
+  // Then normalise by the same ratio for totalVolume so the result is a
+  // concentration ratio (not an absolute volume ratio).
+  return top.map((e): BrokerConcentrationRow => {
+    let specificity: number | null = null
+    let specificityLabel: BrokerConcentrationRow['specificity_label'] = null
+
+    if (e.tier !== null && globalStats.has(e.broker_code)) {
+      const g = globalStats.get(e.broker_code)!
+      // Broker's volume in this stock
+      const brokerVolThisStock = e.buy + e.sell
+      // Broker's average volume per stock across the market
+      const brokerAvgVolPerStock = g.stockCount > 0 ? g.totalVolume / g.stockCount : brokerVolThisStock
+      // Specificity = how many times more volume does this broker do here vs its average
+      specificity = brokerAvgVolPerStock > 0
+        ? Math.round((brokerVolThisStock / brokerAvgVolPerStock) * 10) / 10
+        : 1.0
+      specificityLabel = specificity >= 3.0 ? 'SPECIFIC'
+        : specificity >= 1.5 ? 'ELEVATED'
+        : 'UBIQ'
+    }
+
+    // Final status: combine all layers
+    let status: BrokerConcentrationRow['status'] = 'retail'
+    if (e.isPlatform) {
+      status = 'retail'
+    } else if (e.tier !== null && specificityLabel !== 'UBIQ') {
+      status = 'kandidat_bandar'
+    } else if ((e.broker_type ?? '').toLowerCase() === 'asing') {
+      status = 'asing'
+    }
+
+    return {
+      broker_code: e.broker_code,
+      broker_name: BROKER_NAMES[e.broker_code] ?? null,
+      broker_type: e.broker_type,
+      total_buy_value: e.buy,
+      total_sell_value: e.sell,
+      total_net_value: e.net,
+      concentration_pct: Math.round(e.concentration * 10) / 10,
+      buy_days: e.buyDays,
+      sell_days: e.sellDays,
+      active_days: e.activeDays,
+      dir_pct: Math.round(e.dirPct),
+      net_direction: e.netDir,
+      tier: e.tier,
+      specificity,
+      specificity_label: specificityLabel,
+      net_lot: e.buyLot - e.sellLot,
+      avg_buy_price: e.buyLot > 0 ? Math.round(e.buy / (e.buyLot * 100)) : null,
+      avg_sell_price: e.sellLot > 0 ? Math.round(e.sell / (e.sellLot * 100)) : null,
+      counter_retail: e.counterRetail,
+      is_platform: e.isPlatform,
+      status,
+    }
+  })
 }
 
 // ── Full smart money data (combines all queries) ────────────────────────────

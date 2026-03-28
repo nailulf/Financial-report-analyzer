@@ -2,10 +2,10 @@
 
 # IDX Stock Analyzer — Data Backbone
 
-**Version:** 1.0
+**Version:** 2.0
 **Author:** Nailul
 **Last Updated:** March 2026
-**Status:** Planning → Feasibility Testing
+**Status:** Active Development — Phases 1–4 complete, Phase 5 in progress
 
 ---
 
@@ -16,28 +16,33 @@ Build a comprehensive, self-maintained data pool of Indonesian stock market data
 The data backbone is the product. Dashboards, screeners, valuation calculators, and sentiment trackers are consumers that sit on top of it. If the data layer is solid, any application can be built quickly and reliably.
 
 ```
-                    ┌──────────────────────────────────────┐
-                    │        FUTURE APPLICATIONS           │
-                    │                                      │
-                    │  • Fundamental Dashboard              │
-                    │  • Money Flow Tracker                 │
-                    │  • Stock Screener                     │
-                    │  • Intrinsic Value Calculator          │
-                    │  • Sentiment Analyzer                 │
-                    │  • Portfolio Tracker                   │
-                    │  • Dividend Planner (v2)               │
-                    │  • Alerting System                    │
-                    │  • AI-Powered Research Assistant       │
-                    │  • Anything else we think of...       │
-                    └──────────────────┬───────────────────┘
-                                      │ reads from
-                    ┌──────────────────▼───────────────────┐
-                    │         DATA BACKBONE                 │
-                    │     (This is what we're building)     │
-                    │                                      │
-                    │  Complete, clean, structured,         │
-                    │  queryable Indonesian stock data      │
-                    └──────────────────────────────────────┘
+          ┌──────────────────────────────────────────────────────┐
+          │              BUILT APPLICATIONS  ✅                   │
+          │                                                      │
+          │  • Stock Screener (home page, advanced filters)      │
+          │  • Fundamental Dashboard (25-widget stock detail)    │
+          │  • Money Flow Tracker (foreign, broker, anomalies)   │
+          │  • Valuation Engine (Graham, DCF, margin of safety)  │
+          │  • Smart Money Signals (bandar, insider, confidence) │
+          │  • Shareholder Network Graph (force-graph viz)       │
+          │  • Peer Comparison (multi-stock side-by-side)        │
+          │  • Dividend History Viewer                           │
+          ├──────────────────────────────────────────────────────┤
+          │              PLANNED / IN PROGRESS  🔄               │
+          │                                                      │
+          │  • News Aggregation + Sentiment Analysis             │
+          │  • Portfolio Tracker                                  │
+          │  • Alerting System                                   │
+          │  • AI-Powered Research Assistant                      │
+          └────────────────────────┬─────────────────────────────┘
+                                   │ reads from
+          ┌────────────────────────▼─────────────────────────────┐
+          │               DATA BACKBONE  ✅                       │
+          │        (Operational — 12 scrapers, 15+ tables)       │
+          │                                                      │
+          │  Complete, clean, structured,                         │
+          │  queryable Indonesian stock data                      │
+          └──────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -48,7 +53,7 @@ The data backbone is the product. Dashboards, screeners, valuation calculators, 
 
 1. **Comprehensive coverage** — All 800+ IDX-listed stocks, not a curated subset. The data pool should be complete enough that any stock question can be answered by querying it.
 
-2. **Historical depth** — Minimum 4 years of financial statements (yfinance limit), 10+ years of daily prices, and as far back as we can go for dividends and corporate actions.
+2. **Historical depth** — Up to 10 years of financial statements (Stockbit), 5+ years of daily prices (yfinance), and as far back as we can go for dividends and corporate actions.
 
 3. **Data freshness** — Daily prices updated end-of-day. Financial statements updated quarterly. Company profiles updated quarterly. Broker/money flow data updated daily.
 
@@ -57,6 +62,8 @@ The data backbone is the product. Dashboards, screeners, valuation calculators, 
 5. **Self-maintainable** — Scraper scripts that can be run manually or via cron. When a scraper breaks (they will), it should be obvious what broke and fixable within an hour.
 
 6. **Foundation for multiple applications** — The schema should not be designed around one specific dashboard. It should be a general-purpose financial data store.
+
+7. **Developer experience** — Single-ticker refresh from the UI, per-scraper job tracking, automated gap detection and filling, completeness/confidence scoring per stock.
 
 ### Non-Goals (for now)
 
@@ -94,6 +101,8 @@ The master list of all IDX-listed stocks with basic metadata.
 | is_lq45 | BOOLEAN | Member of LQ45 index |
 | is_idx30 | BOOLEAN | Member of IDX30 index |
 | status | TEXT | Active / Suspended / Delisted |
+| completeness_score | DECIMAL | 0–100, auto-computed data completeness |
+| confidence_score | DECIMAL | 0–100, auto-computed data confidence |
 | last_updated | TIMESTAMPTZ | When this row was last refreshed |
 
 **Source:** Twelve Data API (ticker list) + IDX API (metadata)
@@ -162,7 +171,14 @@ Annual and quarterly income statements, balance sheets, and cash flow statements
 | capex | BIGINT | Capital expenditures |
 | free_cash_flow | BIGINT | OCF - capex |
 | dividends_paid | BIGINT | Cash dividends paid |
-| — Computed Ratios — | — | — |
+| investing_cash_flow | BIGINT | Cash from investing activities |
+| financing_cash_flow | BIGINT | Cash from financing activities |
+| — Balance Sheet (extended) — | — | — |
+| short_term_debt | BIGINT | Short-term borrowings |
+| long_term_debt | BIGINT | Long-term borrowings |
+| net_debt | BIGINT | Total debt − cash |
+| working_capital | BIGINT | Current assets − current liabilities |
+| — Core Ratios — | — | — |
 | gross_margin | DECIMAL | Gross profit / revenue (%) |
 | operating_margin | DECIMAL | Operating income / revenue (%) |
 | net_margin | DECIMAL | Net income / revenue (%) |
@@ -174,12 +190,25 @@ Annual and quarterly income statements, balance sheets, and cash flow statements
 | pbv_ratio | DECIMAL | Price / book value |
 | dividend_yield | DECIMAL | Dividend per share / price (%) |
 | payout_ratio | DECIMAL | Dividends paid / net income (%) |
+| — Advanced Ratios (V8) — | — | — |
+| roce | DECIMAL | Return on capital employed (%) |
+| roic | DECIMAL | Return on invested capital (%) |
+| interest_coverage | DECIMAL | EBIT / interest expense (×) |
+| asset_turnover | DECIMAL | Revenue / total assets (×) |
+| inventory_turnover | DECIMAL | COGS / inventory (×) |
+| lt_debt_to_equity | DECIMAL | Long-term debt / equity |
+| total_liabilities_to_equity | DECIMAL | Total liabilities / equity |
+| debt_to_assets | DECIMAL | Total debt / total assets |
+| financial_leverage | DECIMAL | Total assets / equity (×) |
+| ps_ratio | DECIMAL | Price / sales |
+| ev_ebitda | DECIMAL | Enterprise value / EBITDA |
+| earnings_yield | DECIMAL | EPS / price (%) |
 | — | — | — |
-| source | TEXT | `yfinance`, `idx`, `manual` |
+| source | TEXT | `stockbit`, `yfinance`, `idx`, `manual` |
 | last_updated | TIMESTAMPTZ | When this row was last refreshed |
 | UNIQUE | (ticker, year, quarter) | One row per stock per period |
 
-**Source:** yfinance (primary, ~4 years) + IDX API financial reports (extended history)
+**Source:** Stockbit (primary, up to 10 years) + yfinance (fallback, ~4 years)
 
 #### Layer 4: Company Profiles (refreshed quarterly)
 
@@ -225,13 +254,33 @@ Detailed company information, management, and ownership structure.
 | snapshot_date | DATE | Date of the data |
 | last_updated | TIMESTAMPTZ | — |
 
-**Source:** IDX API company profiles endpoint + idx-bei scraper patterns
+**Table: `shareholders_major`** (historical snapshots of holders ≥1%)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | SERIAL (PK) | — |
+| ticker | TEXT (FK → stocks) | Stock code |
+| report_date | DATE | Date of the ownership snapshot |
+| holder_name | TEXT | Name of shareholder |
+| holder_type | TEXT | `institution`, `individual`, `government`, `foreign`, `public` |
+| shares_held | BIGINT | Number of shares |
+| percentage | DECIMAL | Ownership percentage |
+| source | TEXT | `pdf_upload`, `excel_upload`, `idx_api` |
+| last_updated | TIMESTAMPTZ | — |
+| — | — | — |
+| UNIQUE | (ticker, report_date, holder_name) | One row per holder per snapshot |
+
+**Views:**
+- `v_shareholders_major_latest` — most recent snapshot per ticker
+- `v_shareholders_major_snapshots` — available report dates + coverage stats
+
+**Source:** IDX API company profiles endpoint + PDF/Excel bulk upload (`shareholders_pdf.py`)
 
 #### Layer 5: Money Flow & Broker Data (refreshed daily)
 
-Broker-level trading activity and foreign/domestic flow tracking.
+Broker-level trading activity, smart money signals, and insider transactions.
 
-**Table: `broker_summary`**
+**Table: `broker_summary`** (IDX API legacy — combined totals only)
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -251,52 +300,122 @@ Broker-level trading activity and foreign/domestic flow tracking.
 
 **Source:** IDX broker summary endpoint
 
-### 3.2 Future Extension Tables (not in Phase 1)
+**Table: `broker_flow`** (Stockbit — per-broker buy/sell split with broker type)
 
-These tables will be added when we build features on top of the data backbone:
+| Field | Type | Description |
+|-------|------|-------------|
+| ticker | VARCHAR(10) (FK → stocks) | Stock code |
+| trade_date | DATE | Trading date |
+| broker_code | VARCHAR(10) | Broker code |
+| broker_type | VARCHAR(15) | `Lokal`, `Asing`, `Pemerintah` |
+| buy_lot | BIGINT | Lots bought |
+| sell_lot | BIGINT | Lots sold |
+| buy_value | BIGINT | Buy value in IDR |
+| sell_value | BIGINT | Sell value in IDR |
+| buy_avg_price | DECIMAL | Average buy price |
+| sell_avg_price | DECIMAL | Average sell price |
+| net_lot | BIGINT (GENERATED) | buy_lot − sell_lot |
+| net_value | BIGINT (GENERATED) | buy_value − sell_value |
+| — | — | — |
+| PRIMARY KEY | (ticker, trade_date, broker_code) | — |
 
-- **`dividends`** — Historical dividend declarations, ex-dates, payment dates, amounts
-- **`corporate_actions`** — Stock splits, rights issues, mergers
-- **`news`** — Aggregated news articles with sentiment scores
-- **`valuations_cache`** — Pre-computed intrinsic values (DCF, DDM, Graham)
-- **`watchlists`** — Personal stock watchlists
-- **`index_constituents`** — Which stocks belong to LQ45, IDX30, etc. over time
-- **`sector_averages`** — Pre-computed sector average ratios for benchmarking
+**Source:** Stockbit marketdetectors API
 
----
+**Table: `bandar_signal`** (Stockbit — accumulation/distribution detection)
 
-## 4. Data Acquisition Pipeline
+| Field | Type | Description |
+|-------|------|-------------|
+| ticker | VARCHAR(10) (FK → stocks) | Stock code |
+| trade_date | DATE | Trading date |
+| broker_accdist | VARCHAR(20) | Overall acc/dist signal (e.g., `Big Acc`, `Dist`) |
+| top1_accdist | VARCHAR(20) | Top 1 broker signal |
+| top3_accdist | VARCHAR(20) | Top 3 brokers signal |
+| top5_accdist | VARCHAR(20) | Top 5 brokers signal |
+| top10_accdist | VARCHAR(20) | Top 10 brokers signal |
+| total_buyer | INTEGER | Number of distinct buying brokers |
+| total_seller | INTEGER | Number of distinct selling brokers |
+| total_value | BIGINT | Total trading value |
+| total_volume | BIGINT | Total trading volume |
+| raw_json | JSONB | Full bandar_detector block for debugging |
+| — | — | — |
+| PRIMARY KEY | (ticker, trade_date) | — |
 
-### 4.1 Scraper Scripts
+**Source:** Stockbit bandar_detector block
 
-Each script is a standalone Python file that can be run independently. All scripts are idempotent (safe to re-run) and use UPSERT logic.
+**Table: `insider_transactions`** (KSEI major holder movements)
 
-| Script | Data Layer | Source | Frequency | Estimated Runtime |
-|--------|-----------|--------|-----------|-------------------|
-| `stock_universe.py` | Layer 1 | Twelve Data + IDX | Weekly | ~2 min |
-| `daily_prices.py` | Layer 2 | yfinance | Daily | ~15-20 min (800 stocks) |
-| `money_flow.py` | Layer 2 + 5 | IDX API | Daily | ~30-45 min (800 stocks) |
-| `financials.py` | Layer 3 | yfinance + IDX | Quarterly | ~60-90 min (800 stocks) |
-| `company_profiles.py` | Layer 4 | IDX API | Quarterly | ~45-60 min (800 stocks) |
+| Field | Type | Description |
+|-------|------|-------------|
+| id | SERIAL (PK) | — |
+| ticker | VARCHAR(10) (FK → stocks) | Stock code |
+| insider_id | TEXT | Stockbit record ID for dedup |
+| insider_name | TEXT | Name of major holder |
+| transaction_date | DATE | Date of transaction |
+| action | VARCHAR(4) | `BUY` or `SELL` |
+| share_change | BIGINT | Number of shares transacted |
+| shares_before | BIGINT | Shares held before transaction |
+| shares_after | BIGINT | Shares held after transaction |
+| ownership_before_pct | DECIMAL(8,4) | Ownership % before |
+| ownership_after_pct | DECIMAL(8,4) | Ownership % after |
+| ownership_change_pct | DECIMAL(8,4) | Change in ownership % |
+| nationality | VARCHAR(20) | Holder nationality |
+| broker_code | VARCHAR(10) | Broker used |
+| data_source | VARCHAR(20) | Default `KSEI` |
+| price | BIGINT | Transaction price per share |
+| — | — | — |
+| UNIQUE | (ticker, insider_name, transaction_date, action, share_change) | — |
 
-### 4.2 Orchestration
+**Source:** KSEI via Stockbit insider/company/majorholder endpoint
 
-A master script `run_all.py` orchestrates execution:
+### 3.2 Supplementary Tables (implemented)
 
-```
-run_all.py --daily          # Runs: daily_prices + money_flow
-run_all.py --weekly         # Runs: stock_universe
-run_all.py --quarterly      # Runs: financials + company_profiles
-run_all.py --full           # Runs: everything
-run_all.py --ticker BBRI    # Runs: all scrapers for one stock (testing)
-```
+**Table: `dividend_history`**
 
-### 4.3 Error Handling
+| Field | Type | Description |
+|-------|------|-------------|
+| ticker | TEXT (FK → stocks) | Stock code |
+| ex_date | DATE | Ex-dividend date |
+| amount | DECIMAL | Dividend per share (IDR) |
+| currency | TEXT | Default `IDR` |
+| source | TEXT | `yfinance` |
+| — | — | — |
+| UNIQUE | (ticker, ex_date) | — |
 
-- Each scraper logs to both console and a log file (`logs/YYYY-MM-DD_scraper_name.log`)
-- Failed individual stocks are logged but don't stop the batch
-- After each run, a summary shows: X succeeded, Y failed, Z skipped
-- A `scraper_runs` table in Supabase tracks execution history:
+**Source:** yfinance dividend history (up to 10 years)
+
+### 3.3 Operational / Meta Tables
+
+**Table: `stock_refresh_requests`** — Tracks per-ticker refresh jobs triggered from the UI.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | SERIAL (PK) | — |
+| ticker | TEXT (FK → stocks) | Stock being refreshed |
+| status | TEXT | `pending`, `running`, `done`, `failed` |
+| requested_at | TIMESTAMPTZ | When the refresh was requested |
+| started_at | TIMESTAMPTZ | When scraping began |
+| finished_at | TIMESTAMPTZ | When scraping completed |
+| completeness_before | DECIMAL | Score before refresh |
+| completeness_after | DECIMAL | Score after refresh |
+| confidence_before | DECIMAL | Score before refresh |
+| confidence_after | DECIMAL | Score after refresh |
+| no_new_data | BOOLEAN | True if all scrapers added 0 rows |
+| error_message | TEXT | If failed |
+
+**Table: `refresh_scraper_progress`** — Per-scraper status within a refresh job.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| request_id | INTEGER (FK → stock_refresh_requests) | Parent job |
+| scraper_name | TEXT | e.g., `financials_fallback`, `daily_prices` |
+| status | TEXT | `pending`, `running`, `done`, `failed` |
+| rows_added | INTEGER | Rows upserted by this scraper |
+| duration_ms | INTEGER | Execution time in milliseconds |
+| error_msg | TEXT | If failed |
+| started_at | TIMESTAMPTZ | — |
+| finished_at | TIMESTAMPTZ | — |
+
+**Table: `scraper_runs`** — Historical audit log of all pipeline executions.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -304,100 +423,297 @@ run_all.py --ticker BBRI    # Runs: all scrapers for one stock (testing)
 | scraper_name | TEXT | e.g., `daily_prices` |
 | started_at | TIMESTAMPTZ | — |
 | finished_at | TIMESTAMPTZ | — |
-| stocks_processed | INTEGER | — |
-| stocks_failed | INTEGER | — |
+| mode | TEXT | `daily`, `weekly`, `full`, etc. |
 | status | TEXT | `success`, `partial`, `failed` |
+| rows_added | INTEGER | Total rows upserted |
 | error_message | TEXT | If failed |
+
+### 3.4 Future Extension Tables
+
+- **`news`** — Aggregated news articles with sentiment scores
+- **`index_constituents`** — Which stocks belong to LQ45, IDX30, etc. over time
+- **`sector_averages`** — Pre-computed sector average ratios for benchmarking
+- **`portfolio`** — Personal portfolio tracking with buy/sell transactions
 
 ---
 
-## 5. Phase Plan
+## 4. Data Acquisition Pipeline
 
-### Phase 1: Data Backbone (Weeks 1-4)
+### 4.1 Data Sources
+
+| Source | What It Provides | Access Method | Role |
+|--------|-----------------|---------------|------|
+| **Stockbit** | Financial statements (10yr), broker flow, bandar detection, insider transactions | Bearer token API via `stockbit_client.py` | **Primary** for financials & smart money |
+| **IDX API** | Stock universe, foreign flow, company profiles, document links, corporate events | `curl_cffi` with Chrome impersonation via `idx_client.py` | **Primary** for universe & profiles |
+| **yfinance** | Daily prices (OHLCV), dividend history, financial fallback | Python `yfinance` library, `.JK` suffix | **Primary** for prices, **fallback** for financials |
+| **Twelve Data** | Complete IDX ticker/symbol list | Free API (8 calls/min, 800/day) | Optional fallback for ticker list |
+
+### 4.2 Scraper Scripts
+
+Each script is a standalone Python file that can be run independently. All scripts are idempotent (safe to re-run) and use UPSERT logic.
+
+| Script | Layer | Source | Frequency | Description |
+|--------|-------|--------|-----------|-------------|
+| `stock_universe.py` | 1 | IDX + Twelve Data | Weekly | All IDX tickers + metadata |
+| `daily_prices.py` | 2 | yfinance | Daily | OHLCV, 5-year historical bootstrap |
+| `financials_fallback.py` | 3 | **Stockbit** | Quarterly | **Primary** — IS/BS/CF + 25 ratios, up to 10yr history |
+| `financials.py` | 3 | yfinance | On-demand | Fallback — 4 years of statements |
+| `company_profiles.py` | 4 | IDX API | Quarterly | Directors, shareholders, company info |
+| `shareholders_pdf.py` | 4 | PDF/Excel upload | On-demand | Bulk load major shareholders (≥1%), historical snapshots |
+| `money_flow.py` | 2+5 | IDX + Stockbit | Daily | Foreign flow (IDX), broker flow + bandar signals + insider transactions (Stockbit) |
+| `dividend_scraper.py` | — | yfinance | On-demand | Per-share dividend history, up to 10 years |
+| `document_links.py` | — | IDX API | Quarterly | Links to financial reports, prospectus |
+| `corporate_events.py` | — | IDX API | Quarterly | Earnings announcements, corporate actions |
+| `ratio_enricher.py` | 3 | (no API) | On-demand | Fills NULL ratio columns from stored raw data |
+| `gap_filler.py` | all | (re-runs scrapers) | On-demand | Detects and re-scrapes incomplete stocks |
+
+### 4.3 Orchestration
+
+Master script `run_all.py` controls scraper execution with modes and scope modifiers:
+
+**Run modes:**
+```
+python run_all.py --daily                  # daily_prices + money_flow
+python run_all.py --weekly                 # stock_universe
+python run_all.py --quarterly              # financials (Stockbit) + company_profiles + docs + events
+python run_all.py --full                   # everything in dependency order
+python run_all.py --fallback-financials    # Stockbit financials standalone
+python run_all.py --broker-backfill        # Stockbit broker flow + bandar signals
+python run_all.py --insider                # KSEI insider transactions
+python run_all.py --dividends              # yfinance dividend history
+python run_all.py --enrich-ratios          # fill NULL ratios from stored data (no API)
+python run_all.py --fill-gaps              # re-scrape most incomplete stocks
+```
+
+**Scope modifiers:**
+```
+--ticker BBRI ASII BBCA              # limit to specific tickers
+--sector finance energy              # fuzzy sector matching (case-insensitive)
+--period annual|quarterly|both       # financials period type
+--days 5                             # trading days for money_flow
+--year-from 2018 --year-to 2024      # financials year range
+--scrapers daily_prices,money_flow   # selective scraper filter in --full mode
+--job-id 42                          # link to UI refresh request
+--dry-run                            # preview only, no writes
+--backfill-days 60                   # broker-backfill window
+--offset 100 --batch-limit 50        # batching for large runs
+```
+
+### 4.4 Job Tracking & UI Integration
+
+The pipeline integrates with the web UI for single-ticker refresh:
+
+1. User clicks "Refresh" on a stock detail page → creates a `stock_refresh_requests` row (status: `pending`)
+2. Triggers `run_all.py --full --ticker BBRI --job-id 42` via GitHub Actions (remote) or local execution (dev)
+3. Each scraper updates its `refresh_scraper_progress` row in real-time (running → done/failed, rows_added, duration_ms)
+4. Frontend polls `/api/stocks/[ticker]/refresh/[job_id]` for live progress
+5. On completion, `completeness_after` and `confidence_after` scores are recorded
+
+### 4.5 Error Handling
+
+- Each scraper logs to both console and a log file (`logs/YYYY-MM-DD_scraper_name.log`) via Rich
+- Failed individual stocks are logged but don't stop the batch
+- Phase 2 scrapers (`document_links`, `corporate_events`) are non-fatal — failures never block score recalculation
+- After each run, completeness + confidence scores are recomputed for affected tickers
+
+---
+
+## 5. Web Application Architecture
+
+### 5.1 Tech Stack
+
+| Technology | Version | Role |
+|-----------|---------|------|
+| Next.js (App Router) | 16 | Full-stack framework |
+| React | 19 | UI library |
+| TypeScript | 5 | Type safety |
+| Tailwind CSS | 3.4 | Styling |
+| Recharts | 2.15 | Charts (line, bar, area, pie) |
+| react-force-graph-2d | 1.27 | Shareholder network visualization |
+| Mermaid | 11.13 | Diagrams |
+| @supabase/supabase-js | 2.99 | Database client |
+| @supabase/ssr | 0.9 | Server-side Supabase client |
+
+### 5.2 Pages
+
+| Route | Description |
+|-------|-------------|
+| `/` | Stock screener home — advanced filters (sector, board, ROE, P/E, P/BV, margin, yield), multi-sort, pagination, watchlist toggle |
+| `/stock/[ticker]` | Single stock analysis — 25 modular widgets (see 5.4) |
+| `/money-flow` | Money flow dashboard — foreign flow leaderboard, broker activity, volume anomalies, composite flow score |
+| `/compare` | Peer comparison — up to 5 stocks side-by-side, metrics grid + charts |
+| `/investors` | Shareholder network — interactive force-graph of investor-stock relationships, search by name/ticker |
+
+### 5.3 API Routes
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/search` | GET | Full-text ticker/name search for autocomplete |
+| `/api/stocks/[ticker]/broker` | GET | Broker summary (30-day), smart money signals |
+| `/api/stocks/[ticker]/refresh` | POST | Trigger on-demand data refresh via GitHub Actions |
+| `/api/stocks/[ticker]/refresh/local` | POST | Trigger local scraper execution (dev mode) |
+| `/api/stocks/[ticker]/refresh/[job_id]` | GET | Poll individual scraper progress |
+| `/api/stocks/[ticker]/freshness` | GET | Last update timestamps per data category |
+| `/api/stocks/[ticker]/stockbit/fetch` | GET | Fetch Stockbit financial data |
+| `/api/stocks/[ticker]/stockbit/upsert` | POST | Persist Stockbit data to Supabase |
+| `/api/investors/network` | GET | Shareholder graph nodes + links, sector filtering |
+
+### 5.4 Stock Detail Widgets (25)
+
+The `/stock/[ticker]` page is composed of modular widgets:
+
+| Widget | Description |
+|--------|-------------|
+| HeroBar | Ticker, price, change %, market cap, last update |
+| PriceWidget | Current price, 52-week high/low |
+| FinancialHighlightsWidget | Key metrics at a glance |
+| FundamentalsWidget | Profitability ratios (ROE, ROA, margins) |
+| RatiosWidget | Valuation ratios (P/E, P/BV, D/E, current ratio) |
+| ValuationWidget | Graham number, DCF intrinsic value, margin of safety |
+| GrowthHealthWidget | 7-metric health scores (green/yellow/red) |
+| FinancialStatementsWidget | Interactive IS/BS/CF tables |
+| FinancialChartsWidget | Revenue, profit, cash flow trends |
+| DividendWidget | Dividend history, yield, payout ratio |
+| CompanyProfileWidget | Description, website, address, contact |
+| ProductsWidget | Business segments/products |
+| PeersWidget | Comparable companies in same sector |
+| ShareholdersWidget | Major shareholders with ownership % |
+| SectorOutlookWidget | Sector trends and comparables |
+| BrokerActivityWidget | 30-day broker trading activity, smart money signals |
+| TechnicalWidget | Technical analysis |
+| SentimentWidget | Market sentiment indicators |
+| StoriesWidget | News/events timeline |
+| AIInsightsWidget | AI-generated analysis snippets |
+| InvestmentThesisWidget | Bull/bear case summary |
+| DataQualityWidget | Data completeness score and confidence |
+| VerdictWidget | Overall recommendation |
+| NavTabs | Tab navigation between sections |
+| SectionDivider | Visual separators |
+
+### 5.5 Calculation Modules
+
+| Module | Location | Description |
+|--------|----------|-------------|
+| `valuation.ts` | `lib/calculations/` | Graham Number, DCF (3 scenarios: bear/base/bull), margin of safety |
+| `health-score.ts` | `lib/calculations/` | 7-metric health system: ROE, net margin, ROA, current ratio, D/E, FCF, gross margin |
+| `cagr.ts` | `lib/calculations/` | Compound annual growth rate for revenue/earnings trends |
+| `signal-confidence.ts` | `lib/calculations/` | 100-point smart money scoring system (see Smart Money Signal FRD) |
+| `formatters.ts` | `lib/calculations/` | SSR-safe IDR formatting, percentage formatting, number formatting |
+
+### 5.6 Query Modules
+
+Nine server-side query modules in `lib/queries/`: `stocks.ts`, `financials.ts`, `prices.ts`, `company.ts`, `money-flow.ts`, `broker.ts`, `dividends.ts`, `comparison.ts`, `completeness.ts`.
+
+---
+
+## 6. Phase Plan
+
+### Phase 1: Data Backbone — ✅ Complete
 
 **Goal:** A fully populated Supabase database with all 5 data layers operational.
 
-**Deliverables:**
-- [ ] Supabase project created with all tables from Section 3.1
-- [ ] `stock_universe.py` — populates `stocks` table (all 800+ tickers)
-- [ ] `daily_prices.py` — populates `daily_prices` (1 year of history for all stocks, then daily going forward)
-- [ ] `financials.py` — populates `financials` (4 years via yfinance for all stocks)
-- [ ] `company_profiles.py` — populates `company_profiles`, `company_officers`, `shareholders`
-- [ ] `money_flow.py` — populates `broker_summary` + foreign flow columns in `daily_prices`
-- [ ] `run_all.py` orchestrator working
-- [ ] Data can be queried directly in Supabase dashboard to validate completeness
+**Delivered:**
+- [x] Supabase project created with 15+ tables across 9 schema migrations (`docs/schema.sql` through `docs/schema-v9-smart-money.sql`)
+- [x] `stock_universe.py` — populates `stocks` table (all 800+ tickers)
+- [x] `daily_prices.py` — populates `daily_prices` (5-year historical bootstrap)
+- [x] `financials_fallback.py` — populates `financials` (up to 10 years via Stockbit, 25+ ratios)
+- [x] `financials.py` — yfinance fallback (4 years)
+- [x] `company_profiles.py` — populates `company_profiles`, `company_officers`, `shareholders`
+- [x] `money_flow.py` — populates `broker_summary` (IDX) + `broker_flow` + `bandar_signal` + `insider_transactions` (Stockbit)
+- [x] `dividend_scraper.py`, `document_links.py`, `corporate_events.py`, `shareholders_pdf.py`
+- [x] `ratio_enricher.py` + `gap_filler.py` for data quality maintenance
+- [x] `run_all.py` orchestrator with 10 run modes and scope modifiers
+- [x] Completeness + confidence scoring per stock (`score_calculator.py`)
 
-**Success criteria:** Can answer these questions by querying Supabase:
-- "List all banking stocks sorted by ROE"
-- "Show BBRI's revenue for the last 4 years"
-- "Which stocks had the highest foreign net buy last week?"
-- "Top 5 brokers buying ASII today"
-- "All stocks with P/E < 10 and dividend yield > 5%"
-
-### Phase 2: First Application — Fundamental Dashboard (Weeks 5-7)
+### Phase 2: Fundamental Dashboard — ✅ Complete
 
 **Goal:** A NextJS web app that visualizes the data backbone.
 
-**Deliverables:**
-- [ ] NextJS project scaffolded with Supabase connection
-- [ ] Stock search / browse page
-- [ ] Single stock analysis page (`/stock/[ticker]`) with:
-  - Key metrics card row (price, P/E, P/BV, ROE, dividend yield)
-  - Revenue & profit trend chart (Recharts line chart)
-  - Margin trend chart
-  - Balance sheet health (debt vs cash, current ratio)
-  - Cash flow trend
-  - CAGR table (3yr, 5yr for revenue, profit, equity)
-  - Health scorecard (traffic light system)
-- [ ] Peer comparison page (`/compare`)
+**Delivered:**
+- [x] NextJS 16 project with Supabase SSR connection
+- [x] Stock screener home page with advanced filters (sector, board, ROE, P/E, P/BV, margin, yield)
+- [x] Single stock analysis page (`/stock/[ticker]`) with 25 modular widgets
+- [x] Revenue & profit trend charts, margin charts, balance sheet health, cash flow trends
+- [x] CAGR computation, health scorecard (7 metrics, green/yellow/red)
+- [x] Peer comparison page (`/compare`) — up to 5 stocks side-by-side
+- [x] Full-text search with autocomplete
+- [x] Watchlist toggle (star system)
 
-### Phase 3: Money Flow Dashboard (Weeks 8-9)
+### Phase 3: Money Flow Dashboard — ✅ Complete
 
-**Deliverables:**
-- [ ] Foreign flow visualization (daily bar chart, cumulative line)
-- [ ] Broker activity table (top buyers/sellers)
-- [ ] Volume anomaly detection (flag when volume > 2x 20-day average)
-- [ ] Flow score indicator (composite of foreign flow + broker + volume signals)
+**Delivered:**
+- [x] Dedicated money flow page (`/money-flow`) with foreign flow leaderboard
+- [x] Broker activity section with independent date range
+- [x] Volume anomaly detection
+- [x] Composite flow score (bullish/bearish signals)
+- [x] Daily flow chart by broker type (asing/lokal/pemerintah) on stock detail
+- [x] Broker concentration analysis with bandar candidate detection
 
-### Phase 4: Valuation Engine (Weeks 10-12)
+### Phase 4: Valuation Engine — ✅ Complete
 
-**Deliverables:**
-- [ ] DCF calculator with adjustable assumptions
-- [ ] DDM calculator (for dividend-paying stocks)
-- [ ] Graham Number calculator
-- [ ] Relative valuation (P/E, P/BV vs sector average)
-- [ ] Combined valuation range visualization
-- [ ] Margin of safety indicator
+**Delivered:**
+- [x] Graham Number calculator
+- [x] DCF calculator with 3 scenarios (bearish, base, bullish) — flexible base (FCF, Dividend, EPS)
+- [x] Margin of safety indicator
+- [x] Health score system (7 metrics with configurable thresholds)
+- [x] IDX-specific valuation assumptions (WACC, terminal growth, risk-free rate)
+- [x] ValuationWidget integrated into stock detail page
 
-### Phase 5: Sentiment & Intelligence (Future)
+### Phase 5: Smart Money & Intelligence — 🔄 In Progress
 
-**Deliverables:**
+**Delivered:**
+- [x] Smart Money Signal system — broker flow + bandar detection + insider transactions → 100-point confidence scoring
+- [x] Rule-based narrative generator with Indonesian-language explanations
+- [x] Phase detection (akumulasi / distribusi / netral)
+- [x] Shareholder network graph (`/investors`) — interactive force-graph visualization
+- [x] AI Insights widget (placeholder)
+- [x] Investment thesis widget (bull/bear case)
+- [x] Verdict widget (overall recommendation)
+
+**Remaining:**
 - [ ] News aggregation from Indonesian financial media
 - [ ] Claude API integration for sentiment analysis
-- [ ] Investability verdict combining all signals
+- [ ] Alerting system for significant changes (price, flow, insider activity)
 - [ ] Entry/exit plan generator
-- [ ] Alerting for significant changes (price, flow, news)
+
+### Phase 6: Future Enhancements (Planned)
+
+- [ ] Portfolio tracker with buy/sell transactions and P&L
+- [ ] Sector rotation dashboard
+- [ ] Earnings calendar with estimate tracking
+- [ ] Automated daily/weekly email digest
 
 ---
 
-## 6. Data Quality Requirements
+## 7. Data Quality Requirements
+
+### Automated Quality Scoring
+
+Each stock has two auto-computed scores maintained by `score_calculator.py`:
+
+- **Completeness score** (0–100): Measures data presence across all categories (prices, financials, ratios, profile, officers, shareholders, dividends). Stored in `stocks.completeness_score`.
+- **Confidence score** (0–100): Measures data recency and source quality. Stored in `stocks.confidence_score`.
+
+The `gap_filler.py` scraper uses completeness scores to automatically identify and re-scrape stocks below a threshold (default: 70%).
 
 ### Completeness Targets
 
 | Data Type | Target Coverage | Acceptable Minimum |
 |-----------|----------------|-------------------|
 | Stock universe | 100% of IDX active listings | 95% |
-| Daily prices | 100% of stocks, 1 year history | 90% of stocks |
-| Financial statements | 90% of stocks, 4 years | 80% of stocks, 2 years |
+| Daily prices | 100% of stocks, 5 year history | 90% of stocks |
+| Financial statements | 90% of stocks, 10 years (Stockbit) | 80% of stocks, 4 years (yfinance) |
 | Company profiles | 80% of stocks | 60% of stocks |
-| Broker summary | Top 200 stocks by market cap | Top 100 stocks |
+| Broker flow (Stockbit) | Top 200 stocks by market cap | Top 100 stocks |
+| Insider transactions | All stocks with KSEI filings | — |
 
 ### Accuracy
 
 - Price data must match official IDX closing prices (yfinance is generally reliable for this)
 - Financial statement numbers must match the company's published reports
-- Ratios computed from raw data (not taken from third-party pre-computed values) to ensure consistency
-- When data from multiple sources conflicts, IDX official data takes priority, then yfinance, then others
+- Ratios sourced from Stockbit where available, computed from raw data as fallback
+- When data from multiple sources conflicts: Stockbit > IDX official > yfinance > computed
+- `source` field in `financials` table tracks data provenance
 
 ### Freshness
 
@@ -405,63 +721,74 @@ run_all.py --ticker BBRI    # Runs: all scrapers for one stock (testing)
 |-----------|------------------|
 | Daily prices | 1 day (updated after market close) |
 | Foreign flow | 1 day |
-| Broker summary | 1 day |
+| Broker flow + bandar signal | 1 day (Stockbit backfill) |
 | Financial statements | 30 days after earnings release |
 | Company profiles | 90 days |
 | Stock universe | 7 days |
+| Insider transactions | 7 days |
 
 ---
 
-## 7. Constraints & Risks
+## 8. Constraints & Risks
 
 ### Technical Constraints
 
-- **IDX API instability**: IDX endpoints are undocumented and may change or break without notice. Mitigation: Keep scraper logic modular so individual scrapers can be fixed without affecting others. Reference idx-bei repo for endpoint updates.
-- **yfinance IDX coverage gaps**: Some smaller stocks may have incomplete data. Mitigation: Track completeness in `scraper_runs`, fill gaps manually or from IDX when critical.
-- **Supabase free tier limits**: 500MB database, 1GB file storage, 50K monthly active users (irrelevant for personal use). The 500MB database limit is the binding constraint — estimated data size for 800 stocks × 1 year daily prices + 4 years financials ≈ 100-150MB, well within limit.
-- **Scraper rate limiting**: Must respect source rate limits to avoid IP blocks. All scrapers include delays between requests.
+- **Stockbit API dependency**: Stockbit is the primary source for financials, broker flow, bandar signals, and insider data. The API is undocumented and requires a bearer token that must be periodically refreshed. Mitigation: `token_manager.py` caches tokens and handles interactive refresh; yfinance serves as fallback for financials.
+- **IDX API instability**: IDX endpoints are undocumented and may change or break without notice. Mitigation: Keep scraper logic modular so individual scrapers can be fixed without affecting others. IDX API has been stable in practice.
+- **yfinance IDX coverage gaps**: Some smaller stocks may have incomplete data. Mitigation: Stockbit is now primary for financials; yfinance is primarily used for prices and dividends where it is reliable.
+- **Supabase free tier limits**: 500MB database limit. With 15+ tables, broker_flow being the largest (many rows per ticker per day), storage is growing. Current estimate ~200-300MB. Monitor and consider Supabase Pro if approaching limit.
+- **Scraper rate limiting**: Rate limits per source — IDX (0.6s), yfinance (0.1s), Stockbit (0.8s). All configured in `config.py`.
 
 ### Data Risks
 
-- **IDX blocks scraping**: If IDX changes their Cloudflare or anti-bot configuration, `curl_cffi` may stop working. Fallback: Use yfinance for what it covers, manually supplement the rest.
-- **Yahoo Finance discontinues IDX coverage**: Unlikely but possible. Fallback: Sectors.app paid API ($10-20/month) covers all IDX stocks.
-- **Financial data inconsistency**: Different sources may report slightly different numbers due to normalization differences. Mitigation: Store the `source` field and prefer raw IDX data when available.
+- **Stockbit token expiry**: Bearer tokens expire periodically. If the token expires during a batch run, that run will fail. Mitigation: `token_manager.py` with cached token + interactive refresh prompt.
+- **IDX blocks scraping**: If IDX changes anti-bot configuration, `curl_cffi` may stop working. Fallback: yfinance for prices, Stockbit for financials.
+- **Financial data inconsistency**: Stockbit and yfinance may report slightly different numbers. Mitigation: Stockbit takes priority; `source` field tracks provenance.
+- **PostgREST row cap**: Supabase's default 1000-row limit can silently truncate results for liquid stocks with many broker rows. Mitigation: batched queries in `broker.ts` and `_fetchBrokerFlowBatched`.
 
 ---
 
-## 8. Success Metrics
+## 9. Success Metrics
 
-The data backbone is successful when:
-
-1. **Coverage**: ≥90% of IDX active stocks have complete data across all 5 layers
-2. **Freshness**: Daily data is never more than 1 trading day old
-3. **Reliability**: Scrapers run successfully ≥95% of the time (partial failures for individual stocks are acceptable)
-4. **Queryability**: Any reasonable stock screening question can be answered with a single SQL query
-5. **Extensibility**: Adding a new data field or new data source takes less than 1 day of work
-6. **Build speed**: A new application feature (chart, table, calculation) can be built in under 1 day because the data is already clean and available
+| Metric | Target | Current Status |
+|--------|--------|----------------|
+| **Coverage** | ≥90% of IDX active stocks with complete data | ✅ 800+ stocks in universe, completeness scoring active |
+| **Freshness** | Daily data ≤1 trading day old | ✅ Daily pipeline operational |
+| **Reliability** | Scrapers succeed ≥95% of runs | ✅ Non-fatal error handling, gap_filler for remediation |
+| **Queryability** | Any screening question → single query | ✅ Advanced screener with multi-filter, 25+ ratios |
+| **Extensibility** | New data source < 1 day to add | ✅ Modular scraper architecture, 12 scrapers operational |
+| **Build speed** | New feature < 1 day | ✅ 25 widgets, 5 pages, 5 calculation modules built |
+| **Smart money** | Signal confidence for top stocks | ✅ 100-point scoring with 5 components + narrative |
 
 ---
 
-## Appendix A: Reference Projects
+## Appendix A: Reference Projects & Data Sources
 
-| Project | URL | Relevance |
-|---------|-----|-----------|
+| Project / Source | URL | Relevance |
+|-----------------|-----|-----------|
+| **Stockbit Exodus API** | (undocumented) | Primary source for financials, broker flow, bandar detection, insider transactions |
 | nichsedge/idx-bei | github.com/nichsedge/idx-bei | IDX API scraper patterns, company profiles, broker data |
-| noczero/idx-fundamental-analysis | github.com/noczero/idx-fundamental-analysis | Stockbit API, fundamental data retrieval |
+| noczero/idx-fundamental-analysis | github.com/noczero/idx-fundamental-analysis | Stockbit API patterns, fundamental data retrieval |
 | Rachdyan/idx_financial_report | github.com/Rachdyan/idx_financial_report | Raw financial statement parsing from IDX |
 | Dividend Dashboard (own project) | — | Recharts patterns, IDR formatting, financial calculations |
 
-## Appendix B: IDR Data Size Estimates
+## Appendix B: Data Size Estimates
 
 | Table | Row Estimate | Avg Row Size | Total |
 |-------|-------------|-------------|-------|
-| stocks | 900 | 500B | ~0.4MB |
-| daily_prices (1yr) | 900 × 250 = 225,000 | 200B | ~45MB |
-| financials (4yr) | 900 × 4 = 3,600 | 800B | ~3MB |
+| stocks | 900 | 600B | ~0.5MB |
+| daily_prices (5yr) | 900 × 1,250 = 1,125,000 | 200B | ~225MB |
+| financials (10yr, annual+quarterly) | 900 × 50 = 45,000 | 1.2KB | ~54MB |
 | company_profiles | 900 | 2KB | ~2MB |
-| company_officers | 900 × 8 = 7,200 | 200B | ~1.5MB |
-| shareholders | 900 × 10 = 9,000 | 200B | ~2MB |
-| broker_summary (1yr, top 200) | 200 × 250 × 10 = 500,000 | 150B | ~75MB |
-| **Total** | | | **~130MB** |
+| company_officers | 7,200 | 200B | ~1.5MB |
+| shareholders | 9,000 | 200B | ~2MB |
+| shareholders_major | 5,000 | 250B | ~1.3MB |
+| broker_summary (IDX legacy) | 500,000 | 150B | ~75MB |
+| broker_flow (Stockbit, 30d × 200) | 200 × 30 × 50 = 300,000 | 150B | ~45MB |
+| bandar_signal (30d × 200) | 6,000 | 500B | ~3MB |
+| insider_transactions | 10,000 | 300B | ~3MB |
+| dividend_history | 5,000 | 100B | ~0.5MB |
+| meta tables | ~50,000 | 200B | ~10MB |
+| **Total** | | | **~420MB** |
 
-Comfortably within Supabase free tier (500MB).
+Approaching Supabase free tier limit (500MB). Monitor growth; daily_prices is the largest table. Consider archiving older price data or upgrading to Supabase Pro if needed.

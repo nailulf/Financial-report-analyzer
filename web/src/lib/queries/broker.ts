@@ -166,7 +166,23 @@ async function _getUniqueBrokerDates(
 
   const { data: bandarRows } = await bq
   if (bandarRows && bandarRows.length > 0) {
-    return bandarRows.map((r) => r.trade_date as string)
+    let dates = bandarRows.map((r) => r.trade_date as string)
+
+    // Clip to broker_flow's actual date range — bandar_signal may retain
+    // older dates than broker_flow after data retention trims.
+    const { data: minRow } = await supabase
+      .from('broker_flow')
+      .select('trade_date')
+      .eq('ticker', ticker)
+      .order('trade_date', { ascending: true })
+      .limit(1)
+
+    if (minRow?.[0]) {
+      const minDate = minRow[0].trade_date as string
+      dates = dates.filter((d) => d >= minDate)
+    }
+
+    return dates
   }
 
   // Fallback: deduplicate from broker_flow (works for small day counts)

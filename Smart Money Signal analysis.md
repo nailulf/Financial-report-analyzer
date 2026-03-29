@@ -1,8 +1,8 @@
 # Smart Money Signal — Functional Requirements Document
 
-**Version:** 2.0
+**Version:** 3.0
 **Status:** Implemented
-**Last Updated:** March 2026
+**Last Updated:** March 28, 2026
 
 ## Stack
 NextJS 16 + Supabase (PostgreSQL). Python for scraping. Personal use, 800+ IDX tickers.
@@ -115,21 +115,98 @@ The original spec planned SQL-side nightly batch computation. The actual impleme
 - **Signal scoring**: TypeScript module `web/src/lib/calculations/signal-confidence.ts` computes scores **on-demand** at query time
 - **SQL function**: `compute_smart_money_signal()` exists in the database (from the original spec) but the primary scoring uses the richer TypeScript implementation
 
-### Step 1 — Bandar Identification (automated, via Stockbit)
+### Step 1 — Bandar Identification (3-Layer Algorithm, v3.0)
 
-**Original plan:** Manual heuristic — broker with >15% volume over 6 months, manually reviewed.
+**Original plan (v1):** Manual heuristic — broker with >15% volume over 6 months, manually reviewed.
 
-**Actual implementation:** Automated via Stockbit's `bandar_detector` block. Stockbit pre-computes accumulation/distribution signals at 4 concentration levels:
+**v2 implementation:** Simple rule: `concentration >= 10% AND type !== 'asing'`. Proven inadequate via 85-stock backtest — generates false positives (UBS/Maybank flagged everywhere) and misses real bandars (Henan Putihrai in PTRO, Buana Capital in BUKA).
+
+**Current implementation (v3):** 3-layer algorithm in `getBrokerConcentration()` (`web/src/lib/queries/broker.ts`), backtested across 85 IDX stocks (Oct 2025–Mar 2026). Correctly identified 27 real bandar candidates while filtering 12 false positives.
+
+#### Constants (`web/src/lib/broker-constants.ts`)
+
+**Platform Brokers** (excluded from bandar candidacy — aggregated retail orders, not institutional):
+```
+CC (Mandiri/MOST), YP (Mirae Asset), XL (Stockbit), XC (Ajaib), PD (Indo Premier/IPOT)
+```
+
+**Broker Names**: Full 90-broker IDX member directory mapping code → name (e.g., `AK → UBS`, `ZP → Maybank`, `HP → Henan Putihrai`).
+
+#### Layer 1 — Concentration + Directional Consistency
+
+For each non-platform broker, compute:
+- `concentration_pct` = broker volume (buy + sell) / total stock volume × 100
+- `dir_pct` = max(buy_days, sell_days) / active_days × 100
+- Requires `active_days >= 5` to avoid noise from sporadic trades
+
+| Tier | Concentration | Consistency | Meaning |
+|------|--------------|-------------|---------|
+| **A** | ≥ 8% | ≥ 65% | Strong signal — high volume, directionally committed |
+| **A2** | ≥ 5% | ≥ 70% | Moderate volume but very consistent direction |
+| **B** | ≥ 3% | ≥ 75% | Lower volume but extremely persistent direction |
+
+Platform brokers (CC, YP, XL, XC, PD) never receive a tier.
+
+#### Layer 2 — Stock-Specificity
+
+Only computed for brokers that pass Layer 1. Answers: "Is this broker unusually focused on THIS stock, or does it behave the same everywhere?"
+
+```
+broker_vol_this_stock = buy + sell in this stock over N days
+broker_avg_vol_per_stock = total volume across ALL stocks / number of stocks traded
+specificity = broker_vol_this_stock / broker_avg_vol_per_stock
+```
+
+Implemented via `_getBrokerGlobalStats()` — queries `broker_flow` across all tickers for each tier-qualifying broker code, batched by broker to stay within PostgREST row cap.
+
+| Specificity | Label | Meaning |
+|-------------|-------|---------|
+| ≥ 3.0x | **SPECIFIC** | Broker puts 3x+ more money here than its average — targeting this stock |
+| ≥ 1.5x | **ELEVATED** | Above average, worth watching |
+| < 1.5x | **UBIQ** | Normal behavior — broker is big everywhere (likely false positive) |
+
+**Key insight from backtest:** UBS (AK) appears at 8-14% concentration in most stocks with ~1.0x specificity (UBIQ) — it's just a large broker, not a bandar. Henan Putihrai (HP) at 5.2% in PTRO but 4.5x specificity — genuinely targeting PTRO.
+
+#### Layer 3 — Counter-Retail (soft signal)
+
+```
+platform_net = SUM(net_value) for CC, YP, XL, XC, PD
+counter_retail = (platform_net < 0 AND broker_net > 0) OR (platform_net > 0 AND broker_net < 0)
+```
+
+Not a gate — adds context. When a broker accumulates while retail platforms sell, it's the "bandar tampung jatuhan retail" pattern observed in IDX community analysis.
+
+#### Final Classification
+
+```
+if is_platform → status = 'retail', no tier
+if tier != null AND specificity_label != 'UBIQ' → status = 'kandidat_bandar'
+if broker_type == 'Asing' AND not kandidat_bandar → status = 'asing'
+else → status = 'retail'
+```
+
+Additionally, brokers with concentration ≥ 15% get a **"Big Player"** visual highlight regardless of tier — big money can't hide even without directional consistency.
+
+#### Backtest Results (85 stocks, Oct 2025–Mar 2026)
+
+Real bandar candidates confirmed:
+- HP (Henan Putihrai) in PTRO: 5.2% conc, 80% dir, 4.5x SPECIFIC, counter-retail
+- RF (Buana Capital) in BUKA: 6.2% conc, 71% dir, 6.1x SPECIFIC, counter-retail
+- KI (Ciptadana) in CMNT: 19.7% conc, 80% dir, 10.5x SPECIFIC
+- SS (Supra) in MORA: 33.0% conc, 90% dir, 10.9x SPECIFIC
+- RB (INA Sekuritas) in INTP: 17.0% conc, 91% dir, 3.6x SPECIFIC
+
+False positives correctly filtered:
+- AK (UBS) in BBNI/NISP/TAPG/ITMG: 8-11% conc but 1.0-1.4x UBIQ (appears in 81 stocks)
+- ZP (Maybank) in AKRA/SCMA: 8-9% conc but 1.3x UBIQ (appears in 82 stocks)
+
+#### Supplementary: Stockbit Bandar Detector Signals
+
+Stockbit pre-computes acc/dist signals at 4 concentration levels (stored in `bandar_signal` table):
 - `broker_accdist`: Overall signal (e.g., "Big Acc", "Acc", "Normal Acc", "Dist", "Big Dist")
-- `top1_accdist`: Top 1 broker by volume
-- `top3_accdist`: Top 3 brokers
-- `top5_accdist`: Top 5 brokers
-- `top10_accdist`: Top 10 brokers
+- `top1/3/5/10_accdist`: Per concentration level
 
-Additionally, the frontend computes **broker concentration** (`getBrokerConcentration()` in `web/src/lib/queries/broker.ts`):
-- Aggregates broker_flow over N days
-- Classifies brokers as `kandidat_bandar` (≥10% concentration + net position), `asing`, or `retail`
-- Returns top 15 brokers by absolute net value
+These are used by the Bandar Confirmation component in confidence scoring (20 pts max) but are NOT the primary bandar identification mechanism (that's the 3-layer algorithm above).
 
 ### Step 2 — Broker Flow Aggregation (on-demand)
 
@@ -167,7 +244,7 @@ Five weighted components:
 | **Foreign Alignment** | 25 | Does foreign flow direction align with the overall signal phase? |
 | **Bandar Confirmation** | 20 | Does Stockbit's bandar_detector signal (overall + top5) align with the phase? |
 | **Insider Weight** | 15 | Do insider buy/sell transactions align? Bonus for material ownership changes. |
-| **Broker Concentration** | 15 | Top 3 brokers: how concentrated, and does their direction align? |
+| **Broker Concentration** | 15 | Top 3 non-platform brokers: concentration, tier, specificity, counter-retail bonuses |
 
 **Scoring thresholds for Broker Magnitude (example):**
 ```
@@ -189,15 +266,19 @@ ratio <  0.5% → 5 pts
 
 Each component returns both a numeric score and an Indonesian-language explanation string used in the UI tooltip.
 
-### Step 6 — Narrative Generation (rule-based)
+### Step 6 — Narrative Generation (rule-based + bandar context)
 
 Implemented in `signal-confidence.ts` → `generateNarrative()`.
 
-Pattern-based system that detects money-flow patterns and describes what is happening in Indonesian. Patterns detected (ordered by specificity):
+Pattern-based system that detects money-flow patterns and describes what is happening in Indonesian. **v3.0 enrichment:** narratives are now augmented with bandar detection context from the 3-layer algorithm via `extractBandarContext()`.
+
+#### Base Patterns (ordered by specificity):
 
 | Pattern | Conclusion |
 |---------|-----------|
 | All actors neutral | "Tidak ada pergerakan signifikan" |
+| All actors neutral + bandar accumulating | "Pasar sepi, tapi bandar aktif akumulasi" |
+| All actors neutral + bandar distributing | "Pasar sepi, tapi bandar aktif distribusi" |
 | All actors accumulating | "Semua aktor selaras masuk" |
 | All actors distributing | "Semua aktor selaras keluar" |
 | Foreign exit absorbed domestically (low net) | "Perpindahan kepemilikan, bukan distribusi" |
@@ -210,7 +291,20 @@ Pattern-based system that detects money-flow patterns and describes what is happ
 | Retail-dominant distribution + asing buying | "Potensi akumulasi smart money" |
 | Mixed buying/selling | "Belum ada konsensus arah" |
 
-Each narrative includes an insider activity suffix when data is available (e.g., "Insider: 2 BUY, 1 SELL").
+#### Bandar Context Enrichment (v3.0)
+
+After pattern detection, the narrative is enriched with bandar candidate data:
+
+- **Strong unidirectional bandar** (SPECIFIC + tier A/A2, only accumulators or only distributors):
+  Conclusion is **prepended** → `"Bandar BRI Danareksa akumulasi (counter-retail) — waspada jika tekanan asing berlanjut"`
+- **Weaker bandar** (tier B or ELEVATED):
+  Conclusion is **appended** → `"Waspada jika tekanan asing berlanjut. Bandar BRI Danareksa akumulasi"`
+- **Mixed bandar** (both accumulators and distributors detected):
+  Context is **appended** → `"Sinyal awal. Bandar campuran: BRI Danareksa akumulasi, OCBC distribusi"`
+
+Tooltip detail always includes full bandar breakdown: broker code, name, concentration %, specificity ratio, and counter-retail flag.
+
+Each narrative also includes insider activity suffix when data is available (e.g., "Insider: 2 BUY, 1 SELL").
 
 ### Legacy: SQL Signal Function
 
@@ -297,7 +391,13 @@ GET /api/stocks/[ticker]/broker?mode=smart-money&days=30
     bandar signal, insider transactions
 ```
 
-All data is fetched server-side via Supabase server client (service key stays server-side only).
+- `days` parameter: max 200 (increased from 90 in v3.0)
+- All data is fetched server-side via Supabase server client (service key stays server-side only)
+
+### Constants Module: `web/src/lib/broker-constants.ts` (v3.0)
+
+- `PLATFORM_BROKERS: Set<string>` — CC, YP, XL, XC, PD
+- `BROKER_NAMES: Record<string, string>` — 90 IDX broker codes → short names
 
 ### Query Module: `web/src/lib/queries/broker.ts`
 
@@ -305,24 +405,69 @@ Key exported functions:
 - `getSmartMoneyData(ticker, days)` — combines all queries below into one response
 - `getStockBrokerSummary(ticker, days)` — top buyers/sellers/net, with bandar signal
 - `getDailyBrokerFlowByType(ticker, days)` — daily asing/lokal/pemerintah flow for charts
-- `getBrokerConcentration(ticker, days)` — top 15 brokers with concentration % and bandar/asing/retail classification
+- `getBrokerConcentration(ticker, days)` — **v3.0: 3-layer algorithm** returning top 20 brokers with tier, specificity, counter-retail, avg price, net lot
+- `_getBrokerGlobalStats(brokerCodes, dates)` — **v3.0: cross-stock specificity** query for Layer 2
 - `getBandarSignal(ticker, date)` — latest bandar_signal row
 - `getInsiderTransactions(ticker, limit)` — recent major holder transactions
+
+**v3.0 `BrokerConcentrationRow` fields:**
+```typescript
+{
+  broker_code, broker_name, broker_type,
+  total_buy_value, total_sell_value, total_net_value,
+  concentration_pct,
+  // Layer 1
+  buy_days, sell_days, active_days, dir_pct, net_direction, tier,
+  // Layer 2
+  specificity, specificity_label,
+  // Layer 3
+  counter_retail,
+  // VWAP & position size
+  net_lot, avg_buy_price, avg_sell_price,
+  // Classification
+  is_platform, status
+}
+```
 
 ### Calculation Module: `web/src/lib/calculations/signal-confidence.ts`
 
 Key exported functions:
 - `computeConfidence(input)` → `ConfidenceScore` (total 0–100, per-component scores + explanations)
-- `generateNarrative(input)` → `Narrative` (conclusion + detail in Indonesian)
+- `generateNarrative(input)` → `Narrative` (conclusion + detail in Indonesian, enriched with bandar context)
+- `extractBandarContext(concentration)` → **v3.0:** extracts accumulators/distributors from concentration data for narrative enrichment
+
+**v3.0 Broker Concentration scoring changes:**
+- Filters out platform brokers from top 3
+- Tier bonus: A(+3), A2(+2), B(+1) — replaces flat +2 for kandidat_bandar
+- Specificity bonus: SPECIFIC(+2), ELEVATED(+1)
+- Counter-retail bonus: +1
+- All capped at 15 points
 
 ### UI Widget: `BrokerActivityWidget.tsx`
 
 Located at `web/src/components/stock/widgets/BrokerActivityWidget.tsx`. Renders:
-- Smart money confidence score badge with strength label
-- Narrative conclusion + expandable detail
-- Daily flow chart (asing vs lokal vs pemerintah)
-- Top brokers table with concentration % and bandar candidate flags
-- Insider transaction list with ownership changes
+
+**Summary Cards:**
+- Net flow, net asing, insider filing, combined signal with confidence score
+
+**Tab 1 — Aliran Broker Harian:**
+- Diverging stacked bar chart (BUMN/Asing/Retail) with price overlay
+- **v3.0:** Auto-aggregates to weekly buckets when >90 data points (keeps bars readable at 120D/200D)
+
+**Tab 2 — Kumulatif Net Flow:**
+- Line chart showing cumulative asing/lokal/pemerintah flow over time
+
+**Tab 3 — Identifikasi Broker Bandar (v3.0 redesign):**
+- 10-column table: Broker (code+name), Net Flow, Avg Price (buy/sell VWAP), Net Lot (position size in lots + shares), Konsentrasi%, Konsistensi% (with buy/sell/total day breakdown), Tier (A/A2/B badge), Spesifisitas (ratio + SPECIFIC/ELEVATED/UBIQ), Counter-Retail (CR flag), Status
+- Platform brokers shown at 50% opacity with "(Platform)" label
+- Brokers with ≥15% concentration get amber "Big Player" highlight
+- Column headers have instant CSS tooltips explaining each metric
+- Expandable "Selengkapnya" explanation box with threshold details
+
+**Tab 4 — Insider Filings:**
+- Recent KSEI major holder transactions with ownership changes
+
+**Duration Presets:** 10D, 20D, 30D, 60D, 90D, 120D, 200D (expanded from 10-60D in v3.0)
 
 ---
 
@@ -342,10 +487,26 @@ Located at `web/src/components/stock/widgets/BrokerActivityWidget.tsx`. Renders:
 - [x] Broker concentration analysis with bandar candidate detection
 - [x] All components return per-item explanations for UI tooltips
 
+### 3-Layer Bandar Detection (v3.0) ✅
+- [x] Layer 1: Concentration + directional consistency → tier A/A2/B
+- [x] Layer 2: Stock-specificity via cross-stock global volume comparison
+- [x] Layer 3: Counter-retail signal (platform broker direction opposition)
+- [x] Platform broker exclusion (CC, YP, XL, XC, PD)
+- [x] Broker name mapping (90 IDX brokers)
+- [x] Big Player highlight for ≥15% concentration
+- [x] VWAP per broker (avg buy/sell price from lot data)
+- [x] Net lot tracking (position size accumulated/distributed)
+- [x] Narrative enrichment with bandar context
+- [x] Backtested across 85 stocks (Oct 2025–Mar 2026)
+
 ### UI Integration ✅
 - [x] BrokerActivityWidget renders smart money data on stock detail page
 - [x] Daily flow chart shows asing/lokal/pemerintah breakdown
+- [x] Weekly aggregation for >90 day ranges
 - [x] Insider transactions displayed with ownership change percentages
+- [x] Duration presets extended to 200D
+- [x] Broker identification table with 10 columns + tooltips
+- [x] Expandable explanation box with threshold documentation
 
 ---
 
@@ -359,4 +520,8 @@ Located at `web/src/components/stock/widgets/BrokerActivityWidget.tsx`. Renders:
 | KSEI insider data may have delays | Transactions are stored by `transaction_date` not filing date; stale data is acceptable for 30-day rolling windows |
 | PostgREST row cap (1000) truncates broker_flow queries | Batched fetching in `_fetchBrokerFlowBatched()`; date lookups via `bandar_signal` (1 row/date) instead of `broker_flow` (~50 rows/date) |
 | Signal confidence is relative, not absolute | Strength labels (Sangat Kuat → Sangat Lemah) help users interpret; narrative provides qualitative context |
-| Broker type classification comes from Stockbit | May not be 100% accurate for all brokers; `kandidat_bandar` status is supplemented by concentration analysis |
+| Broker type classification comes from Stockbit | May not be 100% accurate for all brokers; `kandidat_bandar` status uses 3-layer algorithm independent of Stockbit's type field |
+| Layer 2 specificity requires cross-stock queries | Adds 1-3 extra Supabase round-trips per tier-qualifying broker; only executed for brokers passing Layer 1 (typically 3-8) |
+| VWAP uses lot-based calculation (1 lot = 100 shares) | `avg_price = total_value / (total_lot × 100)`; slight rounding vs Stockbit's `buy_avg_price` field |
+| 200D duration creates dense charts | Auto-aggregation to weekly bars when >90 data points; cumulative chart unaffected |
+| Platform broker list is hardcoded (5 brokers) | Defined in `web/src/lib/broker-constants.ts`; may need updating if IDX retail landscape changes |

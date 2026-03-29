@@ -250,7 +250,6 @@ def _fetch_broker_marketdetector(
             "total_seller": safe_int(bandar.get("total_seller")),
             "total_value": _parse_sci_int(bandar.get("value")),
             "total_volume": _parse_sci_int(bandar.get("volume")),
-            "raw_json": json.dumps(bandar),
             "created_at": now_iso,
         }
 

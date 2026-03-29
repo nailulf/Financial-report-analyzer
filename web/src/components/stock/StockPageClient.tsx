@@ -38,6 +38,7 @@ import { DividendWidget }           from './widgets/DividendWidget'
 import { PeersWidget }              from './widgets/PeersWidget'
 import { CompanyProfileWidget }     from './widgets/CompanyProfileWidget'
 import { DataQualityWidget }        from './widgets/DataQualityWidget'
+import { AnalystInsightWidget }     from './widgets/AnalystInsightWidget'
 import { SectionDivider }           from './widgets/SectionDivider'
 
 export interface StockPageProps {
@@ -133,6 +134,10 @@ export function StockPageClient({
           <div className="w-[480px]">
             <InvestmentThesisWidget />
           </div>
+        </div>
+
+        <div className="px-12 py-2">
+          <AnalystInsightWidget ticker={header.ticker} />
         </div>
       </div>
 

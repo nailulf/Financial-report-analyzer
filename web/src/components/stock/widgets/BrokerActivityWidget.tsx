@@ -1089,8 +1089,10 @@ export function BrokerActivityWidget({
   const [endDate, setEndDate] = useState('')
   const [loading, setLoading] = useState(false)
   const [activeTab, setActiveTab] = useState<TabKey>('daily')
+  const [maxAvailableDays, setMaxAvailableDays] = useState<number | null>(null)
+  const maxRef = React.useRef<number | null>(null) // ref for use inside callbacks without stale closures
 
-  const fetchData = useCallback(async (d: number, ed: string) => {
+  const fetchAndApply = useCallback(async (d: number, ed: string) => {
     setLoading(true)
     try {
       const params = new URLSearchParams({ days: String(d), mode: 'smart-money' })
@@ -1102,9 +1104,17 @@ export function BrokerActivityWidget({
         setData(json.summary)
         setDailyFlow(json.dailyFlow)
         setConcentration(json.concentration)
+        // Every response tells us the actual data ceiling:
+        // if we asked for more than came back, that IS the max.
+        const actual = json.summary.daysCount
+        if (actual < d && (maxRef.current === null || actual < maxRef.current)) {
+          maxRef.current = actual
+          setMaxAvailableDays(actual)
+        }
       }
+      return json
     } catch {
-      // keep current data on error
+      return null
     } finally {
       setLoading(false)
     }
@@ -1112,14 +1122,32 @@ export function BrokerActivityWidget({
 
   // Track whether user has changed filters
   const [mounted, setMounted] = useState(false)
-  const [userChanged, setUserChanged] = useState(false)
   useEffect(() => { setMounted(true) }, [])
+
+  // On mount: fetch max range (200D) to learn the data ceiling,
+  // then auto-select the best matching preset
   useEffect(() => {
     if (!mounted) return
-    if (!userChanged) return
-    fetchData(days, endDate)
+    let cancelled = false
+    const init = async () => {
+      const json = await fetchAndApply(200, '')
+      if (cancelled || !json) return
+      const actual = json.summary.daysCount
+      maxRef.current = actual
+      setMaxAvailableDays(actual)
+      // Auto-select the lowest preset that covers all available data (round up)
+      const bestPreset = DURATION_PRESETS.find((p) => p.days >= actual)
+      const targetDays = bestPreset?.days ?? 30
+      setDays(targetDays)
+      // Only re-fetch if the best preset is less than what we already have
+      if (targetDays < actual) {
+        await fetchAndApply(targetDays, '')
+      }
+    }
+    init()
+    return () => { cancelled = true }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [days, endDate, mounted, userChanged])
+  }, [mounted, ticker])
 
   // Compute aggregates
   const allBuckets = data ? mergeBuckets(data) : []
@@ -1183,25 +1211,46 @@ export function BrokerActivityWidget({
         <span className="font-mono text-[13px] font-bold tracking-[0.5px] text-[#1A1A1A]">AKTIVITAS BROKER</span>
         <div className="flex items-center gap-2">
           <div className="flex items-center gap-1">
-            {DURATION_PRESETS.map((p) => (
-              <button
-                key={p.days}
-                onClick={() => { setUserChanged(true); setDays(p.days) }}
-                className={`font-mono text-[11px] font-bold px-2 py-1 border transition-colors ${
-                  days === p.days
-                    ? 'bg-[#1A1A1A] text-[#00FF88] border-[#1A1A1A]'
-                    : 'bg-white text-[#888888] border-[#E0E0E5] hover:border-[#1A1A1A] hover:text-[#1A1A1A]'
-                }`}
-              >
-                {p.label}
-              </button>
-            ))}
+            {DURATION_PRESETS.map((p) => {
+              // Disable presets above the rounded-up best fit.
+              // e.g. max=72 → best fit=90D, so disable 120D and 200D
+              const bestFit = maxAvailableDays !== null
+                ? (DURATION_PRESETS.find((pr) => pr.days >= maxAvailableDays)?.days ?? 200)
+                : null
+              const exceeds = bestFit !== null && p.days > bestFit
+              return (
+                <button
+                  key={p.days}
+                  disabled={exceeds || loading}
+                  title={exceeds ? `Data tersedia: ${maxAvailableDays} hari trading` : `${p.days} hari trading`}
+                  onClick={() => {
+                    if (exceeds) return
+                    setDays(p.days)
+                    fetchAndApply(p.days, endDate)
+                  }}
+                  className={`font-mono text-[11px] font-bold px-2 py-1 border transition-colors ${
+                    exceeds
+                      ? 'bg-[#F5F5F5] text-[#CCCCCC] border-[#E0E0E5] cursor-not-allowed line-through'
+                      : days === p.days
+                        ? 'bg-[#1A1A1A] text-[#00FF88] border-[#1A1A1A]'
+                        : 'bg-white text-[#888888] border-[#E0E0E5] hover:border-[#1A1A1A] hover:text-[#1A1A1A]'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              )
+            })}
+            {maxAvailableDays !== null && (
+              <span className="font-mono text-[10px] text-[#AAAAAA] ml-1">
+                max {maxAvailableDays}D
+              </span>
+            )}
           </div>
           {mounted && (
             <input
               type="date"
               value={endDate}
-              onChange={(e) => { setUserChanged(true); setEndDate(e.target.value) }}
+              onChange={(e) => { const ed = e.target.value; setEndDate(ed); fetchAndApply(days, ed) }}
               className="font-mono text-[11px] text-[#1A1A1A] border border-[#E0E0E5] px-2 py-1 bg-white focus:outline-none focus:border-[#1A1A1A] w-[110px]"
             />
           )}

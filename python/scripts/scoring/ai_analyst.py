@@ -64,19 +64,25 @@ ATURAN PENTING:
 ATURAN SKENARIO & HARGA TARGET (WAJIB):
 - Setiap skenario (bull/bear/neutral) HARUS dikuantifikasi dengan asumsi keuangan spesifik.
 - Gunakan data aktual dari bundle sebagai titik awal, lalu proyeksikan perubahan.
-- Untuk BULL CASE, nyatakan secara eksplisit:
-  * Berapa pertumbuhan revenue yang diasumsikan (misal: "revenue naik 15% ke Rp X")
-  * Berapa perbaikan margin yang diasumsikan (misal: "net margin membaik dari -20% ke -5%")
-  * Atau berapa target EPS/FCF yang harus dicapai
-  * Bagaimana angka-angka ini diterjemahkan ke price_target (misal: "pada PE 15x dan EPS Rp50 → target Rp750")
-- Untuk BEAR CASE, nyatakan:
-  * Skenario penurunan spesifik (misal: "revenue turun 10%, margin tertekan ke -30%")
-  * Pada valuasi berapa harga bawah masuk akal (misal: "pada PBV 0.5x dan BVPS Rp200 → Rp100")
-- Untuk NEUTRAL CASE, nyatakan:
-  * Asumsi status quo (misal: "revenue tumbuh 5-8%, margin stabil di X%")
-  * Range harga berdasarkan valuasi wajar (PE/PBV range)
-- JANGAN pernah memberikan price_target tanpa menjelaskan asumsi keuangan di baliknya.
-- Price target HARUS masuk akal relatif terhadap harga saat ini dan fundamentals di bundle.
+
+PENTING — GUNAKAN VALUASI DARI BUNDLE SEBAGAI ANCHOR:
+- Bundle sudah berisi valuasi yang sudah dihitung: graham_number, dcf_bear, dcf_base, dcf_bull.
+- HARGA TARGET HARUS KONSISTEN dengan valuasi di bundle:
+  * Bull price_target ≈ sekitar dcf_bull atau di atasnya (jika ada katalis tambahan)
+  * Neutral price_range ≈ sekitar dcf_base ± 10-20%
+  * Bear price_target ≈ sekitar dcf_bear atau graham_number (mana yang lebih rendah)
+- Jika dcf_bull = 4,807 dan graham = null, maka bull target TIDAK BOLEH jauh di bawah 4,000.
+- Jika kamu yakin valuasi DCF terlalu tinggi/rendah, JELASKAN mengapa kamu menyimpang
+  (misal: "DCF mengasumsikan FCF stabil, tapi untuk perusahaan cyclical post-peak ini tidak realistis").
+- JANGAN membuat angka sendiri tanpa referensi ke valuasi bundle atau asumsi keuangan eksplisit.
+
+Untuk setiap skenario, nyatakan:
+- Asumsi pertumbuhan revenue (% dan nominal)
+- Asumsi margin (perbaikan/penurunan/stabil dan angka spesifik)
+- Basis valuasi: metode apa yang dipakai (PE × EPS, PBV × BVPS, DCF, atau asset-based)
+- Perhitungan singkat: "pada PE Xx dan EPS RpY → target RpZ" atau "mendekati dcf_bull RpZ"
+
+- Price target HARUS masuk akal relatif terhadap harga saat ini DAN valuasi di bundle.
 
 Spesifik IDX:
 - Perbankan: bobot NIM, CASA, NPL. Abaikan current_ratio/interest_coverage.

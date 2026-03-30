@@ -260,10 +260,14 @@ def validate_output(
 
     cl = output.get("confidence_level")
     if cl is not None:
-        # Normalize: some models return 0.7 (0-1 scale) instead of 7 (1-10 scale)
-        if isinstance(cl, (int, float)) and 0 < cl < 1:
-            output["confidence_level"] = round(cl * 10)
-            cl = output["confidence_level"]
+        if isinstance(cl, (int, float)):
+            # Normalize: models return various scales
+            if 0 < cl < 1:         # 0-1 scale → multiply by 10
+                cl = round(cl * 10)
+            elif cl > 10:           # 0-100 or percentage scale → divide by 10
+                cl = round(cl / 10)
+            cl = max(1, min(10, int(cl)))  # clamp to 1-10
+            output["confidence_level"] = cl
         if not isinstance(cl, (int, float)) or cl < 1 or cl > 10:
             errors.append(f"confidence_level_out_of_range: {cl}")
 
@@ -433,7 +437,7 @@ class AIAnalyst:
         try:
             response = self.llm.chat(SYSTEM_PROMPT, user_prompt)
         except Exception as e:
-            logger.error("LLM call failed for %s: %s", ticker, e)
+            logger.error("LLM call failed for %s: %s", ticker, e, exc_info=True)
             return AIAnalysisResult(
                 ticker=ticker, success=False,
                 error=f"LLM call failed: {str(e)}"

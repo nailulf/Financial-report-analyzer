@@ -102,13 +102,29 @@ class TestValidationStructural:
         errors = validate_output(valid_output)
         assert any("invalid_health_signal" in e for e in errors)
 
-    def test_confidence_out_of_range(self, valid_output):
-        valid_output["confidence_level"] = 15
+    def test_confidence_normalized_from_percentage(self, valid_output):
+        """45.98 (0-100 scale) should be normalized to 5 (1-10 scale)."""
+        valid_output["confidence_level"] = 45.98
         errors = validate_output(valid_output)
-        assert any("confidence_level_out_of_range" in e for e in errors)
+        assert len([e for e in errors if "confidence" in e]) == 0
+        assert valid_output["confidence_level"] == 5  # 45.98/10 → 5
 
-    def test_confidence_zero_fails(self, valid_output):
-        valid_output["confidence_level"] = 0
+    def test_confidence_normalized_from_decimal(self, valid_output):
+        """0.7 (0-1 scale) should be normalized to 7."""
+        valid_output["confidence_level"] = 0.7
+        errors = validate_output(valid_output)
+        assert len([e for e in errors if "confidence" in e]) == 0
+        assert valid_output["confidence_level"] == 7
+
+    def test_confidence_clamped_to_max_10(self, valid_output):
+        """150 should be clamped to 10."""
+        valid_output["confidence_level"] = 150
+        errors = validate_output(valid_output)
+        assert len([e for e in errors if "confidence" in e]) == 0
+        assert valid_output["confidence_level"] == 10
+
+    def test_confidence_string_fails(self, valid_output):
+        valid_output["confidence_level"] = "high"
         errors = validate_output(valid_output)
         assert any("confidence_level_out_of_range" in e for e in errors)
 

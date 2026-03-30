@@ -61,6 +61,23 @@ ATURAN PENTING:
 - data_gap_flags harus diakui. Katakan apa yang tidak kamu ketahui dan bagaimana
   hal itu akan mengubah pandanganmu.
 
+ATURAN SKENARIO & HARGA TARGET (WAJIB):
+- Setiap skenario (bull/bear/neutral) HARUS dikuantifikasi dengan asumsi keuangan spesifik.
+- Gunakan data aktual dari bundle sebagai titik awal, lalu proyeksikan perubahan.
+- Untuk BULL CASE, nyatakan secara eksplisit:
+  * Berapa pertumbuhan revenue yang diasumsikan (misal: "revenue naik 15% ke Rp X")
+  * Berapa perbaikan margin yang diasumsikan (misal: "net margin membaik dari -20% ke -5%")
+  * Atau berapa target EPS/FCF yang harus dicapai
+  * Bagaimana angka-angka ini diterjemahkan ke price_target (misal: "pada PE 15x dan EPS Rp50 → target Rp750")
+- Untuk BEAR CASE, nyatakan:
+  * Skenario penurunan spesifik (misal: "revenue turun 10%, margin tertekan ke -30%")
+  * Pada valuasi berapa harga bawah masuk akal (misal: "pada PBV 0.5x dan BVPS Rp200 → Rp100")
+- Untuk NEUTRAL CASE, nyatakan:
+  * Asumsi status quo (misal: "revenue tumbuh 5-8%, margin stabil di X%")
+  * Range harga berdasarkan valuasi wajar (PE/PBV range)
+- JANGAN pernah memberikan price_target tanpa menjelaskan asumsi keuangan di baliknya.
+- Price target HARUS masuk akal relatif terhadap harga saat ini dan fundamentals di bundle.
+
 Spesifik IDX:
 - Perbankan: bobot NIM, CASA, NPL. Abaikan current_ratio/interest_coverage.
 - BUMN: terapkan diskon PE struktural 15-20% (risiko tata kelola + pinjaman politik).
@@ -78,29 +95,34 @@ OUTPUT_SCHEMA = """{
   "business_narrative": "<3-4 kalimat CERITA BISNIS dalam Bahasa Indonesia, bukan rangkuman angka>",
   "financial_health_signal": "<improving|stable|deteriorating>",
   "bull_case": {
-    "scenario": "<3-4 kalimat dalam Bahasa Indonesia>",
-    "drivers": ["<faktor pendorong>","<faktor pendorong>","<faktor pendorong>"],
+    "scenario": "<3-4 kalimat dalam Bahasa Indonesia — HARUS menyebutkan asumsi keuangan spesifik: target revenue, margin, atau EPS>",
+    "assumptions": "<1-2 kalimat: asumsi keuangan kuantitatif, misal 'revenue naik 20% ke Rp X, net margin membaik dari -15% ke 5%, target EPS Rp50'>",
+    "valuation_basis": "<bagaimana price_target dihitung, misal 'pada PE 15x dan EPS Rp50 → target Rp750' atau 'pada PBV 1.5x dan BVPS Rp500 → target Rp750'>",
+    "drivers": ["<faktor pendorong spesifik>","<faktor pendorong>","<faktor pendorong>"],
     "price_target": 0,
     "timeframe": "<6-12 bulan | 1-2 tahun | 2-3 tahun>",
     "probability": "<low|medium|high>",
-    "early_signs": ["<tanda awal>","<tanda awal>"]
+    "early_signs": ["<tanda awal yang bisa diukur>","<tanda awal>"]
   },
   "bear_case": {
-    "scenario": "<3-4 kalimat dalam Bahasa Indonesia>",
-    "drivers": ["<faktor risiko>","<faktor risiko>","<faktor risiko>"],
+    "scenario": "<3-4 kalimat dalam Bahasa Indonesia — HARUS menyebutkan skenario penurunan spesifik>",
+    "assumptions": "<1-2 kalimat: asumsi penurunan kuantitatif, misal 'revenue turun 10%, margin tertekan ke -30%'>",
+    "valuation_basis": "<bagaimana price_target dihitung, misal 'pada PBV 0.5x dan BVPS Rp200 → Rp100'>",
+    "drivers": ["<faktor risiko spesifik>","<faktor risiko>","<faktor risiko>"],
     "price_target": 0,
     "timeframe": "<>",
     "probability": "<low|medium|high>",
-    "early_signs": ["<tanda awal>","<tanda awal>"]
+    "early_signs": ["<tanda awal yang bisa diukur>","<tanda awal>"]
   },
   "neutral_case": {
-    "scenario": "<3-4 kalimat dalam Bahasa Indonesia — jalur paling mungkin>",
+    "scenario": "<3-4 kalimat dalam Bahasa Indonesia — jalur paling mungkin, dengan asumsi kuantitatif>",
+    "assumptions": "<1-2 kalimat: asumsi status quo, misal 'revenue tumbuh 5-8%, margin stabil di X%'>",
     "drivers": ["<faktor>","<faktor>"],
     "price_range_low": 0,
     "price_range_high": 0,
     "timeframe": "<>",
     "probability": "<low|medium|high>",
-    "what_breaks_it": ["<pemicu ke bull>","<pemicu ke bear>"]
+    "what_breaks_it": ["<pemicu ke bull dengan threshold spesifik>","<pemicu ke bear dengan threshold spesifik>"]
   },
   "strategy_fit": {
     "primary": "<strategi>",

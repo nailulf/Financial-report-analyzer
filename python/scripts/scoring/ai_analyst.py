@@ -315,6 +315,9 @@ def validate_output(
     if bull_price and bear_price and bull_price <= bear_price:
         errors.append(f"scenario_ordering: bull ({bull_price}) should exceed bear ({bear_price})")
 
+    if bull_price and neutral_high and bull_price < neutral_high:
+        errors.append(f"scenario_ordering: bull ({bull_price}) should exceed neutral high ({neutral_high})")
+
     if neutral_low and neutral_high and neutral_low >= neutral_high:
         errors.append(f"neutral_range_inverted: low ({neutral_low}) >= high ({neutral_high})")
 
@@ -390,6 +393,21 @@ def build_user_prompt(
         parts.append("DOMAIN CONTEXT: None available. Base analysis on data + macro + sector template only.")
         parts.append("Flag conclusions that would benefit from deeper company-specific knowledge.")
         parts.append("")
+
+    # Valuation anchors — extracted and highlighted so AI can't miss them
+    val = context_json.get("valuation", {})
+    current_price = val.get("current_price")
+    parts.append("ANCHOR VALUASI (SUDAH DIHITUNG — gunakan sebagai referensi harga target):")
+    parts.append(f"  Harga saat ini: Rp{current_price:,.0f}" if current_price else "  Harga saat ini: tidak tersedia")
+    parts.append(f"  Graham Number: Rp{val['graham_number']:,.0f}" if val.get("graham_number") else "  Graham Number: tidak tersedia")
+    parts.append(f"  DCF Bear:  Rp{val['dcf_bear']:,.0f}" if val.get("dcf_bear") else "  DCF Bear: tidak tersedia")
+    parts.append(f"  DCF Base:  Rp{val['dcf_base']:,.0f}" if val.get("dcf_base") else "  DCF Base: tidak tersedia")
+    parts.append(f"  DCF Bull:  Rp{val['dcf_bull']:,.0f}" if val.get("dcf_bull") else "  DCF Bull: tidak tersedia")
+    parts.append(f"  PE: {val.get('pe_ratio', '—')}  |  PB: {val.get('pb_ratio', '—')}")
+    parts.append("")
+    parts.append("ATURAN: bull price_target >= dcf_bull, neutral range ≈ dcf_base ±20%, bear price_target ≈ dcf_bear atau graham.")
+    parts.append("Jika kamu menyimpang dari anchor ini, JELASKAN alasannya secara eksplisit.")
+    parts.append("")
 
     # Data bundle
     parts.append("STOCK DATA BUNDLE:")

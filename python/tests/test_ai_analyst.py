@@ -246,7 +246,7 @@ class TestPromptConstruction:
 class TestProviderFactory:
     def test_openai_default(self):
         provider = get_provider("openai")
-        assert provider.model == "gpt-4o-nano"
+        assert provider.model == "gpt-4o-mini"
 
     def test_openai_custom_model(self):
         provider = get_provider("openai", model="gpt-4o-mini")

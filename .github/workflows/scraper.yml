@@ -55,7 +55,7 @@ jobs:
           cache-dependency-path: python/requirements.txt
 
       - name: Install dependencies
-        run: pip install -r python/requirements.txt
+        run: pip install --no-cache-dir -r python/requirements.txt
 
       - name: Determine run args
         id: args

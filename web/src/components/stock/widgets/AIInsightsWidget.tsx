@@ -331,36 +331,62 @@ export function AIInsightsWidget({ ticker }: Props) {
 
       setGenStatus('Pipeline berjalan via GitHub Actions — proses memerlukan 1-3 menit...')
 
-      // Step 2: Poll for result (check every 5s, max 2 minutes)
+      // Step 2: Poll for result (check every 10s, max 3 minutes)
       let attempts = 0
-      const maxAttempts = 24
-      const poll = async (): Promise<boolean> => {
-        const res = await fetch(`/api/stocks/${ticker}/ai-analysis`)
-        if (res.ok) {
-          const result = await res.json()
+      const maxAttempts = 18
+      const poll = async (): Promise<'done' | 'not_ready' | 'waiting'> => {
+        // Check if AI analysis exists
+        const aiRes = await fetch(`/api/stocks/${ticker}/ai-analysis`)
+        if (aiRes.ok) {
+          const result = await aiRes.json()
           if (result && result.analystVerdict) {
             setData(result)
             setGenStatus(null)
-            return true
+            return 'done'
           }
         }
-        return false
+
+        // Check if pipeline ran but stock wasn't eligible
+        const qualityRes = await fetch(`/api/stocks/${ticker}/context-quality`)
+        if (qualityRes.ok) {
+          const quality = await qualityRes.json()
+          if (quality && quality.readyForAI === false && quality.compositeScore != null) {
+            // Pipeline ran, but stock didn't pass the gate
+            setGenStatus(
+              `Data saham ini belum memenuhi syarat untuk analisis AI.\n` +
+              `Reliability: ${quality.reliabilityGrade ?? '?'} (${quality.reliabilityScore ?? 0}/100)\n` +
+              `Confidence: ${quality.confidenceGrade ?? '?'} (${quality.confidenceScore ?? 0}/100)\n` +
+              `Composite: ${quality.compositeScore}/100\n\n` +
+              `Syarat minimum: Reliability ≥ 45, Confidence ≥ 40, minimal 3 tahun data bersih.\n` +
+              (quality.dataGapFlags?.length ? `Data gaps: ${quality.dataGapFlags.join(', ')}` : '')
+            )
+            return 'not_ready'
+          }
+        }
+
+        return 'waiting'
       }
 
       const interval = setInterval(async () => {
         attempts++
         if (attempts > maxAttempts) {
           clearInterval(interval)
-          setGenStatus('Timeout — coba jalankan manual via CLI: python run_all.py --ai-full --ticker ' + ticker)
+          setGenStatus('Timeout — cek GitHub Actions log atau jalankan manual:\npython run_all.py --ai-full --ticker ' + ticker + ' --ai-model gpt-4o-mini')
           setGenerating(false)
           return
         }
-        const done = await poll().catch(() => false)
-        if (done) {
-          clearInterval(interval)
-          setGenerating(false)
+        try {
+          const status = await poll()
+          if (status === 'done' || status === 'not_ready') {
+            clearInterval(interval)
+            setGenerating(false)
+          } else if (attempts > 6) {
+            setGenStatus(`Pipeline berjalan... (${attempts * 10}s)`)
+          }
+        } catch {
+          // ignore transient errors
         }
-      }, 5000)
+      }, 10000)
 
     } catch (e) {
       setGenStatus(`Error: ${e instanceof Error ? e.message : 'unknown'}`)

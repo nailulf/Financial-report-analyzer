@@ -327,6 +327,154 @@ export interface ScraperJobStatus {
   error_message: string | null
 }
 
+// ─── Phase 6: AI Pipeline Types ──────────────────────────────────────────────
+
+export interface AIAnalysis {
+  ticker: string
+  lynchCategory: string          // slow_grower|stalwart|fast_grower|cyclical|turnaround|asset_play
+  lynchRationale: string | null
+  buffettMoat: string | null     // none|narrow|wide
+  buffettMoatSource: string | null
+  businessNarrative: string | null
+  financialHealthSignal: string | null  // improving|stable|deteriorating
+  bullCase: {
+    scenario: string
+    drivers: string[]
+    price_target: number
+    timeframe: string
+    probability: string
+    early_signs: string[]
+  } | null
+  bearCase: {
+    scenario: string
+    drivers: string[]
+    price_target: number
+    timeframe: string
+    probability: string
+    early_signs: string[]
+  } | null
+  neutralCase: {
+    scenario: string
+    drivers: string[]
+    price_range_low: number
+    price_range_high: number
+    timeframe: string
+    probability: string
+    what_breaks_it: string[]
+  } | null
+  strategyFit: {
+    primary: string
+    ideal_investor: string
+    position_sizing: string
+  } | null
+  whatToWatch: string[]
+  analystVerdict: string         // strong_buy|buy|hold|avoid|strong_avoid
+  confidenceLevel: number        // 1-10
+  dataGapsAcknowledged: string[]
+  caveats: string[]
+  modelUsed: string | null
+  generatedAt: string | null
+}
+
+export interface ContextQuality {
+  readyForAI: boolean
+  compositeScore: number | null
+  reliabilityScore: number | null
+  reliabilityGrade: string | null
+  confidenceScore: number | null
+  confidenceGrade: string | null
+  dataYearsAvailable: number | null
+  primarySource: string | null
+  missingMetrics: string[]
+  anomalousYears: number[]
+  flaggedIssues: string[]
+  dataGapFlags: string[]
+  builtAt: string | null
+}
+
+export interface StockScore {
+  ticker: string
+  reliabilityTotal: number
+  reliabilityGrade: string
+  reliabilityCompleteness: number
+  reliabilityConsistency: number
+  reliabilityFreshness: number
+  reliabilitySource: number
+  reliabilityPenalties: number
+  confidenceTotal: number
+  confidenceGrade: string
+  confidenceSignal: number
+  confidenceTrend: number
+  confidenceDepth: number
+  confidencePeers: number
+  confidenceValuation: number
+  compositeScore: number
+  readyForAI: boolean
+  bullishSignals: string[]
+  bearishSignals: string[]
+  dataGapFlags: string[]
+  missingMetrics: string[]
+  computedAt: string | null
+}
+
+export interface SectorTemplate {
+  subsector: string
+  keyMetrics: string | null
+  valuationMethod: string | null
+  cycleContext: string | null
+  currentDynamics: string | null
+  commonRisks: string | null
+  exemptions: string | null
+  bumnNote: string | null
+}
+
+export interface StockNote {
+  ticker: string
+  domainNotes: string | null
+  updatedAt: string | null
+}
+
+export interface MacroContext {
+  asOf: string
+  biRate: number
+  biRateDirection: string
+  usdIdr: number
+  idrTrend: string
+  idxCompositeYtd: number
+  foreignFlowRegime: string
+  foreignFlowNote: string | null
+  keyEvents: string[]
+}
+
+export interface PipelineDebugData {
+  dataQualityFlags: Array<{
+    year: number
+    usability_flag: string
+    is_covid_year: boolean
+    is_ipo_year: boolean
+    has_anomaly: boolean
+    has_one_time_items: boolean
+    scale_warning: boolean
+    cleaner_notes: string | null
+  }>
+  normalizedMetrics: Array<{
+    metric_name: string
+    latest_value: number | null
+    trend_direction: string | null
+    trend_r2: number | null
+    cagr_3yr: number | null
+    peer_count: number
+  }>
+  stockScore: StockScore | null
+  contextCache: {
+    tokenEstimate: number | null
+    readyForAI: boolean
+    builtAt: string | null
+    contextVersion: string | null
+  } | null
+  aiAnalysis: AIAnalysis | null
+}
+
 export interface ComparisonStock {
   ticker: string
   name: string | null

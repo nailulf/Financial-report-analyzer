@@ -21,7 +21,7 @@ export function ValuationWidget({ eps, bvps, fcf, dividends, netIncome, currentP
           ANALISIS VALUASI
         </span>
       </div>
-      <div className="p-5">
+      <div className="p-4">
         <ValuationCalculator
           eps={eps}
           bvps={bvps}

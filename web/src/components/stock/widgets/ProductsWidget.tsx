@@ -57,81 +57,107 @@ function MermaidDiagram({ chart }: { chart: string }) {
         .catch(() => {
           if (!cancelled && ref.current)
             ref.current.innerHTML =
-              '<span style="font-family:monospace;font-size:11px;color:#888">Diagram tidak tersedia — pasang mermaid</span>'
+              '<span style="font-family:monospace;font-size:11px;color:#888">Diagram tidak tersedia</span>'
         })
     })
 
     return () => { cancelled = true }
   }, [chart])
 
-  if (!mounted) return <div className="h-40 bg-[#F5F5F8] animate-pulse rounded" />
+  if (!mounted) return <div className="h-40 bg-[#F5F5F8] animate-pulse" />
   return <div ref={ref} className="flex justify-center overflow-auto" />
 }
 
 export function ProductsWidget() {
   const [mounted, setMounted] = useState(false)
+  const [open, setOpen] = useState(false)
   useEffect(() => setMounted(true), [])
 
   return (
     <div className="px-12 py-2">
-      <div className="flex flex-col gap-3">
-        <div className="flex items-center justify-between">
-          <span className="font-mono text-[13px] font-bold tracking-[0.5px] text-[#1A1A1A]">
-            PRODUK, SEGMEN &amp; MODEL BISNIS
-          </span>
-          <span className="font-mono text-[11px] text-[#888888] tracking-[0.5px]">
-            BAGAIMANA PERUSAHAAN MENGHASILKAN PENDAPATAN
-          </span>
-        </div>
-
-        <div className="flex gap-2">
-          {/* Flow diagram card */}
-          <div className="flex-1 bg-white border border-[#E0E0E5] p-5 flex flex-col gap-3">
-            <span className="font-mono text-[12px] font-bold text-[#888888] tracking-[0.5px] uppercase">
-              ALUR PENDAPATAN
+      <div className="bg-white border border-[#E0E0E5] flex flex-col">
+        {/* Header — clickable to toggle */}
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="px-5 py-3 border-b border-[#E0E0E5] flex items-center justify-between w-full text-left hover:bg-[#F5F5F8] transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[13px] font-bold tracking-[0.5px] text-[#1A1A1A]">
+              PRODUK, SEGMEN &amp; MODEL BISNIS
             </span>
-            <MermaidDiagram chart={FLOW_CHART} />
-            <span className="font-mono text-[11px] text-[#888888]">
-              * Alur ilustrasi — perbarui sesuai model bisnis aktual
+            <span className="font-mono text-[9px] text-[#888888] border border-[#E0E0E5] px-1.5 py-0.5">
+              ILUSTRASI
             </span>
           </div>
-
-          {/* Revenue segments bar chart */}
-          <div className="w-[520px] bg-white border border-[#E0E0E5] p-5 flex flex-col gap-3">
-            <span className="font-mono text-[12px] font-bold text-[#888888] tracking-[0.5px] uppercase">
-              SEGMEN PENDAPATAN (%)
+          <div className="flex items-center gap-3">
+            <span className="font-mono text-[10px] text-[#888888]">
+              Bagaimana perusahaan menghasilkan pendapatan
             </span>
-            {mounted ? (
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={MOCK_SEGMENTS} layout="vertical" margin={{ left: 8, right: 24 }}>
-                  <XAxis
-                    type="number"
-                    domain={[0, 100]}
-                    tick={{ fontFamily: 'JetBrains Mono', fontSize: 10, fill: '#888888' }}
-                    tickFormatter={(v) => `${v}%`}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="name"
-                    width={110}
-                    tick={{ fontFamily: 'JetBrains Mono', fontSize: 10, fill: '#555555' }}
-                  />
-                  <Tooltip
-                    formatter={(v: number) => [`${v}%`, 'Porsi']}
-                    contentStyle={{ fontFamily: 'JetBrains Mono', fontSize: 10, border: '1px solid #E0E0E5' }}
-                  />
-                  <Bar dataKey="value" radius={[0, 2, 2, 0]}>
-                    {MOCK_SEGMENTS.map((entry, i) => (
-                      <Cell key={i} fill={entry.color} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className="h-[200px] bg-[#F5F5F8] animate-pulse" />
-            )}
-            <span className="font-mono text-[11px] text-[#888888]">
-              * Rincian ilustrasi — ganti dengan data segmen aktual
+            <span
+              className="font-mono text-[12px] text-[#888888] transition-transform duration-200"
+              style={{ transform: open ? 'rotate(180deg)' : 'rotate(0deg)' }}
+            >
+              ▾
+            </span>
+          </div>
+        </button>
+
+        {/* Collapsible content */}
+        <div
+          className="overflow-hidden transition-[max-height] duration-300 ease-in-out"
+          style={{ maxHeight: open ? '600px' : '0px' }}
+        >
+          <div className="p-5 flex gap-3">
+            {/* Flow diagram card */}
+            <div className="flex-1 border border-[#E0E0E5] p-4 flex flex-col gap-3">
+              <span className="font-mono text-[11px] font-bold text-[#888888] tracking-[0.5px] uppercase">
+                ALUR PENDAPATAN
+              </span>
+              <MermaidDiagram chart={FLOW_CHART} />
+            </div>
+
+            {/* Revenue segments bar chart */}
+            <div className="w-[480px] border border-[#E0E0E5] p-4 flex flex-col gap-3">
+              <span className="font-mono text-[11px] font-bold text-[#888888] tracking-[0.5px] uppercase">
+                SEGMEN PENDAPATAN (%)
+              </span>
+              {mounted ? (
+                <ResponsiveContainer width="100%" height={180}>
+                  <BarChart data={MOCK_SEGMENTS} layout="vertical" margin={{ left: 8, right: 24 }}>
+                    <XAxis
+                      type="number"
+                      domain={[0, 100]}
+                      tick={{ fontFamily: 'JetBrains Mono', fontSize: 10, fill: '#888888' }}
+                      tickFormatter={(v) => `${v}%`}
+                    />
+                    <YAxis
+                      type="category"
+                      dataKey="name"
+                      width={110}
+                      tick={{ fontFamily: 'JetBrains Mono', fontSize: 10, fill: '#555555' }}
+                    />
+                    <Tooltip
+                      formatter={(v: number) => [`${v}%`, 'Porsi']}
+                      contentStyle={{ fontFamily: 'JetBrains Mono', fontSize: 10, border: '1px solid #E0E0E5' }}
+                    />
+                    <Bar dataKey="value" radius={[0, 2, 2, 0]}>
+                      {MOCK_SEGMENTS.map((entry, i) => (
+                        <Cell key={i} fill={entry.color} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-[180px] bg-[#F5F5F8] animate-pulse" />
+              )}
+            </div>
+          </div>
+
+          {/* Disclaimer footer */}
+          <div className="px-5 pb-4">
+            <span className="font-mono text-[10px] text-[#AAAAAA]">
+              * Data ilustrasi — akan diganti dengan data segmen aktual saat tersedia
             </span>
           </div>
         </div>

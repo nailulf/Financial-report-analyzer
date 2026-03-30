@@ -15,12 +15,12 @@ import type {
 } from '@/lib/types/api'
 import type { StockBrokerSummary, InsiderTransactionRow, DailyFlowByType, BrokerConcentrationRow } from '@/lib/queries/broker'
 import type { AnnualDPS } from '@/lib/queries/dividends'
+import type { PeerPercentiles } from '@/lib/calculations/percentile'
 
 import { HeroBar }                  from './widgets/HeroBar'
 import { NavTabs }                  from './widgets/NavTabs'
 import { VerdictWidget }            from './widgets/VerdictWidget'
 import { AIInsightsWidget }         from './widgets/AIInsightsWidget'
-import { FundamentalsWidget }       from './widgets/FundamentalsWidget'
 import { BrokerActivityWidget }     from './widgets/BrokerActivityWidget'
 import { InvestmentThesisWidget }   from './widgets/InvestmentThesisWidget'
 import { TechnicalWidget }          from './widgets/TechnicalWidget'
@@ -30,7 +30,7 @@ import { SentimentWidget }          from './widgets/SentimentWidget'
 import { SectorOutlookWidget }      from './widgets/SectorOutlookWidget'
 import { ProductsWidget }           from './widgets/ProductsWidget'
 import { FinancialStatementsWidget } from './widgets/FinancialStatementsWidget'
-import { GrowthHealthWidget }       from './widgets/GrowthHealthWidget'
+import { CompanyMetricsWidget }      from './widgets/CompanyMetricsWidget'
 import { FinancialHighlightsWidget } from './widgets/FinancialHighlightsWidget'
 import { ValuationWidget }          from './widgets/ValuationWidget'
 import { StoriesWidget }            from './widgets/StoriesWidget'
@@ -61,6 +61,7 @@ export interface StockPageProps {
   dailyBrokerFlow:    DailyFlowByType[]
   brokerConcentration: BrokerConcentrationRow[]
   dividendHistory:    AnnualDPS[]
+  peerPercentiles:    PeerPercentiles | null
   // Pre-computed DCF inputs (server-side, avoids serialization issues)
   dcfFcf:             number | null
   dcfDividends:       number | null   // abs(dividends_paid) — for DDM
@@ -88,6 +89,7 @@ export function StockPageClient({
   dailyBrokerFlow,
   brokerConcentration,
   dividendHistory,
+  peerPercentiles,
   dcfFcf,
   dcfDividends,
   dcfNetIncome,
@@ -119,7 +121,6 @@ export function StockPageClient({
         {/* Data grid: left = metrics + valuation | right = thesis */}
         <div className="px-12 py-2 flex gap-2 items-start">
           <div className="flex-1 flex flex-col gap-2">
-            <FundamentalsWidget ticker={header.ticker} metrics={metrics} latestYear={latestYear} />
             <ValuationWidget
               eps={metrics?.eps ?? null}
               bvps={metrics?.book_value_per_share ?? null}
@@ -151,7 +152,7 @@ export function StockPageClient({
       />
       <div className="flex flex-col gap-0">
         <FinancialStatementsWidget annual={annualTable} quarterly={quarterly} />
-        <GrowthHealthWidget cagr={cagr} health={health} />
+        <CompanyMetricsWidget ticker={header.ticker} metrics={metrics} latestYear={latestYear} cagr={cagr} health={health} peerPercentiles={peerPercentiles} />
         <FinancialHighlightsWidget quarterly={quarterly} annual={annualTable} />
         <ProductsWidget />
         <div className="px-12 py-2">
@@ -162,6 +163,7 @@ export function StockPageClient({
             price={metrics?.price ?? latestPrice}
           />
         </div>
+        <SectorOutlookWidget />
       </div>
 
       {/* ═══════════════════════════════════════════════════════════════
@@ -170,7 +172,7 @@ export function StockPageClient({
       <SectionDivider
         id="money-flow"
         title="ARUS DANA"
-        subtitle="Aktivitas broker, kepemilikan institusi, sentimen pasar, dan prospek sektor"
+        subtitle="Aktivitas broker, kepemilikan institusi, dan sentimen pasar"
       />
       <div className="flex flex-col gap-0">
         <div className="px-12 py-2">
@@ -193,7 +195,6 @@ export function StockPageClient({
             <SentimentWidget />
           </div>
         </div>
-        <SectorOutlookWidget />
       </div>
 
       {/* ═══════════════════════════════════════════════════════════════

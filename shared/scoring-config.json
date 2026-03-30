@@ -1,0 +1,102 @@
+{
+  "health_thresholds": {
+    "roe":            { "green": 15,  "yellow": 8 },
+    "net_margin":     { "green": 10,  "yellow": 5 },
+    "gross_margin":   { "green": 30,  "yellow": 15 },
+    "roa":            { "green": 8,   "yellow": 4 },
+    "current_ratio":  { "green": 1.5, "yellow": 1.0 },
+    "debt_to_equity": { "green": 1.0, "yellow": 2.0, "invert": true },
+    "fcf":            { "type": "sign", "green": 0 }
+  },
+
+  "smart_money": {
+    "broker_magnitude_max":       25,
+    "broker_magnitude_tiers":     [0.10, 0.05, 0.02, 0.005],
+    "broker_magnitude_scores":    [25, 20, 15, 10, 5],
+    "broker_magnitude_default":   5,
+
+    "foreign_alignment_max":      25,
+    "foreign_dominance_tiers":    [0.5, 0.2],
+    "foreign_dominance_muls":     [1.0, 0.8, 0.6],
+    "foreign_aligned_base":       25,
+    "foreign_contradict_base":    5,
+    "foreign_no_flow_base":       10,
+    "foreign_neutral_base":       12,
+
+    "bandar_confirmation_max":    20,
+    "bandar_blend_weights":       [0.6, 0.4],
+    "bandar_aligned_scores":      { "strong": 20, "normal": 15, "weak": 10 },
+    "bandar_contradict_scores":   { "strong": 2,  "normal": 5,  "weak": 7 },
+    "bandar_no_data_default":     8,
+    "bandar_neutral_default":     10,
+
+    "insider_weight_max":         15,
+    "insider_value_tiers":        [10000000000, 1000000000, 100000000],
+    "insider_value_scores":       [15, 12, 9, 6],
+    "insider_contradict_score":   2,
+    "insider_no_data_default":    5,
+    "insider_ownership_bonus":    2,
+    "insider_ownership_threshold": 1.0,
+
+    "broker_concentration_max":   15,
+    "concentration_tiers":        [30, 20, 10],
+    "concentration_scores":       [15, 12, 9, 5],
+    "concentration_contradict":   3,
+    "concentration_no_data":      5,
+    "concentration_bandar_bonus": 2,
+    "concentration_asing_bonus":  1,
+
+    "strength_labels": [
+      { "min": 80, "label": "Sangat Kuat", "color": "#006633" },
+      { "min": 60, "label": "Kuat",        "color": "#155724" },
+      { "min": 40, "label": "Sedang",      "color": "#856404" },
+      { "min": 20, "label": "Lemah",       "color": "#CC6600" },
+      { "min": 0,  "label": "Sangat Lemah", "color": "#721C24" }
+    ]
+  },
+
+  "valuation": {
+    "risk_free_rate":       6.75,
+    "equity_risk_premium":  6.25,
+    "base_wacc":            13.0,
+    "terminal_growth":      3.0,
+    "scenario_variation":   0.10,
+    "graham_constant":      22.5,
+    "dcf_projection_years": 10,
+    "mos_undervalued":      30,
+    "mos_fairly_valued":    0
+  },
+
+  "scoring": {
+    "reliability_max":       100,
+    "reliability_weights": {
+      "completeness":  30,
+      "consistency":   25,
+      "freshness":     25,
+      "source":        20
+    },
+    "confidence_max":        100,
+    "confidence_weights": {
+      "signal":        25,
+      "trend":         25,
+      "depth":         20,
+      "peers":         15,
+      "valuation":     15
+    },
+    "composite_reliability_floor":  40,
+    "composite_low_reliability_cap": 30,
+    "ready_for_ai": {
+      "min_reliability": 45,
+      "min_confidence":  40,
+      "min_clean_years": 3,
+      "max_anomaly_pct": 0.30
+    },
+    "reliability_grades": {
+      "A": 80, "B": 65, "C": 50, "D": 35
+    },
+    "confidence_grades": {
+      "HIGH": 70, "MEDIUM": 50, "LOW": 30
+    },
+    "min_peers_for_zscore": 8
+  }
+}

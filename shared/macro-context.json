@@ -1,0 +1,19 @@
+{
+  "as_of": "2026-03",
+  "bi_rate": 5.75,
+  "bi_rate_direction": "easing_expected",
+  "bi_rate_note": "BI held at 5.75% in March 2026. Market expects 25-50bps cuts in Q2-Q3 2026.",
+  "usd_idr": 16200,
+  "idr_trend": "weakening",
+  "idr_note": "IDR under pressure from Fed policy divergence and EM capital outflows.",
+  "idx_composite_ytd": -3.2,
+  "idx_composite_level": 6800,
+  "foreign_flow_regime": "net_outflow",
+  "foreign_flow_ytd_usd": -2100000000,
+  "foreign_flow_note": "Broad EM de-risking driven by Fed hawkishness, not IDX-specific. Q1 2026 saw $2.1B net foreign outflows from IDX.",
+  "key_events": [
+    "BI rate decision April 15 — market expects hold",
+    "Q1 2026 earnings season starts mid-April",
+    "Indonesia local elections June 2026"
+  ]
+}

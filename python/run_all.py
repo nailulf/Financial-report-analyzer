@@ -312,7 +312,8 @@ def run_insider(tickers: list[str] | None, max_pages: int = 5,
 
 def run_full(tickers: list[str] | None, period: str, days: int, job_id: int | None = None,
              year_from: int | None = None, year_to: int | None = None,
-             scraper_filter: set[str] | None = None) -> None:
+             scraper_filter: set[str] | None = None,
+             backfill_days: int = 90, offset: int = 0, batch_limit: int | None = None) -> None:
     """Runs everything in dependency order. Scores updated once at the end.
 
     If scraper_filter is set, only matching scrapers execute; others are skipped
@@ -358,12 +359,316 @@ def run_full(tickers: list[str] | None, period: str, days: int, job_id: int | No
     if _should_run("money_flow"):
         console.rule("[bold blue]DAILY: money_flow")
         _run_tracked(mf.run, "money_flow", job_id, tickers=tickers, days=days)
+    if _should_run("broker_backfill"):
+        from scrapers.money_flow import run_broker_backfill as _backfill
+        console.rule("[bold blue]FULL: broker_flow + bandar_signal (backfill)")
+        _run_tracked(_backfill, "broker_backfill", job_id,
+                     tickers=tickers, days=backfill_days, offset=offset, limit=batch_limit)
     _update_scores(tickers)
 
 
 # ------------------------------------------------------------------
 # CLI
 # ------------------------------------------------------------------
+
+# ------------------------------------------------------------------
+# Phase 6: AI pipeline functions
+# ------------------------------------------------------------------
+
+def _run_ai_context_pipeline(
+    tickers: list[str] | None,
+    job_id: int | None = None,
+    dry_run: bool = False,
+) -> None:
+    """
+    Phase 6 Stages 1-4: clean → normalize → score → build context bundle.
+    Writes to: data_quality_flags, normalized_metrics, stock_scores, ai_context_cache.
+    """
+    from scripts.scoring.data_cleaner import DataCleaner
+    from scripts.scoring.data_normalizer import DataNormalizer
+    from scripts.scoring.scoring_engine import ScoringPipeline
+    from scripts.scoring.context_builder import ContextBuilder
+    from utils.supabase_client import get_client
+
+    console.rule("[bold cyan]PHASE 6: Build AI Context[/bold cyan]")
+
+    sb = get_client()
+    cleaner = DataCleaner()
+    normalizer = DataNormalizer()
+    scorer = ScoringPipeline()
+    builder = ContextBuilder()
+
+    # Resolve tickers
+    if tickers is None:
+        resp = sb.table("stocks").select("ticker").eq("status", "Active").execute()
+        tickers = [r["ticker"] for r in (resp.data or [])]
+    console.print(f"[cyan]Processing {len(tickers)} tickers[/cyan]")
+
+    from datetime import timedelta
+    from utils.helpers import RunResult
+    result = RunResult("ai_context_pipeline")
+
+    for ticker in tickers:
+        try:
+            # Fetch data
+            stock = (sb.table("stocks").select("*").eq("ticker", ticker).execute().data or [{}])[0]
+            financials = (sb.table("financials").select("*")
+                         .eq("ticker", ticker).eq("quarter", 0).order("year").execute().data or [])
+
+            if not financials:
+                result.skip(ticker, "no annual financials")
+                continue
+
+            # Stage 1: Clean
+            clean_rows, flags, cleaning = cleaner.clean_ticker(financials, stock)
+
+            # Stage 2: Normalize
+            metrics = normalizer.normalize(clean_rows, flags, stock)
+
+            # Stage 3: Score
+            score = scorer.run(metrics, flags, clean_rows, stock)
+
+            # Stage 4: Build context
+            price = (sb.table("daily_prices").select("date, close")
+                     .eq("ticker", ticker).order("date", desc=True).limit(1).execute().data or [{}])[0]
+
+            cutoff_30d = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+            broker_flow = (sb.table("broker_flow").select("trade_date, broker_type, net_value")
+                          .eq("ticker", ticker).gte("trade_date", cutoff_30d).execute().data or [])
+
+            bandar = (sb.table("bandar_signal").select("trade_date, broker_accdist, top5_accdist")
+                     .eq("ticker", ticker).order("trade_date", desc=True).limit(1).execute().data or [None])[0]
+
+            cutoff_90d = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+            insiders = (sb.table("insider_transactions").select("action, ownership_change_pct")
+                       .eq("ticker", ticker).gte("transaction_date", cutoff_90d).execute().data or [])
+
+            shareholders = (sb.table("shareholders_major").select("holder_name, holder_type, percentage")
+                           .eq("ticker", ticker).order("percentage", desc=True).limit(5).execute().data or [])
+
+            # Domain notes (optional)
+            notes_row = (sb.table("stock_notes").select("domain_notes")
+                        .eq("ticker", ticker).execute().data or [{}])[0]
+            domain_notes = notes_row.get("domain_notes")
+
+            # Sector template (optional)
+            subsector = stock.get("subsector")
+            template_row = (sb.table("sector_templates").select("*")
+                           .eq("subsector", subsector).execute().data or [{}])[0] if subsector else {}
+
+            bundle = builder.build(
+                ticker=ticker, stock=stock, metrics=metrics, score=score,
+                flags=flags, clean_rows=clean_rows, latest_price=price,
+                broker_flow_30d=broker_flow, bandar_latest=bandar,
+                insider_90d=insiders, shareholders=shareholders,
+                domain_notes=domain_notes,
+                sector_template=template_row if template_row.get("subsector") else None,
+            )
+
+            if not dry_run:
+                import json
+                # Write data_quality_flags
+                flag_rows = []
+                for yr, f in flags.items():
+                    flag_rows.append({
+                        "ticker": ticker, "year": yr,
+                        "is_covid_year": f.is_covid_year, "is_ipo_year": f.is_ipo_year,
+                        "has_anomaly": f.has_anomaly, "has_one_time_items": f.has_one_time_items,
+                        "scale_warning": f.scale_warning, "source_conflict": f.source_conflict,
+                        "usability_flag": f.usability_flag,
+                        "anomaly_metrics": json.dumps(f.anomaly_metrics) if f.anomaly_metrics else None,
+                        "cleaner_notes": json.dumps(f.notes) if f.notes else None,
+                    })
+                if flag_rows:
+                    sb.table("data_quality_flags").upsert(flag_rows, on_conflict="ticker,year").execute()
+
+                # Write normalized_metrics
+                metric_rows = []
+                for m in metrics:
+                    metric_rows.append({
+                        "ticker": ticker, "metric_name": m.metric_name, "unit": m.unit,
+                        "latest_value": m.latest_value, "latest_year": m.latest_year,
+                        "cagr_full": m.cagr_full, "cagr_3yr": m.cagr_3yr,
+                        "trend_direction": m.trend_direction, "trend_r2": m.trend_r2,
+                        "trend_slope_pct": m.trend_slope_pct, "volatility": m.volatility,
+                        "z_score_vs_sector": m.z_score_vs_sector,
+                        "percentile_vs_sector": m.percentile_vs_sector,
+                        "peer_group_level": m.peer_group_level, "peer_count": m.peer_count,
+                        "data_years_count": m.data_years_count,
+                        "anomaly_years": json.dumps(m.anomaly_years) if m.anomaly_years else None,
+                        "missing_years": json.dumps(m.missing_years) if m.missing_years else None,
+                        "years_json": json.dumps(m.years), "values_json": json.dumps(m.values),
+                    })
+                if metric_rows:
+                    sb.table("normalized_metrics").upsert(metric_rows, on_conflict="ticker,metric_name").execute()
+
+                # Write stock_scores
+                sb.table("stock_scores").upsert({
+                    "ticker": ticker,
+                    "reliability_total": score.reliability_total,
+                    "reliability_grade": score.reliability_grade,
+                    "reliability_completeness": score.reliability_completeness,
+                    "reliability_consistency": score.reliability_consistency,
+                    "reliability_freshness": score.reliability_freshness,
+                    "reliability_source": score.reliability_source,
+                    "reliability_penalties": score.reliability_penalties,
+                    "confidence_total": score.confidence_total,
+                    "confidence_grade": score.confidence_grade,
+                    "confidence_signal": score.confidence_signal,
+                    "confidence_trend": score.confidence_trend,
+                    "confidence_depth": score.confidence_depth,
+                    "confidence_peers": score.confidence_peers,
+                    "confidence_valuation": score.confidence_valuation,
+                    "composite_score": score.composite_score,
+                    "ready_for_ai": score.ready_for_ai,
+                    "bullish_signals": json.dumps(score.bullish_signals),
+                    "bearish_signals": json.dumps(score.bearish_signals),
+                    "data_gap_flags": json.dumps(score.data_gap_flags),
+                    "missing_metrics": json.dumps(score.missing_metrics),
+                    "data_years_available": score.data_years_available,
+                    "primary_source": score.primary_source,
+                    "sector_peers_count": score.sector_peers_count,
+                }, on_conflict="ticker").execute()
+
+                # Write ai_context_cache
+                sb.table("ai_context_cache").upsert({
+                    "ticker": ticker,
+                    "context_json": bundle.context,
+                    "context_version": bundle.context_version,
+                    "token_estimate": bundle.token_estimate,
+                    "ready_for_ai": bundle.ready_for_ai,
+                    "data_as_of": price.get("date"),
+                }, on_conflict="ticker").execute()
+
+            console.print(
+                f"  [green]✓[/green] {ticker}: reliability={score.reliability_grade} "
+                f"confidence={score.confidence_grade} composite={score.composite_score} "
+                f"ready={'✓' if score.ready_for_ai else '✗'} tokens={bundle.token_estimate}"
+            )
+            result.ok(ticker)
+
+        except Exception as e:
+            logger.warning("AI context failed for %s: %s", ticker, e, exc_info=True)
+            result.fail(ticker, str(e))
+
+    result.print_summary()
+
+
+def _run_ai_analysis_pipeline(
+    tickers: list[str] | None,
+    provider: str = "openai",
+    model: str | None = None,
+    min_composite: int = 50,
+    job_id: int | None = None,
+    dry_run: bool = False,
+) -> None:
+    """
+    Phase 6 Stage 5: Call LLM to generate investment thesis.
+    Reads from ai_context_cache, writes to ai_analysis.
+    """
+    from scripts.scoring.ai_analyst import AIAnalyst
+    from utils.supabase_client import get_client
+
+    console.rule("[bold cyan]PHASE 6: AI Analysis[/bold cyan]")
+
+    sb = get_client()
+    analyst = AIAnalyst(provider=provider, model=model)
+    console.print(f"[cyan]Provider: {analyst.provider_name} / Model: {analyst.model_name}[/cyan]")
+
+    # Get eligible tickers
+    query = sb.table("ai_context_cache").select("ticker, context_json, ready_for_ai")
+    if tickers:
+        query = query.in_("ticker", tickers)
+    query = query.eq("ready_for_ai", True)
+    rows = query.execute().data or []
+
+    if not rows:
+        console.print("[yellow]No tickers eligible for AI analysis (ready_for_ai=FALSE or no context cache).[/yellow]")
+        return
+
+    # Filter by min_composite if scores available
+    if min_composite > 0:
+        score_resp = sb.table("stock_scores").select("ticker, composite_score").execute()
+        score_map = {r["ticker"]: r.get("composite_score", 0) for r in (score_resp.data or [])}
+        rows = [r for r in rows if score_map.get(r["ticker"], 0) >= min_composite]
+
+    console.print(f"[cyan]Analyzing {len(rows)} tickers (ready_for_ai=TRUE, composite>={min_composite})[/cyan]")
+
+    from utils.helpers import RunResult
+    result = RunResult("ai_analysis")
+
+    for row in rows:
+        ticker = row["ticker"]
+        context = row["context_json"]
+        if isinstance(context, str):
+            import json
+            context = json.loads(context)
+
+        try:
+            # Get score metadata for validation
+            score_row = (sb.table("stock_scores").select("reliability_grade, data_gap_flags")
+                        .eq("ticker", ticker).execute().data or [{}])[0]
+
+            current_price = context.get("valuation", {}).get("current_price")
+            data_gaps = score_row.get("data_gap_flags")
+            if isinstance(data_gaps, str):
+                import json
+                data_gaps = json.loads(data_gaps)
+
+            # Get sector template and domain notes
+            subsector = context.get("sub_sector")
+            template = (sb.table("sector_templates").select("*")
+                       .eq("subsector", subsector).execute().data or [{}])[0] if subsector else {}
+            notes_row = (sb.table("stock_notes").select("domain_notes")
+                        .eq("ticker", ticker).execute().data or [{}])[0]
+
+            if dry_run:
+                console.print(f"  [dim]DRY RUN: {ticker} — would call {analyst.model_name}[/dim]")
+                result.ok(ticker)
+                continue
+
+            analysis = analyst.analyze(
+                context_bundle=context,
+                current_price=current_price,
+                data_gap_flags=data_gaps,
+                reliability_grade=score_row.get("reliability_grade"),
+                sector_template=template if template.get("subsector") else None,
+                domain_notes=notes_row.get("domain_notes"),
+            )
+
+            if analysis.success:
+                import json
+                sb.table("ai_analysis").upsert({
+                    "ticker": ticker,
+                    "lynch_category": analysis.lynch_category,
+                    "buffett_moat": analysis.buffett_moat,
+                    "analyst_verdict": analysis.analyst_verdict,
+                    "confidence_level": analysis.confidence_level,
+                    "bull_case": analysis.bull_case,
+                    "bear_case": analysis.bear_case,
+                    "neutral_case": analysis.neutral_case,
+                    "business_narrative": analysis.bull_case.get("scenario", "") if analysis.bull_case else "",
+                    "model_used": analyst.model_name,
+                    "prompt_tokens": analysis.prompt_tokens,
+                    "output_tokens": analysis.output_tokens,
+                }, on_conflict="ticker").execute()
+
+                console.print(
+                    f"  [green]✓[/green] {ticker}: {analysis.lynch_category} / "
+                    f"{analysis.analyst_verdict} / confidence={analysis.confidence_level} "
+                    f"(${analysis.cost_usd_estimate:.4f})"
+                )
+                result.ok(ticker)
+            else:
+                console.print(f"  [red]✗[/red] {ticker}: {analysis.error}")
+                result.fail(ticker, analysis.error or "unknown")
+
+        except Exception as e:
+            logger.warning("AI analysis failed for %s: %s", ticker, e, exc_info=True)
+            result.fail(ticker, str(e))
+
+    result.print_summary()
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -420,6 +725,14 @@ Examples:
     mode.add_argument("--fallback-financials", action="store_true", help="Run Stockbit financials standalone (primary source, fills all tickers)")
     mode.add_argument("--broker-backfill", action="store_true", help="Backfill broker flow + bandar signals from Stockbit")
     mode.add_argument("--insider", action="store_true", help="Fetch KSEI insider transactions from Stockbit")
+
+    # Phase 6: AI pipeline modes
+    mode.add_argument("--build-ai-context", action="store_true",
+                      help="Phase 6: clean → normalize → score → build AI context bundle")
+    mode.add_argument("--run-ai-analysis", action="store_true",
+                      help="Phase 6: call LLM to generate investment thesis (requires ai_context_cache)")
+    mode.add_argument("--ai-full", action="store_true",
+                      help="Phase 6: full pipeline = build-ai-context + run-ai-analysis")
 
     # Scope modifiers
     parser.add_argument("--ticker", nargs="+", metavar="TICKER", help="Limit to specific tickers")
@@ -486,9 +799,9 @@ Examples:
     parser.add_argument(
         "--backfill-days",
         type=int,
-        default=30,
+        default=90,
         metavar="N",
-        help="--broker-backfill: number of days to backfill (default: 30)",
+        help="--broker-backfill / --full: number of days to backfill (default: 90)",
     )
     parser.add_argument(
         "--insider-pages",
@@ -519,6 +832,29 @@ Examples:
         help="Comma-separated scraper names to run. When set, only matching scrapers execute "
              "in --full mode. Others are skipped. Empty = run all (default).",
     )
+    # Phase 6: AI pipeline options
+    parser.add_argument(
+        "--ai-provider",
+        type=str,
+        default="openai",
+        choices=["openai", "anthropic"],
+        help="LLM provider for --run-ai-analysis (default: openai)",
+    )
+    parser.add_argument(
+        "--ai-model",
+        type=str,
+        default=None,
+        metavar="MODEL",
+        help="LLM model name (default: gpt-4o-nano for openai, claude-sonnet-4 for anthropic)",
+    )
+    parser.add_argument(
+        "--min-composite",
+        type=int,
+        default=50,
+        metavar="N",
+        help="--ai-full batch: only analyze stocks with composite_score >= N (default: 50)",
+    )
+
     # Year range (applies to --quarterly, --full, --fallback-financials)
     parser.add_argument(
         "--year-from",
@@ -539,7 +875,8 @@ Examples:
 
     all_modes = [args.daily, args.weekly, args.quarterly, args.full,
                  args.enrich_ratios, args.dividends, args.fill_gaps, args.fallback_financials,
-                 args.broker_backfill, args.insider]
+                 args.broker_backfill, args.insider,
+                 args.build_ai_context, args.run_ai_analysis, args.ai_full]
     if not any(all_modes):
         parser.print_help()
         console.print("\n[red]Error: specify at least one run mode.[/red]")
@@ -581,7 +918,9 @@ Examples:
         if args.full:
             run_full(tickers, args.period, args.days, job_id=job_id,
                      year_from=args.year_from, year_to=args.year_to,
-                     scraper_filter=scraper_filter)
+                     scraper_filter=scraper_filter,
+                     backfill_days=args.backfill_days,
+                     offset=args.offset, batch_limit=args.batch_limit)
         else:
             if args.weekly:
                 run_weekly(tickers, job_id=job_id)
@@ -631,6 +970,19 @@ Examples:
                 max_pages=args.insider_pages,
                 offset=args.offset,
                 limit=args.batch_limit,
+            )
+
+        # ── Phase 6: AI pipeline modes ────────────────────────────────
+        if args.build_ai_context or args.ai_full:
+            _run_ai_context_pipeline(tickers, job_id=job_id, dry_run=args.dry_run)
+        if args.run_ai_analysis or args.ai_full:
+            _run_ai_analysis_pipeline(
+                tickers,
+                provider=args.ai_provider,
+                model=args.ai_model,
+                min_composite=args.min_composite,
+                job_id=job_id,
+                dry_run=args.dry_run,
             )
     except KeyboardInterrupt:
         if job_id and tickers and len(tickers) == 1:

@@ -133,12 +133,20 @@ def stage1_clean(financials: list[dict], stock: dict) -> tuple[list[dict], dict[
     is_bank = (stock.get("subsector") or "").lower() in ("bank", "banks") or \
               "finance" in (stock.get("sector") or "").lower()
 
+    current_year = date.today().year
+
     # Sort by year ascending
     rows = sorted(financials, key=lambda r: r["year"])
 
     for row in rows:
         yr = row["year"]
         f = YearFlag(year=yr)
+
+        # Rule NEW: TTM/keystats data for current year — not published annual
+        source = (row.get("source") or "").lower()
+        if yr >= current_year and "keystats" in source:
+            f.usability_flag = "use_with_caution"
+            f.notes.append(f"ttm_estimate_{yr}: keystats data, not published annual report")
 
         # Rule 1: COVID
         if yr == 2020:
@@ -178,6 +186,14 @@ def stage1_clean(financials: list[dict], stock: dict) -> tuple[list[dict], dict[
         if eq is not None and eq < 0:
             f.usability_flag = "use_with_caution"
             f.notes.append(f"negative_equity_{yr}")
+
+        # Rule NEW: Banking zero-override
+        # Stockbit stores D/E=0, current_ratio=0, interest_coverage=0 for banks.
+        # Override to None so normalizer doesn't compute meaningless trends on constant zeros.
+        if is_bank:
+            for bank_metric in ["debt_to_equity", "current_ratio", "interest_coverage"]:
+                if row.get(bank_metric) == 0 or row.get(bank_metric) == 0.0:
+                    row[bank_metric] = None
 
         if f.is_covid_year and f.usability_flag == "clean":
             f.usability_flag = "minor_issues"
@@ -281,13 +297,19 @@ def stage2_normalize(clean_rows: list[dict], flags: dict[int, YearFlag],
         year_vals = []
         anomaly_years = []
         missing_years = []
+        current_year = date.today().year
 
         for row in clean_rows:
             yr = row["year"]
 
+            # Skip TTM/keystats rows for trend computation (they duplicate prior year)
+            source = (row.get("source") or "").lower()
+            is_ttm = yr >= current_year and "keystats" in source
+
             # Computed metrics
             if col == "_computed_dps":
                 dp = row.get("dividends_paid")
+                # dividends_paid is often NULL for TTM rows — skip those
                 val = abs(dp) / listed_shares if dp and listed_shares > 0 else None
             elif col == "_computed_fcf_ni":
                 fcf = row.get("free_cash_flow")
@@ -296,8 +318,11 @@ def stage2_normalize(clean_rows: list[dict], flags: dict[int, YearFlag],
             else:
                 val = row.get(col)
 
-            if val is not None:
+            if val is not None and not is_ttm:
                 year_vals.append((yr, float(val)))
+            elif val is not None and is_ttm:
+                # Keep TTM as "latest_value" reference but exclude from trend
+                pass  # will be handled below
             else:
                 missing_years.append(yr)
 
@@ -319,6 +344,19 @@ def stage2_normalize(clean_rows: list[dict], flags: dict[int, YearFlag],
             })
             continue
 
+        # For valuation multiples (PE, PB, yield), use TTM as latest_value if available
+        # (more current than last published annual), but still exclude from trend
+        ttm_override = None
+        valuation_metrics = {"pe_ratio", "pb_ratio", "dividend_yield", "eps", "bvps"}
+        if metric_name in valuation_metrics:
+            for row in reversed(clean_rows):
+                src = (row.get("source") or "").lower()
+                if row["year"] >= current_year and "keystats" in src:
+                    v = row.get(col if not col.startswith("_") else None)
+                    if v is not None:
+                        ttm_override = (row["year"], float(v))
+                    break
+
         # Exclude anomaly years from trend computation
         trend_vals = [(yr, v) for yr, v in year_vals if yr not in anomaly_years]
         if len(trend_vals) < 3:
@@ -326,6 +364,11 @@ def stage2_normalize(clean_rows: list[dict], flags: dict[int, YearFlag],
 
         latest_year = year_vals[-1][0]
         latest_value = year_vals[-1][1]
+
+        # Apply TTM override for latest display value (but trend uses published annual)
+        if ttm_override:
+            latest_year = ttm_override[0]
+            latest_value = ttm_override[1]
 
         # CAGRs
         years_span = year_vals[-1][0] - year_vals[0][0]

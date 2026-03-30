@@ -19,6 +19,8 @@ import { getDividendHistory } from '@/lib/queries/dividends'
 import { getStockBrokerSummary, getInsiderTransactions, getDailyBrokerFlowByType, getBrokerConcentration } from '@/lib/queries/broker'
 import { computeCAGR } from '@/lib/calculations/cagr'
 import { computeHealthScores } from '@/lib/calculations/health-score'
+import { getSubsectorPeers } from '@/lib/queries/sector'
+import { computePeerPercentiles } from '@/lib/calculations/percentile'
 import { StockPageClient } from '@/components/stock/StockPageClient'
 
 export default async function StockPage({
@@ -74,6 +76,14 @@ export default async function StockPage({
   const latest = series.at(-1) ?? null
   const health = latest ? computeHealthScores(latest) : []
 
+  // Sector peer percentiles
+  const sectorPeers = await getSubsectorPeers(header.subsector, header.sector)
+  const peerPercentiles = computePeerPercentiles(
+    t,
+    sectorPeers,
+    header.subsector ?? header.sector ?? 'Unknown',
+  )
+
   // Pre-compute DCF inputs server-side for reliable serialization
   const latestPrice = priceHistory.at(-1)?.close ?? metrics?.price ?? null
   const dcfFcf = latest?.free_cash_flow
@@ -109,6 +119,7 @@ export default async function StockPage({
       dailyBrokerFlow={dailyBrokerFlow}
       brokerConcentration={brokerConcentration}
       dividendHistory={dividendHistory}
+      peerPercentiles={peerPercentiles}
       dcfFcf={dcfFcf}
       dcfDividends={(() => {
         // Latest year (TTM) often has null dividends — fall back to most recent year with data

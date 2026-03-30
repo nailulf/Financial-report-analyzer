@@ -313,7 +313,9 @@ def run_insider(tickers: list[str] | None, max_pages: int = 5,
 def run_full(tickers: list[str] | None, period: str, days: int, job_id: int | None = None,
              year_from: int | None = None, year_to: int | None = None,
              scraper_filter: set[str] | None = None,
-             backfill_days: int = 90, offset: int = 0, batch_limit: int | None = None) -> None:
+             backfill_days: int = 90, offset: int = 0, batch_limit: int | None = None,
+             ai_provider: str = "openai", ai_model: str | None = None,
+             min_composite: int = 50, dry_run: bool = False) -> None:
     """Runs everything in dependency order. Scores updated once at the end.
 
     If scraper_filter is set, only matching scrapers execute; others are skipped
@@ -365,6 +367,15 @@ def run_full(tickers: list[str] | None, period: str, days: int, job_id: int | No
         _run_tracked(_backfill, "broker_backfill", job_id,
                      tickers=tickers, days=backfill_days, offset=offset, limit=batch_limit)
     _update_scores(tickers)
+
+    # ── Phase 6: AI pipeline (context + analysis) ──
+    if _should_run("ai_context"):
+        _run_ai_context_pipeline(tickers, job_id=job_id, dry_run=dry_run)
+    if _should_run("ai_analysis"):
+        _run_ai_analysis_pipeline(
+            tickers, provider=ai_provider, model=ai_model,
+            min_composite=min_composite, job_id=job_id, dry_run=dry_run,
+        )
 
 
 # ------------------------------------------------------------------
@@ -710,6 +721,11 @@ Examples:
   python run_all.py --broker-backfill --offset 100 --batch-limit 50
   python run_all.py --insider                          # KSEI insider transactions
   python run_all.py --insider --ticker BBRI --insider-pages 10
+
+  # Full pipeline with AI analysis:
+  python run_all.py --full --ticker BBRI                       # scrape + AI (openai default)
+  python run_all.py --full --ticker BBRI --ai-provider anthropic
+  python run_all.py --full --ticker BBRI --dry-run             # scrape only, skip AI writes
         """,
     )
 
@@ -718,7 +734,7 @@ Examples:
     mode.add_argument("--daily", action="store_true", help="Run: daily_prices + money_flow")
     mode.add_argument("--weekly", action="store_true", help="Run: stock_universe")
     mode.add_argument("--quarterly", action="store_true", help="Run: financials + company_profiles")
-    mode.add_argument("--full", action="store_true", help="Run everything (weekly + quarterly + daily)")
+    mode.add_argument("--full", action="store_true", help="Run everything (weekly + quarterly + daily + broker backfill + AI analysis)")
     mode.add_argument("--enrich-ratios", action="store_true", help="Fill NULL ratio columns from stored raw data (no API calls)")
     mode.add_argument("--dividends", action="store_true", help="Fetch full dividend history from yfinance")
     mode.add_argument("--fill-gaps", action="store_true", help="Detect and fill data gaps for low-completeness stocks")
@@ -920,7 +936,9 @@ Examples:
                      year_from=args.year_from, year_to=args.year_to,
                      scraper_filter=scraper_filter,
                      backfill_days=args.backfill_days,
-                     offset=args.offset, batch_limit=args.batch_limit)
+                     offset=args.offset, batch_limit=args.batch_limit,
+                     ai_provider=args.ai_provider, ai_model=args.ai_model,
+                     min_composite=args.min_composite, dry_run=args.dry_run)
         else:
             if args.weekly:
                 run_weekly(tickers, job_id=job_id)

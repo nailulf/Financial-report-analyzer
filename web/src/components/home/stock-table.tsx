@@ -129,8 +129,8 @@ export function StockTable({
                 {row.completeness_score != null ? `${row.completeness_score}` : '—'}
               </td>
               <td className={`px-4 py-3 text-right font-medium ${
-                row.confidence_score != null && row.confidence_score >= 80 ? 'text-green-600' :
-                row.confidence_score != null && row.confidence_score >= 60 ? 'text-amber-600' :
+                row.confidence_score != null && row.confidence_score >= 70 ? 'text-green-600' :
+                row.confidence_score != null && row.confidence_score >= 45 ? 'text-amber-600' :
                 row.confidence_score != null                                ? 'text-red-500'   : 'text-gray-400'
               }`}>
                 {row.confidence_score != null ? `${row.confidence_score}` : '—'}

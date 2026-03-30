@@ -19,10 +19,8 @@ import type { PeerPercentiles } from '@/lib/calculations/percentile'
 
 import { HeroBar }                  from './widgets/HeroBar'
 import { NavTabs }                  from './widgets/NavTabs'
-import { VerdictWidget }            from './widgets/VerdictWidget'
 import { AIInsightsWidget }         from './widgets/AIInsightsWidget'
 import { BrokerActivityWidget }     from './widgets/BrokerActivityWidget'
-import { InvestmentThesisWidget }   from './widgets/InvestmentThesisWidget'
 import { TechnicalWidget }          from './widgets/TechnicalWidget'
 import { PriceWidget }              from './widgets/PriceWidget'
 import { ShareholdersWidget }       from './widgets/ShareholdersWidget'
@@ -38,6 +36,7 @@ import { DividendWidget }           from './widgets/DividendWidget'
 import { PeersWidget }              from './widgets/PeersWidget'
 import { CompanyProfileWidget }     from './widgets/CompanyProfileWidget'
 import { DataQualityWidget }        from './widgets/DataQualityWidget'
+import { PipelineDebugWidget }     from './widgets/PipelineDebugWidget'
 import { AnalystInsightWidget }     from './widgets/AnalystInsightWidget'
 import { SectionDivider }           from './widgets/SectionDivider'
 
@@ -114,27 +113,20 @@ export function StockPageClient({
       ═══════════════════════════════════════════════════════════════ */}
       <div id="overview" className="scroll-mt-24 pt-2 flex flex-col gap-0">
 
-        <VerdictWidget ticker={header.ticker} />
-
         <AIInsightsWidget ticker={header.ticker} />
 
-        {/* Data grid: left = metrics + valuation | right = thesis */}
-        <div className="px-12 py-2 flex gap-2 items-start">
-          <div className="flex-1 flex flex-col gap-2">
-            <ValuationWidget
-              eps={metrics?.eps ?? null}
-              bvps={metrics?.book_value_per_share ?? null}
-              fcf={dcfFcf}
-              dividends={dcfDividends}
-              netIncome={dcfNetIncome}
-              currentPrice={latestPrice}
-              shares={dcfShares}
-              defaultGrowthRate={defaultGrowth}
-            />
-          </div>
-          <div className="w-[480px]">
-            <InvestmentThesisWidget />
-          </div>
+        {/* Valuation widget (full width — thesis now merged into AI Insights above) */}
+        <div className="px-12 py-2">
+          <ValuationWidget
+            eps={metrics?.eps ?? null}
+            bvps={metrics?.book_value_per_share ?? null}
+            fcf={dcfFcf}
+            dividends={dcfDividends}
+            netIncome={dcfNetIncome}
+            currentPrice={latestPrice}
+            shares={dcfShares}
+            defaultGrowthRate={defaultGrowth}
+          />
         </div>
 
         <div className="px-12 py-2">
@@ -230,6 +222,7 @@ export function StockPageClient({
         </div>
         <div className="py-2 px-12">
           <DataQualityWidget quality={quality} ticker={header.ticker} />
+          <PipelineDebugWidget ticker={header.ticker} subsector={header.subsector ?? null} />
         </div>
       </div>
 

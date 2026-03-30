@@ -1,56 +1,494 @@
-// Insight AI — ganti dengan integrasi layanan AI yang sebenarnya saat tersedia
-const MOCK_INSIGHTS = [
-  { text: 'Ekspansi NIM didorong oleh suku bunga pinjaman yang lebih tinggi dan biaya dana yang stabil. Margin terbaik di antara emiten berkapitalisasi besar.', high: true },
-  { text: 'Transformasi digital menjadi katalis pertumbuhan signifikan untuk pendapatan komisi dan akuisisi nasabah di masa depan.', high: true },
-  { text: 'Valuasi saat ini berada di level wajar dengan potensi kenaikan berdasarkan pertumbuhan laba ke depan.', high: false },
-  { text: 'Risiko utama: potensi kompresi NIM jika bank sentral menurunkan suku bunga acuan.', high: false },
-]
+'use client'
 
-const MOCK_SIGNALS = ['CASA KUAT', 'NPL RENDAH', 'PERTUMBUHAN DIGITAL', 'MARGIN STABIL']
+import { useState, useEffect, useRef, useCallback } from 'react'
+import { createPortal } from 'react-dom'
+import type { AIAnalysis } from '@/lib/types/api'
 
 interface Props {
   ticker: string
 }
 
-export function AIInsightsWidget({ ticker: _ticker }: Props) {
+// ---------------------------------------------------------------------------
+// Tooltip — renders via portal to avoid overflow clipping
+// ---------------------------------------------------------------------------
+
+function Tooltip({ children, text }: { children: React.ReactNode; text: string }) {
+  const [show, setShow] = useState(false)
+  const [coords, setCoords] = useState({ top: 0, left: 0 })
+  const ref = useRef<HTMLSpanElement>(null)
+  const [mounted, setMounted] = useState(false)
+
+  useEffect(() => setMounted(true), [])
+
+  const handleEnter = useCallback(() => {
+    if (ref.current) {
+      const rect = ref.current.getBoundingClientRect()
+      setCoords({
+        top: rect.top + window.scrollY - 8,
+        left: rect.left + rect.width / 2,
+      })
+    }
+    setShow(true)
+  }, [])
+
+  return (
+    <span
+      ref={ref}
+      className="inline-block cursor-help"
+      onMouseEnter={handleEnter}
+      onMouseLeave={() => setShow(false)}
+    >
+      {children}
+      {show && mounted && createPortal(
+        <span
+          className="fixed z-[9999] pointer-events-none"
+          style={{ top: coords.top, left: coords.left, transform: 'translate(-50%, -100%)' }}
+        >
+          <span className="block px-3 py-2.5 rounded-lg bg-white text-[#1A1918] text-[11px] font-mono leading-[1.6] w-[280px] text-left shadow-2xl border border-[#E0E0E5]">
+            {text}
+          </span>
+          <span className="block w-0 h-0 mx-auto border-[6px] border-transparent border-t-white" style={{ marginTop: '-1px' }} />
+        </span>,
+        document.body,
+      )}
+    </span>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Badge components with tooltips
+// ---------------------------------------------------------------------------
+
+const LYNCH_TOOLTIPS: Record<string, string> = {
+  stalwart:    'Stalwart (Peter Lynch): Perusahaan besar berkualitas dengan pertumbuhan 10-12%. Tahan resesi, kenaikan moderat 15-50%. Cocok sebagai core holding.',
+  slow_grower: 'Slow Grower (Peter Lynch): Perusahaan besar dan matang, pertumbuhan 2-4%. Dibeli untuk dividen, bukan capital gain.',
+  fast_grower: 'Fast Grower (Peter Lynch): Perusahaan kecil/menengah agresif, pertumbuhan 20%+. Potensi keuntungan tertinggi tapi berisiko.',
+  cyclical:    'Cyclical (Peter Lynch): Pendapatan naik-turun mengikuti siklus ekonomi atau komoditas. Timing lebih penting dari valuasi. PE rendah bisa berarti puncak siklus.',
+  turnaround:  'Turnaround (Peter Lynch): Perusahaan dalam krisis atau pemulihan. Hasil bisa binary — sangat untung atau rugi total.',
+  asset_play:  'Asset Play (Peter Lynch): Perusahaan dengan aset berharga (tanah, kas, IP, anak usaha) yang belum tercermin di harga saham.',
+}
+
+const MOAT_TOOLTIPS: Record<string, string> = {
+  wide:   'Wide Moat (Warren Buffett): Keunggulan kompetitif yang kuat dan tahan lama — pricing power, switching cost tinggi, network effect, atau keunggulan biaya struktural. Sulit ditiru kompetitor.',
+  narrow: 'Narrow Moat (Warren Buffett): Keunggulan kompetitif ada tapi terbatas — bisa dari skala, lokasi, atau regulasi. Perlu dipantau karena bisa terkikis seiring waktu.',
+  none:   'No Moat (Warren Buffett): Tidak ada keunggulan kompetitif yang jelas. Perusahaan bersaing di harga — margin bisa tertekan kapan saja oleh kompetitor.',
+}
+
+function LynchBadge({ category }: { category: string }) {
+  const styles: Record<string, string> = {
+    stalwart:    'bg-blue-500/20 text-blue-300 border-blue-500/30',
+    slow_grower: 'bg-gray-500/20 text-gray-300 border-gray-500/30',
+    fast_grower: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+    cyclical:    'bg-amber-500/20 text-amber-300 border-amber-500/30',
+    turnaround:  'bg-purple-500/20 text-purple-300 border-purple-500/30',
+    asset_play:  'bg-teal-500/20 text-teal-300 border-teal-500/30',
+  }
+  const labels: Record<string, string> = {
+    stalwart: 'STALWART', slow_grower: 'SLOW GROWER', fast_grower: 'FAST GROWER',
+    cyclical: 'CYCLICAL', turnaround: 'TURNAROUND', asset_play: 'ASSET PLAY',
+  }
+  return (
+    <Tooltip text={LYNCH_TOOLTIPS[category] ?? 'Kategori saham menurut Peter Lynch.'}>
+      <span className={`font-mono text-[10px] font-bold tracking-[0.5px] px-2 py-0.5 border rounded ${styles[category] ?? 'bg-gray-500/20 text-gray-300 border-gray-500/30'}`}>
+        {labels[category] ?? category.toUpperCase()}
+      </span>
+    </Tooltip>
+  )
+}
+
+function MoatBadge({ moat }: { moat: string }) {
+  const styles: Record<string, string> = {
+    wide:   'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+    narrow: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+    none:   'bg-red-500/20 text-red-400 border-red-500/30',
+  }
+  return (
+    <Tooltip text={MOAT_TOOLTIPS[moat] ?? 'Penilaian moat menurut Warren Buffett.'}>
+      <span className={`font-mono text-[10px] font-bold tracking-[0.5px] px-2 py-0.5 border rounded ${styles[moat] ?? 'bg-gray-500/20 text-gray-300 border-gray-500/30'}`}>
+        MOAT: {moat.toUpperCase()}
+      </span>
+    </Tooltip>
+  )
+}
+
+function VerdictBadge({ verdict }: { verdict: string }) {
+  const styles: Record<string, string> = {
+    strong_buy:  'bg-emerald-500 text-white shadow-emerald-500/30 shadow-lg',
+    buy:         'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30',
+    hold:        'bg-amber-500/20 text-amber-300 border border-amber-500/30',
+    avoid:       'bg-red-500/20 text-red-400 border border-red-500/30',
+    strong_avoid:'bg-red-500 text-white shadow-red-500/30 shadow-lg',
+  }
+  const labels: Record<string, string> = {
+    strong_buy: 'STRONG BUY', buy: 'BUY', hold: 'HOLD', avoid: 'AVOID', strong_avoid: 'STRONG AVOID',
+  }
+  return (
+    <span className={`font-mono text-[11px] font-bold tracking-[0.5px] px-3 py-1 rounded ${styles[verdict] ?? 'bg-gray-500/20 text-gray-300'}`}>
+      {labels[verdict] ?? verdict.toUpperCase()}
+    </span>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Scenario card (for bull/bear/neutral)
+// ---------------------------------------------------------------------------
+
+function ProbabilityBadge({ probability }: { probability: string }) {
+  const styles: Record<string, string> = {
+    high:   'bg-emerald-500/20 text-emerald-300 border-emerald-500/30',
+    medium: 'bg-amber-500/20 text-amber-300 border-amber-500/30',
+    low:    'bg-red-500/20 text-red-400 border-red-500/30',
+  }
+  return (
+    <span className={`font-mono text-[9px] font-bold tracking-[0.5px] px-1.5 py-0.5 rounded border ${styles[probability] ?? 'bg-gray-500/20 text-gray-300 border-gray-500/30'}`}>
+      {probability.toUpperCase()}
+    </span>
+  )
+}
+
+function fmtPrice(n: number | null | undefined): string {
+  if (n == null) return '—'
+  return `Rp ${n.toLocaleString('en')}`
+}
+
+function ScenarioCard({ label, borderColor, icon, scenario, drivers, priceLabel, priceValue, timeframe, probability, signals }: {
+  label: string
+  borderColor: string
+  icon: string
+  scenario: string
+  drivers: string[]
+  priceLabel: string
+  priceValue: string
+  timeframe: string
+  probability: string
+  signals: string[]
+}) {
+  return (
+    <div className={`border rounded-lg overflow-hidden bg-white/5 ${borderColor}`}>
+      <div className="px-4 py-2.5 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="text-sm">{icon}</span>
+          <span className="font-mono text-[11px] font-bold tracking-[0.5px] text-white/90">{label}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <ProbabilityBadge probability={probability} />
+          <span className="font-mono text-[10px] text-white/40">{timeframe}</span>
+        </div>
+      </div>
+      <div className="px-4 pb-3">
+        <p className="font-mono text-[11px] text-white/70 leading-[1.6] mb-2">{scenario}</p>
+        <div className="flex items-center gap-2 mb-2">
+          <span className="font-mono text-[10px] text-white/40">{priceLabel}:</span>
+          <span className="font-mono text-[12px] font-bold text-white/90">{priceValue}</span>
+        </div>
+        {drivers.length > 0 && (
+          <div className="flex flex-col gap-0.5 mb-2">
+            <span className="font-mono text-[9px] font-bold tracking-[0.5px] text-white/30 uppercase">Faktor Pendorong</span>
+            {drivers.map((d, i) => (
+              <div key={i} className="flex items-start gap-1.5">
+                <span className="font-mono text-[10px] text-white/30 mt-0.5 shrink-0">•</span>
+                <span className="font-mono text-[10px] text-white/60 leading-[1.4]">{d}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        {signals.length > 0 && (
+          <div className="flex flex-col gap-0.5">
+            <span className="font-mono text-[9px] font-bold tracking-[0.5px] text-white/30 uppercase">Tanda Awal</span>
+            {signals.map((s, i) => (
+              <div key={i} className="flex items-start gap-1.5">
+                <span className="font-mono text-[10px] text-white/30 mt-0.5 shrink-0">▸</span>
+                <span className="font-mono text-[10px] text-white/60 leading-[1.4]">{s}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Collapsible thesis section
+// ---------------------------------------------------------------------------
+
+function ThesisSection({ bull, neutral, bear }: {
+  bull: AIAnalysis['bullCase']
+  neutral: AIAnalysis['neutralCase']
+  bear: AIAnalysis['bearCase']
+}) {
+  const [open, setOpen] = useState(false)
+  if (!bull && !neutral && !bear) return null
+
+  return (
+    <div className="px-6 py-4">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between group"
+      >
+        <span className="font-mono text-[11px] font-bold tracking-[1px] text-white/40 uppercase group-hover:text-white/60 transition-colors">
+          Tesis Investasi — 3 Skenario
+        </span>
+        <span className="font-mono text-[10px] text-white/25 group-hover:text-white/50 transition-colors">
+          {open ? '▲ Tutup' : '▼ Lihat Detail'}
+        </span>
+      </button>
+
+      {open && (
+        <div className="flex flex-col gap-3 mt-4">
+          {bull && (
+            <ScenarioCard
+              label="BULL CASE"
+              borderColor="border-emerald-500/20"
+              icon="📈"
+              scenario={bull.scenario}
+              drivers={bull.drivers ?? []}
+              priceLabel="Target"
+              priceValue={fmtPrice(bull.price_target)}
+              timeframe={bull.timeframe ?? ''}
+              probability={bull.probability ?? 'low'}
+              signals={bull.early_signs ?? []}
+            />
+          )}
+          {neutral && (
+            <ScenarioCard
+              label="NEUTRAL — MOST LIKELY"
+              borderColor="border-white/10"
+              icon="➡️"
+              scenario={neutral.scenario}
+              drivers={neutral.drivers ?? []}
+              priceLabel="Range"
+              priceValue={`${fmtPrice(neutral.price_range_low)} – ${fmtPrice(neutral.price_range_high)}`}
+              timeframe={neutral.timeframe ?? ''}
+              probability={neutral.probability ?? 'high'}
+              signals={neutral.what_breaks_it ?? []}
+            />
+          )}
+          {bear && (
+            <ScenarioCard
+              label="BEAR CASE"
+              borderColor="border-red-500/20"
+              icon="📉"
+              scenario={bear.scenario}
+              drivers={bear.drivers ?? []}
+              priceLabel="Target"
+              priceValue={fmtPrice(bear.price_target)}
+              timeframe={bear.timeframe ?? ''}
+              probability={bear.probability ?? 'medium'}
+              signals={bear.early_signs ?? []}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Main widget
+// ---------------------------------------------------------------------------
+
+export function AIInsightsWidget({ ticker }: Props) {
+  const [data, setData] = useState<AIAnalysis | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    fetch(`/api/stocks/${ticker}/ai-analysis`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setData(d))
+      .catch(() => null)
+      .finally(() => setLoading(false))
+  }, [ticker])
+
+  if (loading) {
+    return (
+      <div className="px-12 py-2">
+        <div className="bg-[#0F0F10] rounded-xl p-6 animate-pulse">
+          <div className="h-4 bg-white/10 rounded w-48 mb-4" />
+          <div className="h-32 bg-white/5 rounded" />
+        </div>
+      </div>
+    )
+  }
+
+  if (!data) {
+    return (
+      <div className="px-12 py-2">
+        <div className="bg-[#0F0F10] rounded-xl p-6 border border-white/5">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-sm">&#10024;</span>
+            <span className="font-mono text-[13px] font-bold tracking-[0.5px] text-white/90">AI ANALYSIS</span>
+          </div>
+          <p className="font-mono text-[12px] text-white/40">
+            Belum tersedia — jalankan pipeline AI untuk menghasilkan analisis.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
+  const bull = data.bullCase
+  const bear = data.bearCase
+  const neutral = data.neutralCase
+
   return (
     <div className="px-12 py-2">
-      <div className="bg-white border border-[#E0E0E5] p-5 flex flex-col gap-3">
-        <span className="font-mono text-[13px] font-bold tracking-[0.5px] text-[#1A1A1A]">
-          ANALISIS AI — DIDUKUNG OLEH DAISY
-        </span>
+      <div className="bg-[#0F0F10] rounded-xl border border-white/[0.06] overflow-hidden shadow-2xl shadow-black/20">
 
-        <div className="flex flex-col gap-1.5">
-          {MOCK_INSIGHTS.map((ins, i) => (
-            <div key={i} className="flex items-start gap-2">
-              <span
-                className={`font-mono text-[11px] font-bold tracking-[0.5px] px-1.5 py-0.5 shrink-0 mt-0.5 ${
-                  ins.high
-                    ? 'bg-[#00FF8820] text-[#00FF88] border border-[#00FF8840]'
-                    : 'bg-[#F5F5F8] text-[#888888] border border-[#E0E0E5]'
-                }`}
-              >
-                {ins.high ? 'TINGGI' : 'SEDANG'}
+        {/* ── Header ── */}
+        <div className="px-6 pt-5 pb-4 flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <span className="text-base">&#10024;</span>
+            <span className="font-mono text-[14px] font-bold tracking-[1px] text-white/90">AI ANALYSIS</span>
+            <span className="font-mono text-[10px] text-white/20 ml-1">POWERED BY AI</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <LynchBadge category={data.lynchCategory} />
+            {data.buffettMoat && <MoatBadge moat={data.buffettMoat} />}
+            <VerdictBadge verdict={data.analystVerdict} />
+          </div>
+        </div>
+
+        {/* ── Business narrative ── */}
+        <div className="px-6 pb-4">
+          {data.businessNarrative && (
+            <p className="font-mono text-[12px] text-white/60 leading-[1.7]">
+              {data.businessNarrative}
+            </p>
+          )}
+        </div>
+
+        {/* ── Strategy + What to Watch row ── */}
+        <div className="px-6 pb-4 grid grid-cols-2 gap-4">
+          {/* Strategy */}
+          {data.strategyFit && (
+            <div className="bg-white/[0.04] rounded-lg px-4 py-3 border border-white/[0.06]">
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="font-mono text-[9px] font-bold tracking-[1px] text-white/30 uppercase">Strategi</span>
+                <span className="font-mono text-[11px] font-semibold text-white/80">
+                  {data.strategyFit.primary.replace(/_/g, ' ').toUpperCase()}
+                </span>
+              </div>
+              <p className="font-mono text-[10px] text-white/50 leading-[1.5]">{data.strategyFit.ideal_investor}</p>
+              <span className={`inline-block font-mono text-[9px] font-bold tracking-[0.5px] px-2 py-0.5 rounded mt-2 ${
+                data.strategyFit.position_sizing === 'full_position' ? 'bg-emerald-500/20 text-emerald-300' :
+                data.strategyFit.position_sizing === 'half_position' ? 'bg-blue-500/20 text-blue-300' :
+                data.strategyFit.position_sizing === 'small_speculative' ? 'bg-amber-500/20 text-amber-300' :
+                'bg-red-500/20 text-red-400'
+              }`}>
+                {data.strategyFit.position_sizing.replace(/_/g, ' ').toUpperCase()}
               </span>
-              <span className="font-mono text-[13px] text-[#555555] leading-[1.5]">{ins.text}</span>
             </div>
-          ))}
+          )}
+
+          {/* What to watch */}
+          {data.whatToWatch && data.whatToWatch.length > 0 && (
+            <div className="bg-white/[0.04] rounded-lg px-4 py-3 border border-white/[0.06]">
+              <span className="font-mono text-[9px] font-bold tracking-[1px] text-white/30 uppercase">Yang Perlu Dipantau</span>
+              <div className="flex flex-col gap-1.5 mt-1.5">
+                {data.whatToWatch.slice(0, 4).map((w, i) => (
+                  <div key={i} className="flex items-start gap-2">
+                    <span className="font-mono text-[10px] text-emerald-400/60 mt-0.5 shrink-0">▸</span>
+                    <span className="font-mono text-[10px] text-white/50 leading-[1.4]">{w}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
-        <div className="flex items-center gap-2 flex-wrap">
-          {MOCK_SIGNALS.map((sig) => (
-            <span
-              key={sig}
-              className="font-mono text-[11px] font-bold tracking-[0.5px] text-[#00FF88] bg-[#00FF8818] border border-[#00FF8830] px-2 py-0.5"
-            >
-              {sig}
-            </span>
-          ))}
+        {/* ── Divider ── */}
+        <div className="mx-6 h-px bg-white/[0.06]" />
+
+        {/* ── Investment Thesis: 3 Scenarios (collapsible) ── */}
+        <ThesisSection bull={bull} neutral={neutral} bear={bear} />
+
+        {/* ── Conclusion: Target / Masuk / Stop Loss ── */}
+        {(bull || neutral || bear) && (
+          <>
+            <div className="mx-6 h-px bg-white/[0.06]" />
+            <div className="px-6 py-5">
+              <span className="font-mono text-[11px] font-bold tracking-[1px] text-white/40 uppercase mb-4 block">Kesimpulan</span>
+              <div className="grid grid-cols-3 gap-3">
+                {/* Target (from bull case) */}
+                <div className="bg-emerald-500/[0.08] border border-emerald-500/20 rounded-lg px-4 py-3 text-center">
+                  <span className="font-mono text-[9px] font-bold tracking-[1px] text-emerald-400/50 uppercase block mb-1">Target</span>
+                  <span className="font-mono text-[20px] font-bold text-emerald-300 block">
+                    {bull?.price_target ? fmtPrice(bull.price_target) : '—'}
+                  </span>
+                  <span className="font-mono text-[10px] text-emerald-400/40 block mt-0.5">
+                    {bull?.timeframe ?? ''}
+                  </span>
+                </div>
+
+                {/* Masuk / Entry (from neutral low range) */}
+                <div className="bg-blue-500/[0.08] border border-blue-500/20 rounded-lg px-4 py-3 text-center">
+                  <span className="font-mono text-[9px] font-bold tracking-[1px] text-blue-400/50 uppercase block mb-1">Masuk</span>
+                  <span className="font-mono text-[20px] font-bold text-blue-300 block">
+                    {neutral?.price_range_low ? fmtPrice(neutral.price_range_low) : '—'}
+                  </span>
+                  {neutral?.price_range_high && (
+                    <span className="font-mono text-[10px] text-blue-400/40 block mt-0.5">
+                      s/d {fmtPrice(neutral.price_range_high)}
+                    </span>
+                  )}
+                </div>
+
+                {/* Stop Loss (from bear case) */}
+                <div className="bg-red-500/[0.08] border border-red-500/20 rounded-lg px-4 py-3 text-center">
+                  <span className="font-mono text-[9px] font-bold tracking-[1px] text-red-400/50 uppercase block mb-1">Stop Loss</span>
+                  <span className="font-mono text-[20px] font-bold text-red-400 block">
+                    {bear?.price_target ? fmtPrice(bear.price_target) : '—'}
+                  </span>
+                  <span className="font-mono text-[10px] text-red-400/40 block mt-0.5">
+                    {bear?.timeframe ?? ''}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* ── Caveats + Data Gaps ── */}
+        {((data.caveats && data.caveats.length > 0) || (data.dataGapsAcknowledged && data.dataGapsAcknowledged.length > 0)) && (
+          <>
+            <div className="mx-6 h-px bg-white/[0.06]" />
+            <div className="px-6 py-4 grid grid-cols-2 gap-4">
+              {data.caveats && data.caveats.length > 0 && (
+                <div>
+                  <span className="font-mono text-[9px] font-bold tracking-[1px] text-white/25 uppercase">Catatan</span>
+                  {data.caveats.map((c, i) => (
+                    <p key={i} className="font-mono text-[10px] text-white/35 leading-[1.5] mt-1">{c}</p>
+                  ))}
+                </div>
+              )}
+              {data.dataGapsAcknowledged && data.dataGapsAcknowledged.length > 0 && (
+                <div>
+                  <span className="font-mono text-[9px] font-bold tracking-[1px] text-white/25 uppercase">Keterbatasan Data</span>
+                  {data.dataGapsAcknowledged.map((g, i) => (
+                    <p key={i} className="font-mono text-[10px] text-white/35 leading-[1.5] mt-1">{g}</p>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* ── Footer ── */}
+        <div className="px-6 py-3 bg-white/[0.02] border-t border-white/[0.04] flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="font-mono text-[10px] text-white/25">Confidence: {data.confidenceLevel}/10</span>
+            {data.lynchRationale && (
+              <span className="font-mono text-[10px] text-white/20 italic max-w-[400px] truncate">
+                "{data.lynchRationale}"
+              </span>
+            )}
+          </div>
+          <span className="font-mono text-[10px] text-white/20">
+            {data.modelUsed} • {data.generatedAt ? new Date(data.generatedAt).toLocaleDateString() : ''}
+          </span>
         </div>
 
-        <span className="font-mono text-[11px] text-[#888888]">
-          * Analisis ilustratif — hubungkan layanan AI untuk menghasilkan insight nyata
-        </span>
       </div>
     </div>
   )

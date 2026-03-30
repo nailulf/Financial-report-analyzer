@@ -259,8 +259,13 @@ def validate_output(
         errors.append(f"invalid_health_signal: {output['financial_health_signal']}")
 
     cl = output.get("confidence_level")
-    if cl is not None and (not isinstance(cl, (int, float)) or cl < 1 or cl > 10):
-        errors.append(f"confidence_level_out_of_range: {cl}")
+    if cl is not None:
+        # Normalize: some models return 0.7 (0-1 scale) instead of 7 (1-10 scale)
+        if isinstance(cl, (int, float)) and 0 < cl < 1:
+            output["confidence_level"] = round(cl * 10)
+            cl = output["confidence_level"]
+        if not isinstance(cl, (int, float)) or cl < 1 or cl > 10:
+            errors.append(f"confidence_level_out_of_range: {cl}")
 
     # ── Scenario consistency ─────────────────────────────────
     bull = output.get("bull_case", {})

@@ -33,7 +33,6 @@ import { FinancialHighlightsWidget } from './widgets/FinancialHighlightsWidget'
 import { ValuationWidget }          from './widgets/ValuationWidget'
 import { StoriesWidget }            from './widgets/StoriesWidget'
 import { DividendWidget }           from './widgets/DividendWidget'
-import { PeersWidget }              from './widgets/PeersWidget'
 import { CompanyProfileWidget }     from './widgets/CompanyProfileWidget'
 import { DataQualityWidget }        from './widgets/DataQualityWidget'
 import { PipelineDebugWidget }     from './widgets/PipelineDebugWidget'
@@ -208,12 +207,9 @@ export function StockPageClient({
       <SectionDivider
         id="about"
         title="TENTANG"
-        subtitle="Perbandingan emiten sejenis, profil perusahaan, manajemen, berita, dan kualitas data"
+        subtitle="Profil perusahaan, manajemen, berita, dan kualitas data"
       />
       <div className="flex flex-col gap-0">
-        <div className="py-2 px-12">
-          <PeersWidget ticker={header.ticker} sector={header.sector} />
-        </div>
         <div className="py-2 px-12">
           <CompanyProfileWidget profile={profile} officers={officers} />
         </div>

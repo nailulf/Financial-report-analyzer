@@ -5,38 +5,68 @@ interface RouteParams {
   params: Promise<{ ticker: string }>
 }
 
-export async function POST(req: Request, { params }: RouteParams) {
+async function triggerGithubWorkflow(
+  ticker: string,
+  jobId: number,
+): Promise<{ ok: boolean; error?: string }> {
+  const token = process.env.GITHUB_ACTIONS_TOKEN
+  const repo = process.env.GITHUB_REPO
+  if (!token || !repo) {
+    return { ok: false, error: 'GITHUB_ACTIONS_TOKEN or GITHUB_REPO env var not set' }
+  }
+
+  const url = `https://api.github.com/repos/${repo}/actions/workflows/scraper.yml/dispatches`
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/vnd.github+json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      ref: 'main',
+      inputs: {
+        mode: 'ai-full',
+        ticker,
+        job_id: String(jobId),
+        ai_model: 'gpt-4o-mini',
+      },
+    }),
+  })
+
+  if (!res.ok) {
+    const body = await res.text()
+    console.error('[trigger-ai] GitHub dispatch failed:', res.status, body)
+    return { ok: false, error: `GitHub dispatch failed: ${res.status}` }
+  }
+  return { ok: true }
+}
+
+export async function POST(_req: Request, { params }: RouteParams) {
   const { ticker } = await params
   const t = ticker.toUpperCase()
 
   const supabase = await createClient()
 
-  // Create or reuse a refresh job for this ticker
-  const body = await req.json().catch(() => ({}))
-  const existingJobId = body.job_id as number | undefined
+  // Create a refresh job to track progress
+  const { data: jobData, error: jobError } = await supabase
+    .from('stock_refresh_requests')
+    .insert({
+      ticker: t,
+      status: 'pending',
+      requested_at: new Date().toISOString(),
+    })
+    .select('id')
+    .single()
 
-  let jobId = existingJobId
-
-  if (!jobId) {
-    // Create a new refresh job row
-    const { data: jobData, error: jobError } = await supabase
-      .from('stock_refresh_requests')
-      .insert({
-        ticker: t,
-        status: 'pending',
-        requested_at: new Date().toISOString(),
-      })
-      .select('id')
-      .single()
-
-    if (jobError || !jobData) {
-      return NextResponse.json(
-        { error: `Failed to create job: ${jobError?.message}` },
-        { status: 500 },
-      )
-    }
-    jobId = jobData.id
+  if (jobError || !jobData) {
+    return NextResponse.json(
+      { error: `Failed to create job: ${jobError?.message}` },
+      { status: 500 },
+    )
   }
+
+  const jobId = jobData.id
 
   // Seed Phase 6 scraper progress rows
   const phase6Scrapers = [
@@ -44,39 +74,28 @@ export async function POST(req: Request, { params }: RouteParams) {
     'context_builder', 'ai_analyst',
   ]
 
-  const progressRows = phase6Scrapers.map((scraper) => ({
-    request_id: jobId,
-    scraper_name: scraper,
-    status: 'pending',
-    rows_added: null,
-    duration_ms: null,
-    error_msg: null,
-  }))
+  await supabase.from('refresh_scraper_progress').upsert(
+    phase6Scrapers.map((scraper) => ({
+      request_id: jobId,
+      scraper_name: scraper,
+      status: 'pending',
+    })),
+    { onConflict: 'request_id,scraper_name' },
+  )
 
-  await supabase.from('refresh_scraper_progress').upsert(progressRows, {
-    onConflict: 'request_id,scraper_name',
-  })
+  // Dispatch GitHub Actions workflow
+  const dispatch = await triggerGithubWorkflow(t, jobId)
 
-  // Trigger the pipeline (local execution)
-  // In production, this would dispatch to a worker or GitHub Actions
-  try {
-    const localRes = await fetch(
-      `${process.env.NEXT_PUBLIC_SUPABASE_URL ? '' : 'http://localhost:3000'}/api/stocks/${t}/refresh/local`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          job_id: jobId,
-          scrapers: ['ai_pipeline'],
-          mode: 'ai-full',
-        }),
-      },
-    ).catch(() => null)
-
-    // Fire-and-forget — the pipeline runs asynchronously
-  } catch {
-    // Non-fatal: pipeline might be triggered manually
+  if (!dispatch.ok) {
+    // Non-fatal — job is created, user can run manually
+    return NextResponse.json({
+      job_id: jobId,
+      status: 'queued',
+      dispatch_ok: false,
+      dispatch_error: dispatch.error,
+      manual_command: `cd python && OPENAI_API_KEY=sk-... python run_all.py --ai-full --ticker ${t} --ai-model gpt-4o-mini --job-id ${jobId}`,
+    })
   }
 
-  return NextResponse.json({ job_id: jobId, status: 'queued' })
+  return NextResponse.json({ job_id: jobId, status: 'queued', dispatch_ok: true })
 }

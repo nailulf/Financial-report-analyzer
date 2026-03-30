@@ -20,7 +20,7 @@ on:
         required: true
         default: 'full'
         type: choice
-        options: [daily, weekly, quarterly, full]
+        options: [daily, weekly, quarterly, full, ai-full, build-ai-context, run-ai-analysis]
       ticker:
         description: 'Single ticker (e.g. BBRI). Leave blank for all stocks.'
         required: false
@@ -33,6 +33,10 @@ on:
         description: 'Comma-separated scraper names to run (e.g. daily_prices,money_flow). Blank = all.'
         required: false
         default: ''
+      ai_model:
+        description: 'AI model for --run-ai-analysis or --ai-full (default: gpt-4o-mini)'
+        required: false
+        default: 'gpt-4o-mini'
 
 jobs:
   scrape:
@@ -73,10 +77,17 @@ jobs:
             TICKER="${{ inputs.ticker }}"
             JOB_ID="${{ inputs.job_id }}"
             SCRAPERS="${{ inputs.scrapers }}"
+            AI_MODEL="${{ inputs.ai_model }}"
             EXTRA="--$MODE"
             # For full single-ticker refreshes (UI-triggered), also run enrichment scrapers
             if [ "$MODE" = "full" ] && [ -n "$TICKER" ]; then
               EXTRA="$EXTRA --dividends --broker-backfill --backfill-days 60"
+            fi
+            # AI modes: add model flag
+            if [ "$MODE" = "ai-full" ] || [ "$MODE" = "run-ai-analysis" ]; then
+              if [ -n "$AI_MODEL" ]; then
+                EXTRA="$EXTRA --ai-model $AI_MODEL"
+              fi
             fi
             if [ -n "$TICKER" ]; then
               EXTRA="$EXTRA --ticker $TICKER"
@@ -96,6 +107,7 @@ jobs:
           SUPABASE_URL:             ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY:     ${{ secrets.SUPABASE_SERVICE_KEY }}
           STOCKBIT_BEARER_TOKEN:    ${{ secrets.STOCKBIT_BEARER_TOKEN }}
+          OPENAI_API_KEY:           ${{ secrets.OPENAI_API_KEY }}
         run: |
           cd python
           echo "Running: python run_all.py ${{ steps.args.outputs.extra_args }}"

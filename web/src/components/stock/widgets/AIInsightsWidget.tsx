@@ -291,6 +291,8 @@ function ThesisSection({ bull, neutral, bear }: {
 export function AIInsightsWidget({ ticker }: Props) {
   const [data, setData] = useState<AIAnalysis | null>(null)
   const [loading, setLoading] = useState(true)
+  const [generating, setGenerating] = useState(false)
+  const [genStatus, setGenStatus] = useState<string | null>(null)
 
   useEffect(() => {
     fetch(`/api/stocks/${ticker}/ai-analysis`)
@@ -298,6 +300,72 @@ export function AIInsightsWidget({ ticker }: Props) {
       .then((d) => setData(d))
       .catch(() => null)
       .finally(() => setLoading(false))
+  }, [ticker])
+
+  const handleGenerate = useCallback(async () => {
+    setGenerating(true)
+    setGenStatus('Memulai pipeline...')
+    try {
+      // Step 1: Trigger the pipeline via GitHub Actions
+      const triggerRes = await fetch(`/api/stocks/${ticker}/trigger-ai-analysis`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      const triggerBody = await triggerRes.json().catch(() => ({}))
+
+      if (!triggerRes.ok) {
+        setGenStatus(`Gagal: ${triggerBody.error ?? 'unknown error'}`)
+        setGenerating(false)
+        return
+      }
+
+      if (triggerBody.dispatch_ok === false) {
+        // GitHub dispatch failed — show manual command
+        setGenStatus(triggerBody.manual_command
+          ? `GitHub Actions tidak tersedia. Jalankan manual:\n${triggerBody.manual_command}`
+          : `Dispatch gagal: ${triggerBody.dispatch_error ?? 'unknown'}`)
+        setGenerating(false)
+        return
+      }
+
+      setGenStatus('Pipeline berjalan via GitHub Actions — proses memerlukan 1-3 menit...')
+
+      // Step 2: Poll for result (check every 5s, max 2 minutes)
+      let attempts = 0
+      const maxAttempts = 24
+      const poll = async (): Promise<boolean> => {
+        const res = await fetch(`/api/stocks/${ticker}/ai-analysis`)
+        if (res.ok) {
+          const result = await res.json()
+          if (result && result.analystVerdict) {
+            setData(result)
+            setGenStatus(null)
+            return true
+          }
+        }
+        return false
+      }
+
+      const interval = setInterval(async () => {
+        attempts++
+        if (attempts > maxAttempts) {
+          clearInterval(interval)
+          setGenStatus('Timeout — coba jalankan manual via CLI: python run_all.py --ai-full --ticker ' + ticker)
+          setGenerating(false)
+          return
+        }
+        const done = await poll().catch(() => false)
+        if (done) {
+          clearInterval(interval)
+          setGenerating(false)
+        }
+      }, 5000)
+
+    } catch (e) {
+      setGenStatus(`Error: ${e instanceof Error ? e.message : 'unknown'}`)
+      setGenerating(false)
+    }
   }, [ticker])
 
   if (loading) {
@@ -311,17 +379,48 @@ export function AIInsightsWidget({ ticker }: Props) {
     )
   }
 
+  // Empty state — show generate button
   if (!data) {
     return (
       <div className="px-12 py-2">
         <div className="bg-[#0F0F10] rounded-xl p-6 border border-white/5">
-          <div className="flex items-center gap-2 mb-3">
+          <div className="flex items-center gap-2 mb-4">
             <span className="text-sm">&#10024;</span>
             <span className="font-mono text-[13px] font-bold tracking-[0.5px] text-white/90">AI ANALYSIS</span>
           </div>
-          <p className="font-mono text-[12px] text-white/40">
-            Belum tersedia — jalankan pipeline AI untuk menghasilkan analisis.
-          </p>
+
+          {generating ? (
+            <div className="flex flex-col items-center py-6 gap-3">
+              <div className="w-6 h-6 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+              <p className="font-mono text-[12px] text-white/50 text-center">{genStatus}</p>
+            </div>
+          ) : genStatus ? (
+            <div className="flex flex-col gap-3">
+              <pre className="font-mono text-[11px] text-amber-400/70 whitespace-pre-wrap break-all bg-white/5 rounded-lg p-3">{genStatus}</pre>
+              <button
+                onClick={handleGenerate}
+                className="self-start font-mono text-[11px] font-bold px-4 py-2 rounded-lg bg-white/10 text-white/70 hover:bg-white/15 hover:text-white transition-colors border border-white/10"
+              >
+                Coba Lagi
+              </button>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center py-4 gap-4">
+              <p className="font-mono text-[12px] text-white/40 text-center max-w-md">
+                Analisis AI belum tersedia untuk saham ini. Generate analisis investasi lengkap
+                dengan 3 skenario (bull/neutral/bear), klasifikasi Lynch, dan rekomendasi strategi.
+              </p>
+              <button
+                onClick={handleGenerate}
+                className="font-mono text-[12px] font-bold px-5 py-2.5 rounded-lg bg-gradient-to-r from-emerald-500 to-teal-500 text-white hover:from-emerald-400 hover:to-teal-400 transition-all shadow-lg shadow-emerald-500/20"
+              >
+                &#10024; Generate AI Analysis
+              </button>
+              <p className="font-mono text-[10px] text-white/20">
+                Estimasi biaya: ~$0.03 per saham (GPT-4o-mini)
+              </p>
+            </div>
+          )}
         </div>
       </div>
     )

@@ -246,11 +246,11 @@ class TestPromptConstruction:
 class TestProviderFactory:
     def test_openai_default(self):
         provider = get_provider("openai")
-        assert provider.model == "gpt-5.3"
+        assert provider.model == "gpt-5.2"
 
     def test_openai_custom_model(self):
-        provider = get_provider("openai", model="gpt-5.3")
-        assert provider.model == "gpt-5.3"
+        provider = get_provider("openai", model="gpt-5.2")
+        assert provider.model == "gpt-5.2"
 
     def test_anthropic_provider(self):
         provider = get_provider("anthropic")

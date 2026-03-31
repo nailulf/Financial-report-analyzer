@@ -29,7 +29,7 @@ async function triggerGithubWorkflow(
         mode: 'ai-full',
         ticker,
         job_id: String(jobId),
-        ai_model: 'gpt-5.3',
+        ai_model: 'gpt-5.2',
       },
     }),
   })
@@ -93,7 +93,7 @@ export async function POST(_req: Request, { params }: RouteParams) {
       status: 'queued',
       dispatch_ok: false,
       dispatch_error: dispatch.error,
-      manual_command: `cd python && OPENAI_API_KEY=sk-... python run_all.py --ai-full --ticker ${t} --ai-model gpt-5.3 --job-id ${jobId}`,
+      manual_command: `cd python && OPENAI_API_KEY=sk-... python run_all.py --ai-full --ticker ${t} --ai-model gpt-5.2 --job-id ${jobId}`,
     })
   }
 

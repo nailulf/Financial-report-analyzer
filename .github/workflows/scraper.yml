@@ -34,9 +34,9 @@ on:
         required: false
         default: ''
       ai_model:
-        description: 'AI model for --run-ai-analysis or --ai-full (default: gpt-5.3)'
+        description: 'AI model for --run-ai-analysis or --ai-full (default: gpt-5.2)'
         required: false
-        default: 'gpt-5.3'
+        default: 'gpt-5.2'
 
 jobs:
   scrape:

@@ -2,7 +2,7 @@
 Stage 5: AI Analyst — Generate 3-scenario investment thesis via LLM.
 
 Uses a provider-agnostic interface so the model is interchangeable:
-- OpenAI (default): gpt-5.3, gpt-5.3, gpt-4o
+- OpenAI (default): gpt-5.2, gpt-5.2, gpt-4o
 - Anthropic: claude-sonnet-4-20250514, etc.
 
 Single enriched call per ticker with 3-layer context injection
@@ -198,7 +198,7 @@ class LLMProvider(ABC):
 class OpenAIProvider(LLMProvider):
     """OpenAI-compatible provider (works with OpenAI, Azure, local proxies)."""
 
-    def __init__(self, model: str = "gpt-5.3", api_key: Optional[str] = None,
+    def __init__(self, model: str = "gpt-5.2", api_key: Optional[str] = None,
                  base_url: Optional[str] = None):
         self.model = model
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
@@ -274,7 +274,7 @@ def get_provider(
 ) -> LLMProvider:
     """Factory: create the appropriate LLM provider."""
     if provider == "openai":
-        return OpenAIProvider(model=model or "gpt-5.3", api_key=api_key, base_url=base_url)
+        return OpenAIProvider(model=model or "gpt-5.2", api_key=api_key, base_url=base_url)
     elif provider == "anthropic":
         return AnthropicProvider(model=model or "claude-sonnet-4-20250514", api_key=api_key)
     else:
@@ -530,7 +530,7 @@ class AIAnalyst:
     """
     Generate 3-scenario investment thesis via LLM.
 
-    Model-agnostic: supports OpenAI (default: gpt-5.3) and Anthropic.
+    Model-agnostic: supports OpenAI (default: gpt-5.2) and Anthropic.
     """
 
     def __init__(
@@ -542,7 +542,7 @@ class AIAnalyst:
     ):
         self.llm = get_provider(provider, model, api_key, base_url)
         self.provider_name = provider
-        self.model_name = model or ("gpt-5.3" if provider == "openai" else "claude-sonnet-4-20250514")
+        self.model_name = model or ("gpt-5.2" if provider == "openai" else "claude-sonnet-4-20250514")
 
     def analyze(
         self,
@@ -638,7 +638,7 @@ class AIAnalyst:
             )
 
         # Estimate cost
-        prompt_cost = response.prompt_tokens * 0.000003  # ~$3/M for gpt-5.3
+        prompt_cost = response.prompt_tokens * 0.000003  # ~$3/M for gpt-5.2
         output_cost = response.output_tokens * 0.000015
         cost = prompt_cost + output_cost
 

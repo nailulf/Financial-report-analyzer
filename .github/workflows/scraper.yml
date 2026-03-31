@@ -34,9 +34,9 @@ on:
         required: false
         default: ''
       ai_model:
-        description: 'AI model for --run-ai-analysis or --ai-full (default: gpt-4o-mini)'
+        description: 'AI model for --run-ai-analysis or --ai-full (default: gpt-5.3)'
         required: false
-        default: 'gpt-4o-mini'
+        default: 'gpt-5.3'
 
 jobs:
   scrape:

@@ -2,7 +2,7 @@
 Stage 5: AI Analyst — Generate 3-scenario investment thesis via LLM.
 
 Uses a provider-agnostic interface so the model is interchangeable:
-- OpenAI (default): gpt-4o-mini, gpt-4o-mini, gpt-4o
+- OpenAI (default): gpt-5.3, gpt-5.3, gpt-4o
 - Anthropic: claude-sonnet-4-20250514, etc.
 
 Single enriched call per ticker with 3-layer context injection
@@ -76,13 +76,43 @@ PENTING — GUNAKAN VALUASI DARI BUNDLE SEBAGAI ANCHOR:
   (misal: "DCF mengasumsikan FCF stabil, tapi untuk perusahaan cyclical post-peak ini tidak realistis").
 - JANGAN membuat angka sendiri tanpa referensi ke valuasi bundle atau asumsi keuangan eksplisit.
 
+METODE VALUASI — PILIH SESUAI TIPE SAHAM (JANGAN selalu pakai PE):
+- stalwart / slow_grower: PE × EPS cocok. Gunakan PE historis rata-rata atau PE sektor sebagai acuan.
+- cyclical: JANGAN pakai PE (PE rendah = jebakan di puncak siklus). Gunakan EV/EBITDA trough,
+  PBV di titik rendah siklus, atau DCF yang sudah dihitung di bundle.
+- turnaround: Jika masih rugi, PE tidak relevan. Gunakan PBV × BVPS, Price/Sales (PS ratio),
+  atau replacement cost/NAV. Untuk saham properti: gunakan NAV (nilai aset bersih) — tanah dan
+  inventori properti sering bernilai lebih tinggi dari book value akuntansi.
+- fast_grower: PS ratio (Price/Sales) atau PEG ratio. PE bisa sangat tinggi dan tetap wajar
+  jika pertumbuhan cukup cepat.
+- asset_play: NAV (Net Asset Value) — hitung nilai aset (tanah, kas, anak usaha) dan bandingkan
+  dengan market cap.
+- Perbankan: PBV × BVPS adalah metode utama (BUKAN PE). Bank premium 3-5x PBV,
+  bank menengah 1-2x PBV, bank BUMN 1-1.5x PBV.
+
 Untuk setiap skenario, nyatakan:
 - Asumsi pertumbuhan revenue (% dan nominal)
 - Asumsi margin (perbaikan/penurunan/stabil dan angka spesifik)
-- Basis valuasi: metode apa yang dipakai (PE × EPS, PBV × BVPS, DCF, atau asset-based)
-- Perhitungan singkat: "pada PE Xx dan EPS RpY → target RpZ" atau "mendekati dcf_bull RpZ"
+- Basis valuasi: metode apa yang dipakai SESUAI tipe saham di atas (BUKAN selalu PE)
+- Perhitungan singkat yang spesifik dan masuk akal
 
 - Price target HARUS masuk akal relatif terhadap harga saat ini DAN valuasi di bundle.
+- URUTAN WAJIB: bull price_target > neutral price_range_high > neutral price_range_low > bear price_target.
+  Bahkan jika semua target di bawah harga saat ini (saham overvalued), urutan HARUS tetap bull > bear.
+
+ATURAN KHUSUS PER KATEGORI LYNCH:
+- turnaround: business_narrative WAJIB menjelaskan (1) apa yang rusak/krisis — mengapa perusahaan
+  merugi atau margin tipis, (2) apa yang sedang berubah — katalis pemulihan spesifik (restrukturisasi,
+  manajemen baru, proyek baru, deleveraging), (3) apa yang harus terjadi agar turnaround berhasil —
+  milestone konkret (break-even, margin target, peluncuran proyek). Jika data tidak cukup untuk
+  menjawab ini, katakan secara eksplisit "data tidak menunjukkan katalis turnaround yang jelas."
+- cyclical: Jelaskan posisi di siklus (puncak/turun/dasar/naik). Revenue/earnings volatil bukan
+  masalah — itu nature bisnisnya. Fokus pada: kapan siklus berbalik, apa pemicunya.
+- fast_grower: Jelaskan apakah pertumbuhan sustainable atau satu kali. Seberapa besar addressable
+  market yang tersisa. Risiko scaling.
+- asset_play: Jelaskan aset apa yang undervalued dan berapa estimasi nilainya vs market cap.
+- stalwart: Jelaskan apa yang menjaga competitive position dan apakah ada tanda erosi.
+- slow_grower: Jelaskan apakah dividen sustainable dan risiko pemotongan dividen.
 
 Spesifik IDX:
 - Perbankan: bobot NIM, CASA, NPL. Abaikan current_ratio/interest_coverage.
@@ -90,6 +120,8 @@ Spesifik IDX:
 - COVID 2020: anomali struktural, bukan spesifik perusahaan. Jangan kutip sebagai pola.
 - PE rendah pada saham cyclical sering kali jebakan (aturan Lynch). Yield tinggi dari BUMN
   mungkin berarti pemerintah mengekstrak kas, bukan kebijakan ramah pemegang saham.
+- Properti: gunakan NAV dan nilai land bank. Margin rendah bisa berarti belum ada monetisasi
+  aset, bukan bisnis yang buruk.
 
 Output HANYA JSON valid sesuai skema yang diberikan. Tanpa markdown, tanpa pembukaan."""
 
@@ -166,7 +198,7 @@ class LLMProvider(ABC):
 class OpenAIProvider(LLMProvider):
     """OpenAI-compatible provider (works with OpenAI, Azure, local proxies)."""
 
-    def __init__(self, model: str = "gpt-4o-mini", api_key: Optional[str] = None,
+    def __init__(self, model: str = "gpt-5.3", api_key: Optional[str] = None,
                  base_url: Optional[str] = None):
         self.model = model
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
@@ -242,7 +274,7 @@ def get_provider(
 ) -> LLMProvider:
     """Factory: create the appropriate LLM provider."""
     if provider == "openai":
-        return OpenAIProvider(model=model or "gpt-4o-mini", api_key=api_key, base_url=base_url)
+        return OpenAIProvider(model=model or "gpt-5.3", api_key=api_key, base_url=base_url)
     elif provider == "anthropic":
         return AnthropicProvider(model=model or "claude-sonnet-4-20250514", api_key=api_key)
     else:
@@ -312,11 +344,14 @@ def validate_output(
     neutral_high = neutral.get("price_range_high")
     neutral_low = neutral.get("price_range_low")
 
+    # Scenario ordering: bull > neutral > bear (warn but don't block — some overvalued stocks
+    # legitimately have all targets below current price, and GPT may invert the ordering)
     if bull_price and bear_price and bull_price <= bear_price:
-        errors.append(f"scenario_ordering: bull ({bull_price}) should exceed bear ({bear_price})")
-
-    if bull_price and neutral_high and bull_price < neutral_high:
-        errors.append(f"scenario_ordering: bull ({bull_price}) should exceed neutral high ({neutral_high})")
+        # Auto-fix: swap them
+        output["bull_case"]["price_target"], output["bear_case"]["price_target"] = bear_price, bull_price
+        # Also swap scenarios if they look inverted
+        if "penurunan" in (bull.get("scenario") or "").lower() or "naik" in (bear.get("scenario") or "").lower():
+            output["bull_case"], output["bear_case"] = output["bear_case"], output["bull_case"]
 
     if neutral_low and neutral_high and neutral_low >= neutral_high:
         errors.append(f"neutral_range_inverted: low ({neutral_low}) >= high ({neutral_high})")
@@ -397,17 +432,83 @@ def build_user_prompt(
     # Valuation anchors — extracted and highlighted so AI can't miss them
     val = context_json.get("valuation", {})
     current_price = val.get("current_price")
+    fundamentals = context_json.get("fundamentals", {}).get("metrics", {})
+
+    # Extract additional valuation data points
+    bvps = fundamentals.get("bvps", {}).get("latest_value")
+    eps = fundamentals.get("eps", {}).get("latest_value")
+    revenue = fundamentals.get("revenue", {}).get("latest_value")
+    market_cap = val.get("market_cap")
+    ps_ratio = None
+    if revenue and market_cap and revenue > 0:
+        ps_ratio = round(market_cap / revenue, 2)
+
     parts.append("ANCHOR VALUASI (SUDAH DIHITUNG — gunakan sebagai referensi harga target):")
     parts.append(f"  Harga saat ini: Rp{current_price:,.0f}" if current_price else "  Harga saat ini: tidak tersedia")
-    parts.append(f"  Graham Number: Rp{val['graham_number']:,.0f}" if val.get("graham_number") else "  Graham Number: tidak tersedia")
+    parts.append(f"  Graham Number: Rp{val['graham_number']:,.0f}" if val.get("graham_number") else "  Graham Number: tidak tersedia (EPS/BVPS negatif)")
     parts.append(f"  DCF Bear:  Rp{val['dcf_bear']:,.0f}" if val.get("dcf_bear") else "  DCF Bear: tidak tersedia")
     parts.append(f"  DCF Base:  Rp{val['dcf_base']:,.0f}" if val.get("dcf_base") else "  DCF Base: tidak tersedia")
     parts.append(f"  DCF Bull:  Rp{val['dcf_bull']:,.0f}" if val.get("dcf_bull") else "  DCF Bull: tidak tersedia")
     parts.append(f"  PE: {val.get('pe_ratio', '—')}  |  PB: {val.get('pb_ratio', '—')}")
+    parts.append(f"  EPS: Rp{eps:,.2f}" if eps else "  EPS: tidak tersedia")
+    parts.append(f"  BVPS: Rp{bvps:,.2f}" if bvps else "  BVPS: tidak tersedia")
+    parts.append(f"  PS Ratio: {ps_ratio}x" if ps_ratio else "  PS Ratio: tidak tersedia")
     parts.append("")
-    parts.append("ATURAN: bull price_target >= dcf_bull, neutral range ≈ dcf_base ±20%, bear price_target ≈ dcf_bear atau graham.")
-    parts.append("Jika kamu menyimpang dari anchor ini, JELASKAN alasannya secara eksplisit.")
+    parts.append("ATURAN ANCHOR:")
+    parts.append("- Untuk stalwart/slow_grower: gunakan PE sebagai acuan utama")
+    parts.append("- Untuk cyclical: gunakan EV/EBITDA atau PBV di titik siklus, BUKAN PE")
+    parts.append("- Untuk turnaround/properti: gunakan PBV × BVPS atau NAV (nilai aset)")
+    parts.append("- Untuk fast_grower/rugi: gunakan PS ratio atau revenue multiple")
+    parts.append("- Untuk bank: gunakan PBV × BVPS (bank premium 3-5x, menengah 1-2x)")
+    parts.append("- DCF di bundle bisa digunakan sebagai cross-check, bukan satu-satunya acuan")
+    parts.append("- Jika kamu menyimpang dari anchor, JELASKAN alasannya secara eksplisit.")
     parts.append("")
+
+    # Category-specific analysis questions — force the AI to address key issues
+    # Auto-detect likely Lynch category from data patterns
+    health = context_json.get("health_score", {})
+    smart_money = context_json.get("smart_money", {})
+    net_margin = fundamentals.get("net_margin", {}).get("latest_value")
+    roe_val = fundamentals.get("roe", {}).get("latest_value")
+    rev_trend = fundamentals.get("revenue", {}).get("trend_direction")
+    ni_trend = fundamentals.get("net_income", {}).get("trend_direction")
+    pe = val.get("pe_ratio")
+    sector = context_json.get("sector", "")
+    sub_sector = context_json.get("sub_sector", "")
+
+    # Detect if stock looks like a turnaround
+    is_likely_turnaround = (
+        (net_margin is not None and net_margin < 3) or
+        (roe_val is not None and roe_val < 3) or
+        (pe is not None and pe > 100) or
+        (eps is not None and eps < 0)
+    )
+    is_likely_cyclical = rev_trend in ("volatile",) and ni_trend in ("volatile",)
+    is_property = "properti" in sub_sector.lower() or "property" in sector.lower()
+    is_bank = "bank" in sub_sector.lower()
+
+    if is_likely_turnaround:
+        parts.append("PERTANYAAN WAJIB DIJAWAB (turnaround):")
+        parts.append("Dalam business_narrative, JAWAB pertanyaan ini:")
+        parts.append("1. APA YANG RUSAK: Mengapa margin tipis/negatif? Apa masalah fundamentalnya?")
+        parts.append("2. APA YANG BERUBAH: Apa katalis pemulihan spesifik? (proyek baru, manajemen baru, restrukturisasi)")
+        parts.append("3. APA MILESTONE: Kapan break-even? Target margin berapa? Apa yang harus terjadi?")
+        if is_property:
+            parts.append("4. KHUSUS PROPERTI: Berapa nilai land bank? Proyek apa yang sedang dikembangkan?")
+            parts.append("   Apakah margin rendah karena belum ada penjualan besar atau memang bisnis yang buruk?")
+        parts.append("")
+    elif is_likely_cyclical:
+        parts.append("PERTANYAAN WAJIB DIJAWAB (cyclical):")
+        parts.append("1. POSISI SIKLUS: Di mana posisi saat ini — puncak, turun, dasar, atau naik?")
+        parts.append("2. PEMICU BALIK: Apa yang akan membalikkan siklus? Harga komoditas? Demand?")
+        parts.append("3. TIMING: Kapan siklus diperkirakan berbalik? Tanda-tanda awal apa yang harus dipantau?")
+        parts.append("")
+    elif is_bank:
+        parts.append("PERTANYAAN WAJIB DIJAWAB (bank):")
+        parts.append("1. KUALITAS FRANCHISE: Bagaimana posisi CASA dan NIM vs peers?")
+        parts.append("2. ASSET QUALITY: Apa risiko NPL terbesar? Di segmen mana?")
+        parts.append("3. PERTUMBUHAN: Dari mana pertumbuhan kredit akan datang?")
+        parts.append("")
 
     # Data bundle
     parts.append("STOCK DATA BUNDLE:")
@@ -429,7 +530,7 @@ class AIAnalyst:
     """
     Generate 3-scenario investment thesis via LLM.
 
-    Model-agnostic: supports OpenAI (default: gpt-4o-mini) and Anthropic.
+    Model-agnostic: supports OpenAI (default: gpt-5.3) and Anthropic.
     """
 
     def __init__(
@@ -441,7 +542,7 @@ class AIAnalyst:
     ):
         self.llm = get_provider(provider, model, api_key, base_url)
         self.provider_name = provider
-        self.model_name = model or ("gpt-4o-mini" if provider == "openai" else "claude-sonnet-4-20250514")
+        self.model_name = model or ("gpt-5.3" if provider == "openai" else "claude-sonnet-4-20250514")
 
     def analyze(
         self,
@@ -537,7 +638,7 @@ class AIAnalyst:
             )
 
         # Estimate cost
-        prompt_cost = response.prompt_tokens * 0.000003  # ~$3/M for gpt-4o-mini
+        prompt_cost = response.prompt_tokens * 0.000003  # ~$3/M for gpt-5.3
         output_cost = response.output_tokens * 0.000015
         cost = prompt_cost + output_cost
 

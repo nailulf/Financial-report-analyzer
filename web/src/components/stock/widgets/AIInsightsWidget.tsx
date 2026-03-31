@@ -371,7 +371,7 @@ export function AIInsightsWidget({ ticker }: Props) {
         attempts++
         if (attempts > maxAttempts) {
           clearInterval(interval)
-          setGenStatus('Timeout — cek GitHub Actions log atau jalankan manual:\npython run_all.py --ai-full --ticker ' + ticker + ' --ai-model gpt-4o-mini')
+          setGenStatus('Timeout — cek GitHub Actions log atau jalankan manual:\npython run_all.py --ai-full --ticker ' + ticker + ' --ai-model gpt-5.3')
           setGenerating(false)
           return
         }

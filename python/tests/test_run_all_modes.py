@@ -92,9 +92,9 @@ class TestPhase6Functions:
     def test_ai_analyst_provider_config(self):
         """AIAnalyst should accept provider and model configuration."""
         from scripts.scoring.ai_analyst import AIAnalyst
-        analyst = AIAnalyst(provider="openai", model="gpt-4o-mini")
+        analyst = AIAnalyst(provider="openai", model="gpt-5.3")
         assert analyst.provider_name == "openai"
-        assert analyst.model_name == "gpt-4o-mini"
+        assert analyst.model_name == "gpt-5.3"
 
         analyst2 = AIAnalyst(provider="anthropic", model="claude-haiku-4-5-20251001")
         assert analyst2.provider_name == "anthropic"

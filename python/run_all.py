@@ -861,7 +861,7 @@ Examples:
         type=str,
         default=None,
         metavar="MODEL",
-        help="LLM model name (default: gpt-4o-mini for openai, claude-sonnet-4 for anthropic)",
+        help="LLM model name (default: gpt-5.3 for openai, claude-sonnet-4 for anthropic)",
     )
     parser.add_argument(
         "--min-composite",

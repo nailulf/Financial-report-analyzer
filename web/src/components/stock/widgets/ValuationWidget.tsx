@@ -1,3 +1,4 @@
+import type { QuarterlyFinancial } from '@/lib/types/api'
 import { ValuationCalculator } from '@/components/stock/valuation-calculator'
 
 interface Props {
@@ -9,9 +10,15 @@ interface Props {
   currentPrice: number | null
   shares: number | null
   defaultGrowthRate: number
+  peRatio: number | null
+  pbRatio: number | null
+  annualHistory: QuarterlyFinancial[]
 }
 
-export function ValuationWidget({ eps, bvps, fcf, dividends, netIncome, currentPrice, shares, defaultGrowthRate }: Props) {
+export function ValuationWidget({
+  eps, bvps, fcf, dividends, netIncome, currentPrice, shares, defaultGrowthRate,
+  peRatio, pbRatio, annualHistory,
+}: Props) {
   if (!eps && !bvps && !fcf && !dividends && !netIncome) return null
 
   return (
@@ -31,6 +38,9 @@ export function ValuationWidget({ eps, bvps, fcf, dividends, netIncome, currentP
           currentPrice={currentPrice}
           shares={shares}
           defaultGrowthRate={defaultGrowthRate}
+          peRatio={peRatio}
+          pbRatio={pbRatio}
+          annualHistory={annualHistory}
         />
       </div>
     </div>

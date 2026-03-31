@@ -21,17 +21,12 @@ import { HeroBar }                  from './widgets/HeroBar'
 import { NavTabs }                  from './widgets/NavTabs'
 import { AIInsightsWidget }         from './widgets/AIInsightsWidget'
 import { BrokerActivityWidget }     from './widgets/BrokerActivityWidget'
-import { TechnicalWidget }          from './widgets/TechnicalWidget'
-import { PriceWidget }              from './widgets/PriceWidget'
+import { TradingViewChart }          from '@/components/charts/tradingview-chart'
 import { ShareholdersWidget }       from './widgets/ShareholdersWidget'
-import { SentimentWidget }          from './widgets/SentimentWidget'
-import { SectorOutlookWidget }      from './widgets/SectorOutlookWidget'
-import { ProductsWidget }           from './widgets/ProductsWidget'
 import { FinancialStatementsWidget } from './widgets/FinancialStatementsWidget'
 import { CompanyMetricsWidget }      from './widgets/CompanyMetricsWidget'
 import { FinancialHighlightsWidget } from './widgets/FinancialHighlightsWidget'
 import { ValuationWidget }          from './widgets/ValuationWidget'
-import { StoriesWidget }            from './widgets/StoriesWidget'
 import { DividendWidget }           from './widgets/DividendWidget'
 import { CompanyProfileWidget }     from './widgets/CompanyProfileWidget'
 import { DataQualityWidget }        from './widgets/DataQualityWidget'
@@ -125,11 +120,18 @@ export function StockPageClient({
             currentPrice={latestPrice}
             shares={dcfShares}
             defaultGrowthRate={defaultGrowth}
+            peRatio={metrics?.pe_ratio ?? null}
+            pbRatio={metrics?.pbv_ratio ?? null}
+            annualHistory={annualTable}
           />
         </div>
 
         <div className="px-12 py-2">
           <AnalystInsightWidget ticker={header.ticker} />
+        </div>
+
+        <div className="px-12 py-2">
+          <TradingViewChart ticker={header.ticker} />
         </div>
       </div>
 
@@ -145,7 +147,6 @@ export function StockPageClient({
         <FinancialStatementsWidget annual={annualTable} quarterly={quarterly} />
         <CompanyMetricsWidget ticker={header.ticker} metrics={metrics} latestYear={latestYear} cagr={cagr} health={health} peerPercentiles={peerPercentiles} />
         <FinancialHighlightsWidget quarterly={quarterly} annual={annualTable} />
-        <ProductsWidget />
         <div className="px-12 py-2">
           <DividendWidget
             dividendHistory={dividendHistory}
@@ -154,7 +155,6 @@ export function StockPageClient({
             price={metrics?.price ?? latestPrice}
           />
         </div>
-        <SectorOutlookWidget />
       </div>
 
       {/* ═══════════════════════════════════════════════════════════════
@@ -165,8 +165,8 @@ export function StockPageClient({
         title="ARUS DANA"
         subtitle="Aktivitas broker, kepemilikan institusi, dan sentimen pasar"
       />
-      <div className="flex flex-col gap-0">
-        <div className="px-12 py-2">
+      <div className="px-12 py-2 flex gap-3 items-start">
+        <div className="w-[70%]">
           <BrokerActivityWidget
             ticker={header.ticker}
             initialData={brokerSummary}
@@ -175,30 +175,12 @@ export function StockPageClient({
             brokerConcentration={brokerConcentration}
           />
         </div>
-        <div className="py-2 px-12 flex gap-2 items-start">
-          <div className="flex-1">
-            <ShareholdersWidget
-              shareholders={displayedShareholders}
-              shareholderHistory={shareholderHistory}
-            />
-          </div>
-          <div className="w-[480px]">
-            <SentimentWidget />
-          </div>
+        <div className="w-[30%]">
+          <ShareholdersWidget
+            shareholders={displayedShareholders}
+            shareholderHistory={shareholderHistory}
+          />
         </div>
-      </div>
-
-      {/* ═══════════════════════════════════════════════════════════════
-          TECHNICAL
-      ═══════════════════════════════════════════════════════════════ */}
-      <SectionDivider
-        id="technical"
-        title="TEKNIKAL"
-        subtitle="Level support dan resistance, moving average, dan pergerakan harga"
-      />
-      <div className="flex flex-col gap-0">
-        <TechnicalWidget />
-        <PriceWidget ticker={header.ticker} priceHistory={priceHistory} />
       </div>
 
       {/* ═══════════════════════════════════════════════════════════════
@@ -212,9 +194,6 @@ export function StockPageClient({
       <div className="flex flex-col gap-0">
         <div className="py-2 px-12">
           <CompanyProfileWidget profile={profile} officers={officers} />
-        </div>
-        <div className="py-2 px-12">
-          <StoriesWidget />
         </div>
         <div className="py-2 px-12">
           <DataQualityWidget quality={quality} ticker={header.ticker} />

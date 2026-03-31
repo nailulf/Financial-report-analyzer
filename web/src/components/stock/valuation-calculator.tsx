@@ -14,6 +14,7 @@ import {
   type ScenarioLabel,
 } from '@/lib/calculations/valuation'
 import { formatIDRCompact, fmtNumID } from '@/lib/calculations/formatters'
+import type { QuarterlyFinancial } from '@/lib/types/api'
 
 interface Props {
   eps: number | null
@@ -24,6 +25,9 @@ interface Props {
   currentPrice: number | null
   shares: number | null
   defaultGrowthRate: number
+  peRatio: number | null
+  pbRatio: number | null
+  annualHistory: QuarterlyFinancial[]
 }
 
 /* ── Sub-components ────────────────────────────────────────────── */
@@ -129,10 +133,65 @@ function ScenarioCard({ scenario }: { scenario: DCFScenario }) {
   )
 }
 
+/* ── Graham criteria check ────────────────────────────────────── */
+
+function CriteriaCheck({ label, pass }: { label: string; pass: boolean | null }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className={`font-mono text-[10px] leading-none ${pass === null ? 'text-[#CCCCCC]' : pass ? 'text-[#00FF88]' : 'text-red-400'}`}>
+        {pass === null ? '—' : pass ? '✓' : '✗'}
+      </span>
+      <span className={`font-mono text-[10px] ${pass === null ? 'text-[#CCCCCC]' : pass ? 'text-[#1A1A1A]' : 'text-[#888888]'}`}>
+        {label}
+      </span>
+    </div>
+  )
+}
+
+/* ── Graham sparkline (SVG) ───────────────────────────────────── */
+
+function GrahamSparkline({ points }: { points: { year: number; value: number }[] }) {
+  if (points.length < 2) return null
+
+  const w = 200
+  const h = 36
+  const pad = 2
+  const values = points.map((p) => p.value)
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const range = max - min || 1
+
+  const pts = points.map((p, i) => {
+    const x = pad + (i / (points.length - 1)) * (w - 2 * pad)
+    const y = h - pad - ((p.value - min) / range) * (h - 2 * pad)
+    return `${x},${y}`
+  })
+
+  return (
+    <div className="mt-2">
+      <svg width={w} height={h} className="w-full" viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none">
+        <polyline
+          points={pts.join(' ')}
+          fill="none"
+          stroke="#00FF88"
+          strokeWidth="1.5"
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+      </svg>
+      <div className="flex items-center justify-between font-mono text-[9px] text-[#AAAAAA]">
+        <span>{points[0].year}</span>
+        <span>{points[points.length - 1].year}</span>
+      </div>
+    </div>
+  )
+}
+
 /* ── Main ──────────────────────────────────────────────────────── */
 
 export function ValuationCalculator({
   eps, bvps, fcf, dividends, netIncome, currentPrice, shares, defaultGrowthRate,
+  peRatio, pbRatio, annualHistory,
 }: Props) {
   const availableModes = useMemo(() => {
     const modes: DCFMode[] = []
@@ -167,11 +226,43 @@ export function ValuationCalculator({
 
   const modeLabel = activeMode ? DCF_MODE_LABELS[activeMode] : null
 
-  return (
-    <div className="flex flex-col gap-3">
+  // Graham criteria
+  const pePb = (peRatio != null && pbRatio != null) ? peRatio * pbRatio : null
+  const criteria = {
+    pe: peRatio != null ? peRatio < 15 : null,
+    pb: pbRatio != null ? pbRatio < 1.5 : null,
+    pePb: pePb != null ? pePb < 22.5 : null,
+  }
 
-      {/* ── Graham Number ── */}
-      <div className="border border-[#E0E0E5] p-4">
+  // Historical Graham Numbers from annual data
+  const grahamHistory = useMemo(() => {
+    const points: { year: number; value: number }[] = []
+    for (const row of annualHistory) {
+      if (row.quarter !== 0) continue
+      const e = row.eps
+      const b = row.book_value_per_share
+      if (e != null && e > 0 && b != null && b > 0) {
+        points.push({ year: row.year, value: Math.sqrt(22.5 * e * b) })
+      }
+    }
+    return points.sort((a, b) => a.year - b.year)
+  }, [annualHistory])
+
+  // Graham Number CAGR
+  const grahamCagr = useMemo(() => {
+    if (grahamHistory.length < 2) return null
+    const first = grahamHistory[0]
+    const last = grahamHistory[grahamHistory.length - 1]
+    const years = last.year - first.year
+    if (years <= 0 || first.value <= 0) return null
+    return (Math.pow(last.value / first.value, 1 / years) - 1) * 100
+  }, [grahamHistory])
+
+  return (
+    <div className="flex gap-3 items-stretch">
+
+      {/* ── Graham Number (30%) ── */}
+      <div className="w-[30%] shrink-0 border border-[#E0E0E5] p-4 flex flex-col">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="font-mono text-[11px] font-bold tracking-[0.5px] text-[#888888]">GRAHAM NUMBER</span>
@@ -186,18 +277,52 @@ export function ValuationCalculator({
         </div>
 
         {graham.grahamNumber ? (
-          <div className="mt-2">
+          <div className="mt-2 flex-1 flex flex-col">
             <div className="flex items-baseline gap-3">
               <span className="font-mono text-[18px] font-bold text-[#1A1A1A]">
                 Rp{fmtNumID(Math.round(graham.grahamNumber))}
               </span>
               {currentPrice && (
                 <span className="font-mono text-[11px] text-[#888888]">
-                  vs Rp{fmtNumID(currentPrice)} saat ini
+                  vs Rp{fmtNumID(currentPrice)}
                 </span>
               )}
             </div>
             <MoSBar mos={graham.marginOfSafety} />
+
+            {/* Graham criteria checklist */}
+            <div className="mt-3 space-y-1">
+              <span className="font-mono text-[9px] font-bold text-[#AAAAAA] tracking-[0.5px]">KRITERIA GRAHAM</span>
+              <CriteriaCheck
+                label={`P/E < 15${peRatio != null ? ` (${peRatio.toFixed(1)})` : ''}`}
+                pass={criteria.pe}
+              />
+              <CriteriaCheck
+                label={`P/B < 1.5${pbRatio != null ? ` (${pbRatio.toFixed(1)})` : ''}`}
+                pass={criteria.pb}
+              />
+              <CriteriaCheck
+                label={`P/E × P/B < 22.5${pePb != null ? ` (${pePb.toFixed(1)})` : ''}`}
+                pass={criteria.pePb}
+              />
+            </div>
+
+            {/* Historical sparkline + CAGR */}
+            {grahamHistory.length >= 2 && (
+              <div className="mt-auto pt-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[9px] font-bold text-[#AAAAAA] tracking-[0.5px]">TREN NILAI WAJAR</span>
+                  {grahamCagr != null && (
+                    <span className={`font-mono text-[10px] font-bold ${grahamCagr >= 0 ? 'text-[#00FF88]' : 'text-red-400'}`}>
+                      {grahamCagr > 0 ? '+' : ''}{grahamCagr.toFixed(1)}%/yr
+                    </span>
+                  )}
+                </div>
+                <GrahamSparkline points={grahamHistory} />
+              </div>
+            )}
+
+            {/* EPS / BVPS footnote */}
             <div className="mt-2 flex gap-4 font-mono text-[10px] text-[#888888]">
               <span>EPS: <span className="text-[#1A1A1A] font-semibold">{eps != null ? eps.toFixed(2) : '—'}</span></span>
               <span>BVPS: <span className="text-[#1A1A1A] font-semibold">{bvps != null ? bvps.toFixed(2) : '—'}</span></span>
@@ -210,12 +335,11 @@ export function ValuationCalculator({
         )}
       </div>
 
-      {/* ── DCF Scenarios ── */}
-      <div className="border border-[#E0E0E5] p-4">
+      {/* ── DCF Scenarios (70%) ── */}
+      <div className="w-[70%] min-w-0 border border-[#E0E0E5] p-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <span className="font-mono text-[11px] font-bold tracking-[0.5px] text-[#888888]">DCF (10-YEAR)</span>
-            {/* Mode toggle */}
             {availableModes.length > 1 && (
               <div className="flex gap-0.5 p-0.5 bg-[#F5F5F8] border border-[#E0E0E5]">
                 {availableModes.map((m) => (
@@ -241,7 +365,6 @@ export function ValuationCalculator({
 
         {scenarios ? (
           <div className="mt-3">
-            {/* Scenario cards */}
             <div className="flex gap-2">
               {scenarios.map((s) => (
                 <ScenarioCard key={s.label} scenario={s} />
@@ -301,7 +424,7 @@ export function ValuationCalculator({
               </div>
             </div>
 
-            {/* Assumptions footnote — always visible, compact */}
+            {/* Assumptions footnote */}
             <div className="mt-2 font-mono text-[9px] text-[#AAAAAA] leading-[1.5]">
               WACC: BI 10Y {IDX_RISK_FREE_RATE}% + ERP {IDX_EQUITY_RISK_PREMIUM}% = {IDX_BASE_WACC}%
               {' · '}Scenarios: &plusmn;10% growth &amp; WACC

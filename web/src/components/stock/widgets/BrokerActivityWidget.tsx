@@ -974,6 +974,58 @@ function SignalMatrix({ currentBroker, currentInsider, confidence }: {
   )
 }
 
+/* ─── signal matrix modal (CTA + overlay) ──────────────────────────── */
+
+function SignalMatrixModal({ currentBroker, currentInsider, confidence }: {
+  currentBroker: BrokerDirection
+  currentInsider: InsiderAction
+  confidence: ConfidenceScore
+}) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <>
+      <div className="px-6 pb-4">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="font-mono text-[11px] font-semibold text-[#888888] hover:text-[#1A1A1A] transition-colors flex items-center gap-1.5"
+        >
+          <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full border border-[#E0E0E5] text-[#AAAAAA] font-mono text-[8px] leading-none select-none">?</span>
+          Pelajari 9 kombinasi sinyal
+        </button>
+      </div>
+
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm p-4"
+          onClick={(e) => { if (e.target === e.currentTarget) setOpen(false) }}
+        >
+          <div className="bg-white rounded-lg border border-[#E0E0E5] shadow-[0_4px_24px_rgba(26,25,24,0.12)] w-full max-w-2xl flex flex-col max-h-[80vh]">
+            <div className="flex items-center justify-between px-5 py-3 border-b border-[#E0E0E5] shrink-0">
+              <span className="font-mono text-[13px] font-bold tracking-[0.5px] text-[#1A1A1A]">MATRIKS SINYAL GABUNGAN</span>
+              <button
+                onClick={() => setOpen(false)}
+                className="text-[#9C9B99] hover:text-[#1A1A1A] text-lg leading-none transition-colors"
+                aria-label="Close"
+              >
+                ×
+              </button>
+            </div>
+            <div className="p-5 overflow-y-auto">
+              <SignalMatrix
+                currentBroker={currentBroker}
+                currentInsider={currentInsider}
+                confidence={confidence}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
 /* ─── skeleton ──────────────────────────────────────────────────────── */
 
 function Skeleton() {
@@ -1370,15 +1422,13 @@ export function BrokerActivityWidget({
               </div>
             </div> */}
 
-            {/* Signal matrix */}
+            {/* Signal matrix — behind modal CTA */}
             {data && (
-              <div className="px-6 pb-6">
-                <SignalMatrix
-                  currentBroker={brokerDirection}
-                  currentInsider={insiderAction}
-                  confidence={confidence}
-                />
-              </div>
+              <SignalMatrixModal
+                currentBroker={brokerDirection}
+                currentInsider={insiderAction}
+                confidence={confidence}
+              />
             )}
           </div>
 

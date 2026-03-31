@@ -17,19 +17,21 @@ interface MetricDef {
   key: string
   label: string
   color: string
-  format: 'idr' | 'pct' | 'x'
+  format: 'idr' | 'pct' | 'x' | 'eps'
 }
 
 const STATEMENTS: Record<StatementType, { title: string; metrics: MetricDef[]; defaults: string[] }> = {
   is: {
     title: 'LABA RUGI',
     metrics: [
-      { key: 'revenue',          label: 'Pendapatan',     color: CHART_COLORS.blue,   format: 'idr' },
-      { key: 'gross_profit',     label: 'Laba Kotor',     color: CHART_COLORS.amber,  format: 'idr' },
-      { key: 'net_income',       label: 'Laba Bersih',    color: CHART_COLORS.green,  format: 'idr' },
-      { key: 'gross_margin',     label: 'Margin Kotor',   color: '#EC4899',           format: 'pct' },
-      { key: 'operating_margin', label: 'Margin Operasi', color: CHART_COLORS.gray,   format: 'pct' },
-      { key: 'net_margin',       label: 'Margin Bersih',  color: CHART_COLORS.teal,   format: 'pct' },
+      { key: 'revenue',           label: 'Pendapatan',     color: CHART_COLORS.blue,   format: 'idr' },
+      { key: 'gross_profit',      label: 'Laba Kotor',     color: CHART_COLORS.amber,  format: 'idr' },
+      { key: 'operating_income',  label: 'EBIT',           color: CHART_COLORS.purple, format: 'idr' },
+      { key: 'net_income',        label: 'Laba Bersih',    color: CHART_COLORS.green,  format: 'idr' },
+      { key: 'eps',               label: 'EPS',            color: CHART_COLORS.teal,   format: 'eps' },
+      { key: 'gross_margin',      label: 'Margin Kotor',   color: '#EC4899',           format: 'pct' },
+      { key: 'operating_margin',  label: 'Margin Operasi', color: CHART_COLORS.gray,   format: 'pct' },
+      { key: 'net_margin',        label: 'Margin Bersih',  color: '#06B6D4',           format: 'pct' },
     ],
     defaults: ['revenue', 'gross_profit', 'net_income'],
   },
@@ -70,7 +72,9 @@ function buildRows(rows: QuarterlyFinancial[], mode: 'annual' | 'quarterly'): Ch
       label: mode === 'annual' ? String(r.year) : `Q${r.quarter} '${String(r.year).slice(2)}`,
       revenue: r.revenue,
       gross_profit: r.gross_profit,
+      operating_income: r.operating_income,
       net_income: r.net_income,
+      eps: r.eps,
       gross_margin: r.gross_margin,
       operating_margin: r.operating_margin,
       net_margin: r.net_margin,
@@ -89,17 +93,19 @@ function buildRows(rows: QuarterlyFinancial[], mode: 'annual' | 'quarterly'): Ch
     }))
 }
 
-function fmtTooltip(value: number | null | undefined, format: 'idr' | 'pct' | 'x'): string {
+function fmtTooltip(value: number | null | undefined, format: 'idr' | 'pct' | 'x' | 'eps'): string {
   if (value == null) return '—'
   if (format === 'pct') return formatPercent(value)
   if (format === 'x') return formatMultiple(value)
+  if (format === 'eps') return `Rp${value.toLocaleString('en', { maximumFractionDigits: 0 })}`
   return formatIDRCompact(value)
 }
 
-function fmtAxis(value: number | null | undefined, format: 'idr' | 'pct' | 'x'): string {
+function fmtAxis(value: number | null | undefined, format: 'idr' | 'pct' | 'x' | 'eps'): string {
   if (value == null) return ''
   if (format === 'pct') return `${value.toFixed(0)}%`
   if (format === 'x') return `${value.toFixed(1)}x`
+  if (format === 'eps') return `${value.toLocaleString('en', { maximumFractionDigits: 0 })}`
   return formatIDRCompact(value)
 }
 
@@ -198,8 +204,8 @@ function StatementCard({
   const config = STATEMENTS[type]
   const activeMetrics = config.metrics.filter((m) => selected.has(m.key))
   const idrMetrics = activeMetrics.filter((m) => m.format === 'idr')
-  const pctMetrics = activeMetrics.filter((m) => m.format === 'pct' || m.format === 'x')
-  const hasDualAxis = idrMetrics.length > 0 && pctMetrics.length > 0
+  const lineMetrics = activeMetrics.filter((m) => m.format === 'pct' || m.format === 'x' || m.format === 'eps')
+  const hasDualAxis = idrMetrics.length > 0 && lineMetrics.length > 0
 
   const chartH = expanded ? 340 : 220
 
@@ -257,7 +263,7 @@ function StatementCard({
               />
               <YAxis
                 yAxisId="left"
-                tickFormatter={(v) => fmtAxis(v, idrMetrics.length > 0 ? 'idr' : pctMetrics[0]?.format ?? 'idr')}
+                tickFormatter={(v) => fmtAxis(v, idrMetrics.length > 0 ? 'idr' : lineMetrics[0]?.format ?? 'idr')}
                 tick={{ fontSize: 10, fontFamily: 'monospace', fill: '#888888' }}
                 tickLine={false}
                 axisLine={false}
@@ -267,7 +273,7 @@ function StatementCard({
                 <YAxis
                   yAxisId="right"
                   orientation="right"
-                  tickFormatter={(v) => fmtAxis(v, pctMetrics[0]?.format ?? 'pct')}
+                  tickFormatter={(v) => fmtAxis(v, lineMetrics[0]?.format ?? 'pct')}
                   tick={{ fontSize: 10, fontFamily: 'monospace', fill: '#888888' }}
                   tickLine={false}
                   axisLine={false}
@@ -293,7 +299,7 @@ function StatementCard({
                   maxBarSize={expanded ? 40 : 24}
                 />
               ))}
-              {pctMetrics.map((m) => (
+              {lineMetrics.map((m) => (
                 <Line
                   key={m.key}
                   yAxisId={hasDualAxis ? 'right' : 'left'}

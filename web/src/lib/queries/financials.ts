@@ -43,7 +43,7 @@ export async function getFinancialSeries(ticker: string): Promise<FinancialYear[
 }
 
 const FINANCIAL_COLS = `year, quarter,
-             revenue, gross_profit, net_income, eps,
+             revenue, gross_profit, operating_income, net_income, eps,
              gross_margin, operating_margin, net_margin,
              roe, roa,
              total_assets, total_equity, cash_and_equivalents,
@@ -60,6 +60,7 @@ function mapFinancialRow(r: any): QuarterlyFinancial {
     quarter: r.quarter,
     revenue: parseBigInt(r.revenue),
     gross_profit: parseBigInt(r.gross_profit),
+    operating_income: parseBigInt(r.operating_income),
     net_income: parseBigInt(r.net_income),
     eps: r.eps ?? null,
     gross_margin: r.gross_margin ?? null,

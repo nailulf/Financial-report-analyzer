@@ -103,6 +103,7 @@ export interface QuarterlyFinancial {
   // Income Statement
   revenue: number | null
   gross_profit: number | null
+  operating_income: number | null
   net_income: number | null
   eps: number | null
   // Margins

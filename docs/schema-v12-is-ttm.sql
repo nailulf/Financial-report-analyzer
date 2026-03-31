@@ -27,8 +27,13 @@ CREATE INDEX IF NOT EXISTS idx_financials_is_ttm
   WHERE is_ttm = TRUE;
 
 -- 4. Update v_latest_annual_financials to exclude TTM
---    Consumers: v_screener, getLatestMetrics(), getSubsectorPeers(), getComparisonStocks()
-CREATE OR REPLACE VIEW v_latest_annual_financials AS
+--    Adding is_ttm column to financials changed the f.* expansion, so
+--    CREATE OR REPLACE fails (column position shift). Must DROP first.
+--    v_screener depends on this view (base schema), so drop it first.
+DROP VIEW IF EXISTS v_screener;
+DROP VIEW IF EXISTS v_latest_annual_financials;
+
+CREATE VIEW v_latest_annual_financials AS
 SELECT DISTINCT ON (f.ticker)
     f.*,
     s.name,
@@ -44,8 +49,8 @@ WHERE f.quarter = 0
   AND (f.is_ttm IS NOT TRUE)
 ORDER BY f.ticker, f.year DESC;
 
--- 5. Update v_screener (LATERAL version from v6) to exclude TTM
-CREATE OR REPLACE VIEW v_screener AS
+-- 5. Recreate v_screener (LATERAL version from v6) excluding TTM
+CREATE VIEW v_screener AS
 SELECT
     s.ticker,
     s.name,
@@ -118,18 +123,24 @@ LEFT JOIN LATERAL (
 WHERE s.status = 'Active';
 
 -- 6. Update v_data_completeness CTEs to exclude TTM
---    (Only the annual_stats and latest_annual CTEs need updating)
-CREATE OR REPLACE VIEW v_data_completeness AS
+--    Must DROP first because column layout differs from CREATE OR REPLACE.
+--    No other views depend on v_data_completeness.
+DROP VIEW IF EXISTS v_data_completeness;
+
+CREATE VIEW v_data_completeness AS
 WITH
+
+-- 1. Price history
 price_stats AS (
     SELECT
         ticker,
-        COUNT(*)                                                                                         AS price_days,
-        MAX(date)                                                                                        AS latest_price_date,
-        SUM(CASE WHEN date >= CURRENT_DATE - INTERVAL '30 days' AND foreign_net IS NOT NULL THEN 1 ELSE 0 END) AS recent_foreign_days
+        COUNT(*)    AS price_days,
+        MAX(date)   AS latest_price_date
     FROM daily_prices
     GROUP BY ticker
 ),
+
+-- 2. Annual financials coverage (exclude TTM)
 annual_stats AS (
     SELECT
         ticker,
@@ -140,21 +151,25 @@ annual_stats AS (
       AND (is_ttm IS NOT TRUE)
     GROUP BY ticker
 ),
+
+-- 3. Core field quality on latest annual row — 7 fields (exclude TTM)
 latest_annual AS (
     SELECT DISTINCT ON (ticker)
         ticker,
-        (CASE WHEN revenue               IS NOT NULL THEN 1 ELSE 0 END
-       + CASE WHEN net_income            IS NOT NULL THEN 1 ELSE 0 END
-       + CASE WHEN total_assets          IS NOT NULL THEN 1 ELSE 0 END
-       + CASE WHEN total_equity          IS NOT NULL THEN 1 ELSE 0 END
-       + CASE WHEN operating_cash_flow   IS NOT NULL THEN 1 ELSE 0 END
-       + CASE WHEN free_cash_flow        IS NOT NULL THEN 1 ELSE 0 END
-       + CASE WHEN book_value_per_share  IS NOT NULL THEN 1 ELSE 0 END) AS fields_present
+        (CASE WHEN revenue              IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN net_income           IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN total_assets         IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN total_equity         IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN operating_cash_flow  IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN free_cash_flow       IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN book_value_per_share IS NOT NULL THEN 1 ELSE 0 END) AS fields_present
     FROM financials
     WHERE quarter = 0
       AND (is_ttm IS NOT TRUE)
     ORDER BY ticker, year DESC
 ),
+
+-- 4. Quarterly coverage
 quarterly_stats AS (
     SELECT
         ticker,
@@ -163,65 +178,170 @@ quarterly_stats AS (
     WHERE quarter > 0
     GROUP BY ticker
 ),
+
+-- 5. Company profile quality (max 7 pts)
 profile_stats AS (
     SELECT
-        cp.ticker,
-        (CASE WHEN cp.description IS NOT NULL AND LENGTH(cp.description) > 50 THEN 4 ELSE 0 END
-       + CASE WHEN cp.website IS NOT NULL THEN 2 ELSE 0 END
-       + CASE WHEN cp.address IS NOT NULL THEN 2 ELSE 0 END)  AS profile_pts,
-        CASE WHEN sh.shareholder_count > 0 THEN 2 ELSE 0 END  AS shareholder_pts
-    FROM company_profiles cp
-    LEFT JOIN (
-        SELECT ticker, COUNT(*) AS shareholder_count
-        FROM shareholders
-        GROUP BY ticker
-    ) sh ON sh.ticker = cp.ticker
+        ticker,
+        (CASE WHEN description IS NOT NULL AND LENGTH(description) > 50 THEN 3 ELSE 0 END
+       + CASE WHEN website     IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN address     IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN phone       IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN email       IS NOT NULL THEN 1 ELSE 0 END) AS profile_pts
+    FROM company_profiles
 ),
-broker_stats AS (
+
+-- 6. Board & commissioners (max 8 pts)
+board_stats AS (
     SELECT
         ticker,
-        COUNT(DISTINCT date) AS broker_days
-    FROM broker_summary
+        (CASE WHEN COUNT(*) FILTER (WHERE role = 'director')     > 0 THEN 4 ELSE 0 END
+       + CASE WHEN COUNT(*) FILTER (WHERE role = 'commissioner') > 0 THEN 4 ELSE 0 END) AS board_pts
+    FROM company_officers
+    GROUP BY ticker
+),
+
+-- 7. Shareholders >=1% — presence (5 pts) + snapshot freshness (3 pts)
+shareholder_stats AS (
+    SELECT
+        ticker,
+        COUNT(*)           AS shareholder_count,
+        MAX(snapshot_date) AS latest_snapshot
+    FROM shareholders
+    WHERE percentage >= 1.0
+    GROUP BY ticker
+),
+
+-- 8. Derived ratio fields on latest annual row — 10 fields x 1 pt (exclude TTM)
+derived_stats AS (
+    SELECT DISTINCT ON (ticker)
+        ticker,
+        (CASE WHEN pe_ratio       IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN pbv_ratio      IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN roe            IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN roa            IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN current_ratio  IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN debt_to_equity IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN net_margin     IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN gross_margin   IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN dividend_yield IS NOT NULL THEN 1 ELSE 0 END
+       + CASE WHEN payout_ratio   IS NOT NULL THEN 1 ELSE 0 END) AS derived_fields
+    FROM financials
+    WHERE quarter = 0
+      AND (is_ttm IS NOT TRUE)
+    ORDER BY ticker, year DESC
+),
+
+-- 9. Quarterly report PDFs — score last 4 quarters available (max 8 pts)
+quarterly_doc_stats AS (
+    SELECT
+        ticker,
+        COUNT(DISTINCT (period_year, period_quarter)) AS q_doc_count
+    FROM company_documents
+    WHERE doc_type = 'quarterly_report'
+      AND period_quarter > 0
+      AND (period_year * 10 + period_quarter) >= (
+            (EXTRACT(YEAR FROM CURRENT_DATE)::INTEGER - 1) * 10 + 1
+          )
+    GROUP BY ticker
+),
+
+-- 10. Annual report PDFs (max 5 pts: >=2 = 5, >=1 = 3, 0 = 0)
+annual_doc_stats AS (
+    SELECT
+        ticker,
+        COUNT(*) AS annual_doc_count
+    FROM company_documents
+    WHERE doc_type = 'annual_report'
+    GROUP BY ticker
+),
+
+-- 11. Corporate events (max 7 pts: public_expose=4, agm/egm=3)
+event_stats AS (
+    SELECT
+        ticker,
+        COUNT(*) FILTER (WHERE event_type = 'public_expose') AS expose_count,
+        COUNT(*) FILTER (WHERE event_type IN ('agm', 'egm')) AS agm_count
+    FROM corporate_events
     GROUP BY ticker
 )
+
 SELECT
     s.ticker,
-    s.name,
-    s.status,
-    COALESCE(ps.price_days, 0)                AS price_days,
+
+    -- Component scores
+    ROUND(LEAST(COALESCE(ps.price_days, 0)        / 1250.0, 1.0) * 15)::INTEGER  AS price_score,
+    ROUND(LEAST(COALESCE(an.annual_years, 0)       / 5.0,   1.0) * 12)::INTEGER  AS annual_coverage_score,
+    ROUND(COALESCE(la.fields_present, 0)           / 7.0    * 10)::INTEGER       AS annual_quality_score,
+    ROUND(LEAST(COALESCE(qs.quarterly_rows, 0)     / 8.0,   1.0) * 10)::INTEGER  AS quarterly_score,
+    COALESCE(prof.profile_pts, 0)                                                 AS profile_score,
+    COALESCE(bs.board_pts, 0)                                                     AS board_score,
+    (CASE WHEN COALESCE(sh.shareholder_count, 0) >= 3 THEN 5
+          WHEN COALESCE(sh.shareholder_count, 0) >= 1 THEN 2
+          ELSE 0 END
+   + CASE WHEN sh.latest_snapshot IS NOT NULL
+               AND sh.latest_snapshot >= CURRENT_DATE - INTERVAL '180 days' THEN 3
+          ELSE 0 END)                                                              AS shareholder_score,
+    COALESCE(dm.derived_fields, 0)                                                AS derived_metrics_score,
+
+    LEAST(ROUND(COALESCE(qd.q_doc_count, 0) / 4.0 * 8)::INTEGER, 8)             AS quarterly_reports_score,
+
+    CASE WHEN COALESCE(ad.annual_doc_count, 0) >= 2 THEN 5
+         WHEN COALESCE(ad.annual_doc_count, 0) = 1  THEN 3
+         ELSE 0 END                                                               AS annual_reports_score,
+
+    (CASE WHEN COALESCE(ev.expose_count, 0) >= 1 THEN 4 ELSE 0 END
+   + CASE WHEN COALESCE(ev.agm_count,    0) >= 1 THEN 3 ELSE 0 END)             AS corporate_events_score,
+
+    -- Total completeness score (1-100, Phase 2 max: 100)
+    GREATEST(1, LEAST(100,
+        ROUND(LEAST(COALESCE(ps.price_days, 0)      / 1250.0, 1.0) * 15)::INTEGER
+      + ROUND(LEAST(COALESCE(an.annual_years, 0)    / 5.0,    1.0) * 12)::INTEGER
+      + ROUND(COALESCE(la.fields_present, 0)        / 7.0     * 10)::INTEGER
+      + ROUND(LEAST(COALESCE(qs.quarterly_rows, 0)  / 8.0,    1.0) * 10)::INTEGER
+      + COALESCE(prof.profile_pts, 0)
+      + COALESCE(bs.board_pts, 0)
+      + (CASE WHEN COALESCE(sh.shareholder_count, 0) >= 3 THEN 5
+              WHEN COALESCE(sh.shareholder_count, 0) >= 1 THEN 2
+              ELSE 0 END
+       + CASE WHEN sh.latest_snapshot IS NOT NULL
+                   AND sh.latest_snapshot >= CURRENT_DATE - INTERVAL '180 days' THEN 3
+              ELSE 0 END)
+      + COALESCE(dm.derived_fields, 0)
+      + LEAST(ROUND(COALESCE(qd.q_doc_count, 0) / 4.0 * 8)::INTEGER, 8)
+      + CASE WHEN COALESCE(ad.annual_doc_count, 0) >= 2 THEN 5
+             WHEN COALESCE(ad.annual_doc_count, 0) = 1  THEN 3
+             ELSE 0 END
+      + (CASE WHEN COALESCE(ev.expose_count, 0) >= 1 THEN 4 ELSE 0 END
+       + CASE WHEN COALESCE(ev.agm_count,    0) >= 1 THEN 3 ELSE 0 END)
+    ))                                                                            AS completeness_score,
+
+    -- Raw counts (for tooltip details)
+    COALESCE(ps.price_days, 0)        AS price_days_count,
+    COALESCE(an.annual_years, 0)      AS annual_years_count,
+    COALESCE(qs.quarterly_rows, 0)    AS quarterly_rows_count,
+    COALESCE(sh.shareholder_count, 0) AS shareholders_count,
+    COALESCE(la.fields_present, 0)    AS annual_fields_present,
+    COALESCE(dm.derived_fields, 0)    AS derived_fields_count,
+    COALESCE(qd.q_doc_count, 0)       AS quarterly_docs_count,
+    COALESCE(ad.annual_doc_count, 0)  AS annual_docs_count,
+    COALESCE(ev.expose_count, 0)      AS expose_events_count,
+    COALESCE(ev.agm_count, 0)         AS agm_events_count,
     ps.latest_price_date,
-    COALESCE(ps.recent_foreign_days, 0)       AS recent_foreign_days,
-    COALESCE(ans.annual_years, 0)             AS annual_years,
-    ans.latest_financial_year,
-    COALESCE(la.fields_present, 0)            AS latest_annual_fields,
-    COALESCE(qs.quarterly_rows, 0)            AS quarterly_rows,
-    COALESCE(prs.profile_pts, 0)              AS profile_pts,
-    COALESCE(prs.shareholder_pts, 0)          AS shareholder_pts,
-    COALESCE(bs.broker_days, 0)               AS broker_days,
-    -- Composite score (max 100)
-    LEAST(100,
-        -- Price data (max 20)
-        LEAST(20, COALESCE(ps.price_days, 0) / 50.0 * 15
-            + CASE WHEN ps.latest_price_date >= CURRENT_DATE - INTERVAL '7 days' THEN 5 ELSE 0 END)
-        -- Annual financials (max 30)
-      + LEAST(30, COALESCE(ans.annual_years, 0) * 3
-            + COALESCE(la.fields_present, 0) * 1.5)
-        -- Quarterly data (max 15)
-      + LEAST(15, COALESCE(qs.quarterly_rows, 0) * 1.5)
-        -- Profile & shareholders (max 10)
-      + COALESCE(prs.profile_pts, 0) + COALESCE(prs.shareholder_pts, 0)
-        -- Foreign flow (max 10)
-      + LEAST(10, COALESCE(ps.recent_foreign_days, 0) * 0.5)
-        -- Broker summary (max 15)
-      + LEAST(15, COALESCE(bs.broker_days, 0) * 0.5)
-    )                                         AS completeness_score
+    an.latest_financial_year
+
 FROM stocks s
-LEFT JOIN price_stats ps    ON ps.ticker = s.ticker
-LEFT JOIN annual_stats ans  ON ans.ticker = s.ticker
-LEFT JOIN latest_annual la  ON la.ticker = s.ticker
-LEFT JOIN quarterly_stats qs ON qs.ticker = s.ticker
-LEFT JOIN profile_stats prs ON prs.ticker = s.ticker
-LEFT JOIN broker_stats bs   ON bs.ticker = s.ticker;
+LEFT JOIN price_stats        ps   ON ps.ticker   = s.ticker
+LEFT JOIN annual_stats       an   ON an.ticker   = s.ticker
+LEFT JOIN latest_annual      la   ON la.ticker   = s.ticker
+LEFT JOIN quarterly_stats    qs   ON qs.ticker   = s.ticker
+LEFT JOIN profile_stats      prof ON prof.ticker  = s.ticker
+LEFT JOIN board_stats        bs   ON bs.ticker   = s.ticker
+LEFT JOIN shareholder_stats  sh   ON sh.ticker   = s.ticker
+LEFT JOIN derived_stats      dm   ON dm.ticker   = s.ticker
+LEFT JOIN quarterly_doc_stats qd  ON qd.ticker   = s.ticker
+LEFT JOIN annual_doc_stats   ad   ON ad.ticker   = s.ticker
+LEFT JOIN event_stats        ev   ON ev.ticker   = s.ticker;
 
 -- 7. Re-run stocks denormalization from real annual data (exclude TTM)
 UPDATE stocks s

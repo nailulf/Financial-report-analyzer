@@ -648,9 +648,22 @@ class AIAnalyst:
                 output_tokens=response.output_tokens,
             )
 
-        # Estimate cost
-        prompt_cost = response.prompt_tokens * 0.000003  # ~$3/M for gpt-5.2
-        output_cost = response.output_tokens * 0.000015
+        # Estimate cost based on OpenAI pricing (short context <272K tokens)
+        # Our prompts are ~6K tokens — always short context
+        PRICING = {
+            # model: (input $/M, output $/M)
+            "gpt-5.4":      (2.50, 15.00),
+            "gpt-5.4-mini": (0.75, 4.50),
+            "gpt-5.4-nano": (0.20, 1.25),
+            "gpt-5.4-pro":  (30.00, 180.00),
+            "gpt-5.2":      (2.50, 15.00),  # assume similar to gpt-5.4
+            "gpt-4o":       (2.50, 10.00),
+            "gpt-4o-mini":  (0.15, 0.60),
+        }
+        model_key = self.model_name.lower()
+        input_rate, output_rate = PRICING.get(model_key, (2.50, 15.00))  # default to flagship
+        prompt_cost = response.prompt_tokens * input_rate / 1_000_000
+        output_cost = response.output_tokens * output_rate / 1_000_000
         cost = prompt_cost + output_cost
 
         duration = time.time() - start

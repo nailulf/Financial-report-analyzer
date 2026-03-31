@@ -63,7 +63,7 @@ class ScoringPipeline:
         # Find latest non-TTM year
         published_years = [
             r["year"] for r in clean_rows
-            if not ("keystats" in (r.get("source") or "").lower() and r["year"] >= current_year)
+            if not r.get("is_ttm")
         ]
         if not published_years:
             return 0

@@ -16,11 +16,13 @@ export function MarginTrendChart({ data }: Props) {
   if (!mounted) return <ChartSkeleton height={260} />
   if (!data.length) return <div className="flex items-center justify-center h-64 text-[#9C9B99] text-sm">No data available</div>
 
+  const chartData = data.map((d) => ({ ...d, label: d.is_ttm ? `${d.year} (TTM)` : String(d.year) }))
+
   return (
     <ResponsiveContainer width="100%" height={260}>
-      <LineChart data={data} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+      <LineChart data={chartData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#F5F4F1" />
-        <XAxis dataKey="year" tick={{ fontSize: 12 }} />
+        <XAxis dataKey="label" tick={{ fontSize: 12 }} />
         <YAxis tickFormatter={(v) => `${v}%`} tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
         <Tooltip formatter={(v) => [`${Number(v).toFixed(1)}%`]} labelStyle={{ fontWeight: 600 }} />
         <Legend />

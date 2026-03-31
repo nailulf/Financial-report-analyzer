@@ -281,6 +281,7 @@ def _sync_screener_ratios(client, tickers: list[str]) -> int:
         .select(select_cols)
         .in_("ticker", tickers)
         .eq("quarter", 0)
+        .neq("is_ttm", True)
         .order("year", desc=True)
         .execute()
     )

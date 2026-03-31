@@ -7,7 +7,7 @@ export async function getFinancialSeries(ticker: string): Promise<FinancialYear[
   const supabase = await createClient()
   const { data, error } = await supabase
     .from('financials')
-    .select(`year, revenue, gross_profit, net_income, operating_income,
+    .select(`year, is_ttm, revenue, gross_profit, net_income, operating_income,
              gross_margin, operating_margin, net_margin, roe, roa, current_ratio,
              debt_to_equity, operating_cash_flow, capex, free_cash_flow,
              total_debt, cash_and_equivalents, total_equity, dividends_paid`)
@@ -21,6 +21,7 @@ export async function getFinancialSeries(ticker: string): Promise<FinancialYear[
   // Reverse so charts render oldest → newest (left to right)
   return ((data as Financials[]).reverse()).map((r) => ({
     year: r.year,
+    is_ttm: r.is_ttm ?? false,
     revenue: parseBigInt(r.revenue),
     gross_profit: parseBigInt(r.gross_profit),
     net_income: parseBigInt(r.net_income),
@@ -42,7 +43,7 @@ export async function getFinancialSeries(ticker: string): Promise<FinancialYear[
   }))
 }
 
-const FINANCIAL_COLS = `year, quarter,
+const FINANCIAL_COLS = `year, quarter, is_ttm,
              revenue, gross_profit, operating_income, net_income, eps,
              gross_margin, operating_margin, net_margin,
              roe, roa,
@@ -58,6 +59,7 @@ function mapFinancialRow(r: any): QuarterlyFinancial {
   return {
     year: r.year,
     quarter: r.quarter,
+    is_ttm: r.is_ttm ?? false,
     revenue: parseBigInt(r.revenue),
     gross_profit: parseBigInt(r.gross_profit),
     operating_income: parseBigInt(r.operating_income),

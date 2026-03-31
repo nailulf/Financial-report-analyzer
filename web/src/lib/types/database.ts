@@ -39,6 +39,7 @@ export interface Financials {
   ticker: string
   year: number
   quarter: number                // 0 = annual, 1–4 = quarterly
+  is_ttm: boolean                // true = TTM estimate, false = published annual
   period_end: string | null
   // Income Statement
   revenue: string | null         // BIGINT → string

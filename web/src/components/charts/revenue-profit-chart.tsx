@@ -17,11 +17,13 @@ export function RevenueProfitChart({ data }: Props) {
   if (!mounted) return <ChartSkeleton height={300} />
   if (!data.length) return <div className="flex items-center justify-center h-64 text-[#9C9B99] text-sm">No data available</div>
 
+  const chartData = data.map((d) => ({ ...d, label: d.is_ttm ? `${d.year} (TTM)` : String(d.year) }))
+
   return (
     <ResponsiveContainer width="100%" height={300}>
-      <ComposedChart data={data} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+      <ComposedChart data={chartData} margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#F5F4F1" />
-        <XAxis dataKey="year" tick={{ fontSize: 12 }} />
+        <XAxis dataKey="label" tick={{ fontSize: 12 }} />
         <YAxis tickFormatter={(v) => formatIDRCompact(v)} tick={{ fontSize: 11 }} width={60} />
         <Tooltip
           formatter={(value, name) => [formatIDRCompact(Number(value)), String(name)]}

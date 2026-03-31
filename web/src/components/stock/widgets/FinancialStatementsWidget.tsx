@@ -69,7 +69,9 @@ function buildRows(rows: QuarterlyFinancial[], mode: 'annual' | 'quarterly'): Ch
     .filter((r) => (mode === 'annual' ? r.quarter === 0 : r.quarter > 0))
     .sort((a, b) => a.year - b.year || a.quarter - b.quarter)
     .map((r) => ({
-      label: mode === 'annual' ? String(r.year) : `Q${r.quarter} '${String(r.year).slice(2)}`,
+      label: mode === 'annual'
+        ? (r.is_ttm ? `${r.year} (TTM)` : String(r.year))
+        : `Q${r.quarter} '${String(r.year).slice(2)}`,
       revenue: r.revenue,
       gross_profit: r.gross_profit,
       operating_income: r.operating_income,

@@ -268,7 +268,8 @@ class ContextBuilder:
         }
 
         # ── Block 2: fundamentals ────────────────────────────────
-        latest_year = max((r["year"] for r in clean_rows), default=None)
+        published_rows = [r for r in clean_rows if not r.get("is_ttm")]
+        latest_year = max((r["year"] for r in published_rows), default=None)
         metrics_dict = {}
         for m in metrics:
             entry = {
@@ -340,11 +341,32 @@ class ContextBuilder:
         if graham and close and close > 0:
             graham_mos = round((graham - close) / graham, 4)
 
-        # DCF
+        # DCF — pick the best basis depending on stock type:
+        #  1. FCF-based (default for non-financial companies with positive FCF)
+        #  2. Dividend-based (for banks and high-yield stocks where FCF is meaningless)
+        #  3. EPS-based (for companies with negative FCF but positive earnings)
         dcf = {"dcf_bear": None, "dcf_base": None, "dcf_bull": None, "dcf_base_mos": None}
-        if fcf_v and fcf_v > 0 and listed_shares > 0:
-            base_growth = (rev_m.cagr_3yr * 100) if rev_m and rev_m.cagr_3yr else 8.0
+        dcf_mode = None
+        base_growth = (rev_m.cagr_3yr * 100) if rev_m and rev_m.cagr_3yr else 8.0
+
+        # Get dividend and NI values for alternative bases
+        latest_annual = published_rows[-1] if published_rows else {}
+        dividends_paid = latest_annual.get("dividends_paid")
+        ni_val = latest_annual.get("net_income")
+
+        if fcf_v and fcf_v > 0 and listed_shares > 0 and not is_bank:
+            # Option 1: FCF-based (best for non-financial companies)
             dcf = compute_dcf_scenarios(fcf_v, listed_shares, base_growth, close)
+            dcf_mode = "fcf"
+        elif dividends_paid and abs(dividends_paid) > 0 and listed_shares > 0:
+            # Option 2: Dividend-based (DDM — best for banks and dividend payers)
+            dps_annual = abs(dividends_paid) / listed_shares
+            dcf = compute_dcf_scenarios(abs(dividends_paid), listed_shares, base_growth, close)
+            dcf_mode = "dividend"
+        elif ni_val and ni_val > 0 and listed_shares > 0:
+            # Option 3: EPS-based (for negative FCF but profitable companies)
+            dcf = compute_dcf_scenarios(ni_val, listed_shares, base_growth, close)
+            dcf_mode = "eps"
 
         valuation = {
             "current_price": close,
@@ -354,6 +376,7 @@ class ContextBuilder:
             "pb_ratio": round(pb_m.latest_value, 2) if pb_m and pb_m.latest_value else None,
             "graham_number": round(graham) if graham else None,
             "graham_margin_of_safety": graham_mos,
+            "dcf_mode": dcf_mode,  # tells AI which basis was used
             **dcf,
         }
 
@@ -394,7 +417,7 @@ class ContextBuilder:
         }
 
         # ── Block 6: health_score ────────────────────────────────
-        latest_annual = clean_rows[-1] if clean_rows else {}
+        latest_annual = published_rows[-1] if published_rows else {}
         health = compute_health_score(latest_annual, is_bank=is_bank)
 
         # ── Block 7: sector_context ──────────────────────────────

@@ -178,8 +178,7 @@ class DataNormalizer:
 
             for row in clean_rows:
                 yr = row["year"]
-                source = (row.get("source") or "").lower()
-                is_ttm = yr >= current_year and "keystats" in source
+                is_ttm = bool(row.get("is_ttm"))
 
                 # Compute derived metrics
                 if col == "_computed_dps":

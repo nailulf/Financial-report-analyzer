@@ -36,12 +36,14 @@ def sample_financials_bank() -> list[dict]:
         ni = int(base_revenue * 0.48)
         oi = int(base_revenue * 0.55)
         source = "stockbit_keystats" if year >= 2026 else "stockbit"
+        is_ttm = year >= 2026 and "keystats" in source
 
         rows.append({
             "id": 1000 + i,
             "ticker": "TESTBANK",
             "year": year,
             "quarter": 0,
+            "is_ttm": is_ttm,
             "period_end": f"{year}-12-31",
             "revenue": base_revenue,
             "cost_of_revenue": int(base_revenue * 0.12),
@@ -101,12 +103,14 @@ def sample_financials_cyclical() -> list[dict]:
         margin = 0.30 if year not in (2022, 2023) else 0.45
         ni = int(rev * margin * (0.6 if year != 2020 else 0.3))
         source = "stockbit_keystats" if year >= 2026 else "stockbit"
+        is_ttm = year >= 2026 and "keystats" in source
 
         rows.append({
             "id": 2000 + i,
             "ticker": "TESTCYCL",
             "year": year,
             "quarter": 0,
+            "is_ttm": is_ttm,
             "period_end": f"{year}-12-31",
             "revenue": rev,
             "cost_of_revenue": int(rev * 0.65),
@@ -159,6 +163,7 @@ def sample_financials_minimal() -> list[dict]:
             "ticker": "TESTMIN",
             "year": 2024,
             "quarter": 0,
+            "is_ttm": False,
             "revenue": 500_000_000_000,
             "net_income": 50_000_000_000,
             "total_assets": 2_000_000_000_000,
@@ -169,6 +174,7 @@ def sample_financials_minimal() -> list[dict]:
             "ticker": "TESTMIN",
             "year": 2025,
             "quarter": 0,
+            "is_ttm": False,
             "revenue": 550_000_000_000,
             "net_income": 60_000_000_000,
             "total_assets": 2_200_000_000_000,

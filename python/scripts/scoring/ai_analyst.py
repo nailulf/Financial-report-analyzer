@@ -99,6 +99,10 @@ Untuk setiap skenario, nyatakan:
 - Price target HARUS masuk akal relatif terhadap harga saat ini DAN valuasi di bundle.
 - URUTAN WAJIB: bull price_target > neutral price_range_high > neutral price_range_low > bear price_target.
   Bahkan jika semua target di bawah harga saat ini (saham overvalued), urutan HARUS tetap bull > bear.
+- REALISME IDX: Saham di IDX jarang naik >3-5x dalam 12 bulan kecuali IPO baru atau turnaround ekstrem.
+  Jika bull target >5x harga saat ini, WAJIB jelaskan timeframe yang realistis (2-3 tahun) dan
+  tandai sebagai "skenario optimis dengan volatilitas tinggi" dalam caveats.
+  Tidak ada batasan angka — tapi harus masuk akal dan dijelaskan.
 
 ATURAN KHUSUS PER KATEGORI LYNCH:
 - turnaround: business_narrative WAJIB menjelaskan (1) apa yang rusak/krisis — mengapa perusahaan
@@ -356,11 +360,10 @@ def validate_output(
     if neutral_low and neutral_high and neutral_low >= neutral_high:
         errors.append(f"neutral_range_inverted: low ({neutral_low}) >= high ({neutral_high})")
 
-    # Price sanity (within 5x of current price)
-    if current_price and current_price > 0:
-        for label, price in [("bull", bull_price), ("bear", bear_price)]:
-            if price and (price > current_price * 5 or price < current_price * 0.05):
-                errors.append(f"{label}_price_unrealistic: {price} vs current {current_price}")
+    # Price sanity — no hard cap, just check for obvious errors (negative or zero)
+    for label, price in [("bull", bull_price), ("bear", bear_price)]:
+        if price is not None and price <= 0:
+            errors.append(f"{label}_price_invalid: {price} must be positive")
 
     # ── Data quality alignment ───────────────────────────────
     if data_gap_flags and len(data_gap_flags) > 0:
@@ -443,9 +446,17 @@ def build_user_prompt(
     if revenue and market_cap and revenue > 0:
         ps_ratio = round(market_cap / revenue, 2)
 
+    dcf_mode = val.get("dcf_mode")
+    dcf_mode_label = {
+        "fcf": "berbasis Free Cash Flow",
+        "dividend": "berbasis Dividen (DDM — cocok untuk bank/dividend payer)",
+        "eps": "berbasis Earnings (EPS — dipakai karena FCF negatif)",
+    }.get(dcf_mode, "tidak tersedia")
+
     parts.append("ANCHOR VALUASI (SUDAH DIHITUNG — gunakan sebagai referensi harga target):")
     parts.append(f"  Harga saat ini: Rp{current_price:,.0f}" if current_price else "  Harga saat ini: tidak tersedia")
     parts.append(f"  Graham Number: Rp{val['graham_number']:,.0f}" if val.get("graham_number") else "  Graham Number: tidak tersedia (EPS/BVPS negatif)")
+    parts.append(f"  DCF Mode: {dcf_mode_label}")
     parts.append(f"  DCF Bear:  Rp{val['dcf_bear']:,.0f}" if val.get("dcf_bear") else "  DCF Bear: tidak tersedia")
     parts.append(f"  DCF Base:  Rp{val['dcf_base']:,.0f}" if val.get("dcf_base") else "  DCF Base: tidak tersedia")
     parts.append(f"  DCF Bull:  Rp{val['dcf_bull']:,.0f}" if val.get("dcf_bull") else "  DCF Bull: tidak tersedia")

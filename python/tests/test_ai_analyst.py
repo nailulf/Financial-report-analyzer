@@ -134,11 +134,16 @@ class TestValidationStructural:
 # ---------------------------------------------------------------------------
 
 class TestValidationScenarios:
-    def test_bull_less_than_bear_fails(self, valid_output):
+    def test_bull_less_than_bear_auto_swapped(self, valid_output):
+        """Bull < bear should be auto-swapped, not rejected."""
         valid_output["bull_case"]["price_target"] = 3000
         valid_output["bear_case"]["price_target"] = 5000
         errors = validate_output(valid_output, current_price=6000)
-        assert any("scenario_ordering" in e for e in errors)
+        # Should NOT have scenario_ordering error (auto-fixed)
+        assert not any("scenario_ordering" in e for e in errors)
+        # Prices should be swapped
+        assert valid_output["bull_case"]["price_target"] == 5000
+        assert valid_output["bear_case"]["price_target"] == 3000
 
     def test_neutral_range_inverted_fails(self, valid_output):
         valid_output["neutral_case"]["price_range_low"] = 7000
@@ -146,15 +151,18 @@ class TestValidationScenarios:
         errors = validate_output(valid_output)
         assert any("neutral_range_inverted" in e for e in errors)
 
-    def test_price_too_high_fails(self, valid_output):
-        valid_output["bull_case"]["price_target"] = 100000  # 16x current
+    def test_high_price_accepted(self, valid_output):
+        """No price cap — any positive price is accepted."""
+        valid_output["bull_case"]["price_target"] = 100000
         errors = validate_output(valid_output, current_price=6000)
-        assert any("unrealistic" in e for e in errors)
+        price_errors = [e for e in errors if "unrealistic" in e or "invalid" in e]
+        assert len(price_errors) == 0
 
-    def test_price_too_low_fails(self, valid_output):
-        valid_output["bear_case"]["price_target"] = 10  # <1% of current
+    def test_negative_price_rejected(self, valid_output):
+        """Negative prices are still rejected."""
+        valid_output["bear_case"]["price_target"] = -100
         errors = validate_output(valid_output, current_price=6000)
-        assert any("unrealistic" in e for e in errors)
+        assert any("invalid" in e for e in errors)
 
 
 # ---------------------------------------------------------------------------

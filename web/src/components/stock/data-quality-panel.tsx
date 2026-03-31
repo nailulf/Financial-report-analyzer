@@ -648,7 +648,7 @@ function StockbitRefreshModal({
                         {rows.slice(0, 12).map((r) => (
                           <tr key={`${r.year}_${r.quarter}`} className="border-b border-[#E5E4E1] last:border-0 hover:bg-[#F5F4F1]">
                             <td className="py-1.5 px-3 text-[#1A1918] tabular-nums">{r.year}</td>
-                            <td className="py-1.5 px-3 text-[#9C9B99]">{r.quarter === 0 ? 'FY' : `Q${r.quarter}`}</td>
+                            <td className="py-1.5 px-3 text-[#9C9B99]">{r.quarter === 0 ? (r.is_ttm ? 'TTM' : 'FY') : `Q${r.quarter}`}</td>
                             <td className="py-1.5 px-3 text-right text-[#6D6C6A] tabular-nums">{formatIDR(r.revenue)}</td>
                             <td className="py-1.5 px-3 text-right text-[#6D6C6A] tabular-nums">{formatIDR(r.net_income)}</td>
                             <td className="py-1.5 px-3 text-right text-[#6D6C6A] tabular-nums">{r.eps != null ? r.eps.toFixed(2) : '-'}</td>

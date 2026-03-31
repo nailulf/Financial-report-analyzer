@@ -19,6 +19,7 @@ export async function POST(
       ticker: ticker.toUpperCase(),
       year: r.year,
       quarter: r.quarter,
+      is_ttm: false,  // Web refresh uses full statements, never TTM
     }
     // Only map fields that exist as columns in the financials table
     const optional: (keyof StockbitPreviewRow)[] = [
@@ -53,17 +54,13 @@ export async function POST(
 
   const supabase = await createClient()
 
-  // Remove stale current-year annual rows — Stockbit labels TTM data as the
-  // current calendar year (e.g. "12M26"), which creates a fake annual row.
-  // The Python fetch now blocks these, but any previously saved row must be
-  // deleted so it no longer appears in charts.
-  const currentYear = new Date().getFullYear()
+  // Remove stale TTM rows for this ticker — they will be replaced by
+  // real published data from the full statement upsert below.
   const { error: deleteError } = await supabase
     .from('financials')
     .delete()
     .eq('ticker', ticker.toUpperCase())
-    .eq('quarter', 0)
-    .eq('year', currentYear)
+    .eq('is_ttm', true)
 
   if (deleteError) {
     return NextResponse.json({ error: deleteError.message }, { status: 500 })

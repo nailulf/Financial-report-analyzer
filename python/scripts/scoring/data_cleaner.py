@@ -129,10 +129,9 @@ class DataCleaner:
             f = YearFlag(year=yr)
 
             # Rule 12: TTM/keystats data
-            source = (row.get("source") or "").lower()
-            if yr >= current_year and "keystats" in source:
+            if row.get("is_ttm"):
                 f.usability_flag = "use_with_caution"
-                f.notes.append(f"ttm_estimate_{yr}: keystats data, not published annual report")
+                f.notes.append(f"ttm_estimate_{yr}: TTM estimate, not published annual report")
 
             # Rule 1: COVID year
             if yr == 2020:

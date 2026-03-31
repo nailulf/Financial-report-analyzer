@@ -220,6 +220,7 @@ def _normalize_stockbit_row(
         return None
 
     row["source"] = "stockbit"
+    row["is_ttm"] = False
     row["last_updated"] = datetime.now(timezone.utc).isoformat()
     return row
 
@@ -229,7 +230,7 @@ def _normalize_stockbit_row(
 # ===========================================================================
 
 # Fields that should never be overwritten by a secondary source
-_IMMUTABLE_FIELDS = {"ticker", "year", "quarter"}
+_IMMUTABLE_FIELDS = {"ticker", "year", "quarter", "is_ttm"}
 
 # Fields we actively try to fill via fallback
 _FILLABLE_FIELDS = {
@@ -408,6 +409,7 @@ def _fetch_stockbit(ticker: str, client=None) -> list[dict]:
             "year":         current_year,
             "quarter":      0,
             "source":       "stockbit_keystats",
+            "is_ttm":       True,
             "last_updated": now_iso,
         })
         rows.append(snap)
@@ -423,6 +425,7 @@ def _fetch_stockbit(ticker: str, client=None) -> list[dict]:
             "year":         year,
             "quarter":      quarter,
             "source":       "stockbit_keystats",
+            "is_ttm":       False,
             "last_updated": now_iso,
         }
         for field in ("revenue", "net_income", "eps"):
@@ -493,7 +496,7 @@ def _get_existing_rows(client_db, ticker: str) -> dict[tuple[int, int], dict]:
     see unselected fields as None and incorrectly overwrite populated values.
     """
     fields = ",".join([
-        "ticker", "year", "quarter", "source",
+        "ticker", "year", "quarter", "source", "is_ttm",
         # Income statement
         "period_end", "revenue", "cost_of_revenue", "gross_profit",
         "operating_expense", "operating_income", "interest_expense",
@@ -580,6 +583,7 @@ def _process_ticker(
                 if fd_rows:
                     for r in fd_rows:
                         r["source"] = "stockbit"
+                        r["is_ttm"] = False
                         r["last_updated"] = now_iso
                         # Strip fields that don't exist in the DB
                         for k in list(r.keys()):

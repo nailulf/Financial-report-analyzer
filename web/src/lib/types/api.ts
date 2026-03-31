@@ -52,6 +52,7 @@ export interface StockMetrics {
 // One row per year for charts and tables
 export interface FinancialYear {
   year: number
+  is_ttm?: boolean
   revenue: number | null
   gross_profit: number | null
   net_income: number | null
@@ -100,6 +101,7 @@ export interface PricePoint {
 export interface QuarterlyFinancial {
   year: number
   quarter: number
+  is_ttm?: boolean
   // Income Statement
   revenue: number | null
   gross_profit: number | null
@@ -263,6 +265,7 @@ export interface StockbitPreviewRow {
   ticker: string
   year: number
   quarter: number  // 0 = annual, 1–4 = quarterly
+  is_ttm?: boolean
   // ── Income Statement (historical + snapshot TTM) ──────────────────────────
   revenue: number | null
   net_income: number | null

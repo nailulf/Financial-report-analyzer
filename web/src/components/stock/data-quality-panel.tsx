@@ -310,31 +310,6 @@ function StockbitRefreshModal({
     }
   }, [needsConfig, selectedScrapers])
 
-  // ── Config → Fetch preview (only if financials selected) ──
-  const handleFetch = useCallback(async () => {
-    if (!token.trim()) return
-    setStep('fetching')
-    setErrorMsg('')
-    try {
-      const res = await fetch(`/api/stocks/${ticker}/stockbit/fetch`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ bearer_token: token.trim(), year_from: yearFrom, year_to: yearTo }),
-      })
-      const body = await res.json() as { rows?: StockbitPreviewRow[]; error?: string }
-      if (!res.ok || body.error) {
-        setErrorMsg(body.error ?? `HTTP ${res.status}`)
-        setStep('error')
-        return
-      }
-      setRows(body.rows ?? [])
-      setStep('preview')
-    } catch (e: unknown) {
-      setErrorMsg(e instanceof Error ? e.message : 'Network error')
-      setStep('error')
-    }
-  }, [ticker, token, yearFrom, yearTo])
-
   // ── Trigger the pipeline (with or without financial upsert) ──
   const handleTriggerPipeline = useCallback(async () => {
     setStep('running')
@@ -355,7 +330,7 @@ function StockbitRefreshModal({
         }
       }
 
-      // 2. Create refresh job (seeds progress rows in DB)
+      // 2. Create refresh job + dispatch to GitHub Actions
       const scraperList = Array.from(selectedScrapers)
       const refreshRes = await fetch(`/api/stocks/${ticker}/refresh`, {
         method: 'POST',
@@ -364,6 +339,7 @@ function StockbitRefreshModal({
       })
       const refreshBody = await refreshRes.json() as {
         job_id?: number; error?: string
+        dispatch?: { ok: boolean; error?: string | null }
       }
       if (!refreshRes.ok || !refreshBody.job_id) {
         setErrorMsg(`Pipeline trigger failed: ${refreshBody.error ?? 'unknown'}`)
@@ -373,25 +349,10 @@ function StockbitRefreshModal({
 
       const jobId = refreshBody.job_id
 
-      // 3. Always run locally — local execution has the bearer token from step 1.
-      //    GitHub Actions is for scheduled batch jobs, not interactive refreshes.
-      try {
-        const localRes = await fetch(`/api/stocks/${ticker}/refresh/local`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            job_id: jobId,
-            scrapers: scraperList,
-            broker_days: brokerDays,
-            bearer_token: token.trim() || undefined,
-          }),
-        })
-        if (!localRes.ok) {
-          const flags = ['--broker-backfill', `--backfill-days ${brokerDays}`, `--ticker ${ticker}`, `--job-id ${jobId}`]
-          setManualCmd(`cd python && python run_all.py ${flags.join(' ')}`)
-          setDispatchFailed(true)
-        }
-      } catch {
+      // 3. Check if GitHub Actions dispatch succeeded
+      if (refreshBody.dispatch && !refreshBody.dispatch.ok) {
+        const flags = ['--full', `--ticker ${ticker}`, `--job-id ${jobId}`]
+        setManualCmd(`cd python && python run_all.py ${flags.join(' ')}`)
         setDispatchFailed(true)
       }
 
@@ -415,6 +376,38 @@ function StockbitRefreshModal({
       setStep('error')
     }
   }, [ticker, token, brokerDays, rows, selectedScrapers, needsFinancials])
+
+  // ── Config → Fetch preview (only if financials selected) ──
+  const handleFetch = useCallback(async () => {
+    if (!token.trim()) return
+    setStep('fetching')
+    setErrorMsg('')
+    try {
+      const res = await fetch(`/api/stocks/${ticker}/stockbit/fetch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ bearer_token: token.trim(), year_from: yearFrom, year_to: yearTo }),
+      })
+      const body = await res.json() as { rows?: StockbitPreviewRow[]; error?: string }
+      if (!res.ok || body.error) {
+        // If Python is not available (production), skip preview and go straight to pipeline
+        const isSpawnError = (body.error ?? '').includes('ENOENT') || (body.error ?? '').includes('spawn')
+        if (isSpawnError) {
+          setRows([])
+          handleTriggerPipeline()
+          return
+        }
+        setErrorMsg(body.error ?? `HTTP ${res.status}`)
+        setStep('error')
+        return
+      }
+      setRows(body.rows ?? [])
+      setStep('preview')
+    } catch (e: unknown) {
+      setErrorMsg(e instanceof Error ? e.message : 'Network error')
+      setStep('error')
+    }
+  }, [ticker, token, yearFrom, yearTo, handleTriggerPipeline])
 
   // ── Step indicator ──
   const stepLabels = [

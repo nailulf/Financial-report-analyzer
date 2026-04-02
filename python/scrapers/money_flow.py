@@ -356,8 +356,15 @@ def run(
 
     # --- Upsert broker summary ---
     if broker_rows:
-        logger.info("Upserting %d broker summary rows...", len(broker_rows))
-        bulk_upsert("broker_summary", broker_rows, on_conflict="ticker,date,broker_code")
+        # Filter out tickers not in stocks table (avoids FK violation for newly listed stocks)
+        known_tickers = set(fetch_column("stocks", "ticker") or [])
+        valid_broker_rows = [r for r in broker_rows if r.get("ticker") in known_tickers]
+        skipped = len(broker_rows) - len(valid_broker_rows)
+        if skipped:
+            logger.warning("Skipped %d broker rows for unknown tickers (run --weekly to update stock universe)", skipped)
+        if valid_broker_rows:
+            logger.info("Upserting %d broker summary rows...", len(valid_broker_rows))
+            bulk_upsert("broker_summary", valid_broker_rows, on_conflict="ticker,date,broker_code")
 
     result.print_summary()
     finish_run(run_id, **result.to_db_kwargs())

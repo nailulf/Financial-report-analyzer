@@ -442,9 +442,9 @@ export function AIInsightsWidget({ ticker }: Props) {
               >
                 &#10024; Generate AI Analysis
               </button>
-              <p className="font-mono text-[10px] text-white/20">
+              {/* <p className="font-mono text-[10px] text-white/20">
                 Estimasi biaya: ~$0.03 per saham (GPT-4o-mini)
-              </p>
+              </p> */}
             </div>
           )}
         </div>

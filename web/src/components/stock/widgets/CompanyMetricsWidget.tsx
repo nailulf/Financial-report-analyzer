@@ -109,7 +109,13 @@ export function CompanyMetricsWidget({ ticker, metrics, latestYear, cagr, health
   const subsector = peerPercentiles?.subsector ?? ''
   const peerCount = peerPercentiles?.peerCount ?? 0
 
-  // ── Growth column (CAGR — no peer data, use absolute thresholds) ──
+  // ── Growth column ──
+  // Peer-ranked from normalized_metrics, fallback to absolute thresholds
+  const hasGrowthPeers = hasPeers && peerPercentiles!.growth.length > 0
+  const growthPeerMap = new Map(
+    (peerPercentiles?.growth ?? []).map((pr) => [pr.metric, pr]),
+  )
+
   const cagrMetrics: { label: string; key: string; period: '3yr' | '5yr' }[] = [
     { label: 'Revenue Growth (3Y)',   key: 'revenue',            period: '3yr' },
     { label: 'Revenue Growth (5Y)',   key: 'revenue',            period: '5yr' },
@@ -123,6 +129,20 @@ export function CompanyMetricsWidget({ ticker, metrics, latestYear, cagr, health
   const growthRows: MetricRow[] = cagrMetrics.map((m) => {
     const entry = cagr.find((c) => c.metric === m.key)
     const val = entry ? (m.period === '3yr' ? entry.cagr_3yr : entry.cagr_5yr) : null
+
+    // Lookup uses metric_period key (e.g. "revenue_3yr")
+    const peerRank = growthPeerMap.get(`${m.key}_${m.period}`)
+    if (peerRank && peerRank.percentile !== null) {
+      return {
+        label: `${m.label}: ${fmtCagr(val)}`,
+        value: fmtCagr(val),
+        comparison: peerRank.rankLabel,
+        comparisonColor: peerRank.rankColor,
+        tooltip: `Persentil ${peerRank.percentile}% dari ${peerRank.peerCount} emiten di ${subsector}`,
+      }
+    }
+
+    // Fallback: absolute thresholds
     const rl = cagrRankLabel(val)
     return {
       label: `${m.label}: ${fmtCagr(val)}`,
@@ -215,8 +235,8 @@ export function CompanyMetricsWidget({ ticker, metrics, latestYear, cagr, health
         <div className="p-4 flex gap-3">
           <ColumnCard
             title="PERTUMBUHAN"
-            tooltip={hasPeers
-              ? 'CAGR historis — data peer belum tersedia, menggunakan threshold absolut'
+            tooltip={hasGrowthPeers
+              ? `CAGR vs emiten di subsector ${subsector}`
               : 'CAGR historis — threshold absolut'}
             rows={growthRows}
           />

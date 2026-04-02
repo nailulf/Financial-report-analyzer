@@ -167,9 +167,11 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
 
   await supabase.from('refresh_scraper_progress').insert(progressRows)
 
-  // Don't trigger GitHub Actions here — the UI wizard handles execution
-  // via /refresh/local (which has the bearer token). GitHub Actions is
-  // only used for scheduled batch jobs (triggered by cron in scraper.yml).
+  // Dispatch to GitHub Actions — works on both local and Vercel
+  const dispatch = await triggerGithubWorkflow(upperTicker, job.id, scrapersToRun)
 
-  return NextResponse.json({ job_id: job.id }, { status: 202 })
+  return NextResponse.json({
+    job_id: job.id,
+    dispatch: { ok: dispatch.ok, status: dispatch.status, error: dispatch.error ?? null },
+  }, { status: 202 })
 }

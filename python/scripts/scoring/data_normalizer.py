@@ -244,6 +244,13 @@ class DataNormalizer:
                 if span3 > 0:
                     cagr_3yr = compute_cagr(recent_3[0][1], recent_3[-1][1], span3)
 
+            recent_5 = [(yr, v) for yr, v in year_vals if yr >= year_vals[-1][0] - 5]
+            cagr_5yr = None
+            if len(recent_5) >= 2:
+                span5 = recent_5[-1][0] - recent_5[0][0]
+                if span5 > 0:
+                    cagr_5yr = compute_cagr(recent_5[0][1], recent_5[-1][1], span5)
+
             # ── Volatility ───────────────────────────────────────────
             volatility = compute_volatility(year_vals)
 
@@ -267,6 +274,7 @@ class DataNormalizer:
                 latest_year=latest_year,
                 cagr_full=cagr_full,
                 cagr_3yr=cagr_3yr,
+                cagr_5yr=cagr_5yr,
                 trend_direction=direction,
                 trend_r2=r2,
                 trend_slope_pct=slope_pct,

@@ -19,8 +19,8 @@ import { getDividendHistory } from '@/lib/queries/dividends'
 import { getStockBrokerSummary, getInsiderTransactions, getDailyBrokerFlowByType, getBrokerConcentration } from '@/lib/queries/broker'
 import { computeCAGR } from '@/lib/calculations/cagr'
 import { computeHealthScores } from '@/lib/calculations/health-score'
-import { getSubsectorPeers } from '@/lib/queries/sector'
-import { computePeerPercentiles } from '@/lib/calculations/percentile'
+import { getSubsectorPeers, getPeerCAGR } from '@/lib/queries/sector'
+import { computePeerPercentiles, computeGrowthPercentiles } from '@/lib/calculations/percentile'
 import { StockPageClient } from '@/components/stock/StockPageClient'
 
 export default async function StockPage({
@@ -77,12 +77,17 @@ export default async function StockPage({
   const health = latest ? computeHealthScores(latest) : []
 
   // Sector peer percentiles
-  const sectorPeers = await getSubsectorPeers(header.subsector, header.sector)
-  const peerPercentiles = computePeerPercentiles(
-    t,
-    sectorPeers,
-    header.subsector ?? header.sector ?? 'Unknown',
-  )
+  const subsectorLabel = header.subsector ?? header.sector ?? 'Unknown'
+  const [sectorPeers, peerCAGR] = await Promise.all([
+    getSubsectorPeers(header.subsector, header.sector),
+    getPeerCAGR(header.subsector, header.sector),
+  ])
+  const peerPercentiles = computePeerPercentiles(t, sectorPeers, subsectorLabel)
+
+  // Merge growth percentiles into peerPercentiles (if we have peer CAGR data)
+  if (peerPercentiles && peerCAGR.size > 0) {
+    peerPercentiles.growth = computeGrowthPercentiles(t, cagr, peerCAGR, subsectorLabel)
+  }
 
   // Pre-compute DCF inputs server-side for reliable serialization
   const latestPrice = priceHistory.at(-1)?.close ?? metrics?.price ?? null

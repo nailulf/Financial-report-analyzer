@@ -1,4 +1,5 @@
-import type { SectorPeerRow } from '@/lib/queries/sector'
+import type { SectorPeerRow, PeerCAGRValues } from '@/lib/queries/sector'
+import type { CAGRResult } from '@/lib/types/api'
 
 /**
  * A single metric's percentile ranking within a peer group.
@@ -143,8 +144,7 @@ export function computePeerPercentiles(
     rank('dividend_yield',  'Dividend Yield',     'dividend_yield',   fmtPct),
   ]
 
-  // ── Growth metrics: we don't have CAGR in the view, but we can use
-  //    revenue & net_income as size proxies. For now mark as empty. ──
+  // ── Growth metrics: ranked via peerCAGR if available (see computeGrowthPercentiles) ──
   const growth: PercentileRank[] = []
 
   return {
@@ -154,4 +154,90 @@ export function computePeerPercentiles(
     strength,
     value,
   }
+}
+
+/* ── Growth percentile ranking from normalized_metrics CAGR ────── */
+
+/** Minimum peers with non-null CAGR to show a percentile rank. */
+const MIN_GROWTH_PEERS = 5
+
+/**
+ * Growth metrics to rank against peers.
+ * metric: matches `metric_name` in normalized_metrics AND `CAGRResult.metric`
+ * period: which CAGR field to extract from the peer data
+ */
+const GROWTH_METRICS: { metric: string; label: string; period: '3yr' | '5yr' }[] = [
+  { metric: 'revenue',             label: 'Revenue Growth (3Y)',  period: '3yr' },
+  { metric: 'revenue',             label: 'Revenue Growth (5Y)',  period: '5yr' },
+  { metric: 'net_income',          label: 'Earnings Growth (3Y)', period: '3yr' },
+  { metric: 'net_income',          label: 'Earnings Growth (5Y)', period: '5yr' },
+  { metric: 'operating_cash_flow', label: 'OCF Growth (3Y)',      period: '3yr' },
+  { metric: 'free_cash_flow',      label: 'FCF Growth (3Y)',      period: '3yr' },
+  { metric: 'total_equity',        label: 'Equity Growth (3Y)',   period: '3yr' },
+]
+
+/**
+ * Compute percentile-ranked growth metrics for a stock using pre-computed
+ * CAGR values from normalized_metrics.
+ *
+ * @param ticker       The stock to rank
+ * @param cagr         The stock's own CAGR results (computed client-side from financials)
+ * @param peerCAGR     Map<metric_name, Map<ticker, PeerCAGRValues>> from getPeerCAGR()
+ * @param subsector    Label for tooltips
+ */
+export function computeGrowthPercentiles(
+  ticker: string,
+  cagr: CAGRResult[],
+  peerCAGR: Map<string, Map<string, PeerCAGRValues>>,
+  subsector: string,
+): PercentileRank[] {
+  const results: PercentileRank[] = []
+
+  for (const { metric, label, period } of GROWTH_METRICS) {
+    const peerMap = peerCAGR.get(metric)
+    const stockCAGR = cagr.find((c) => c.metric === metric)
+    const stockVal = stockCAGR
+      ? (period === '3yr' ? stockCAGR.cagr_3yr : stockCAGR.cagr_5yr)
+      : null
+
+    // Extract the relevant period's values from peers, filtering nulls
+    const peerVals: number[] = []
+    if (peerMap) {
+      for (const pv of peerMap.values()) {
+        const v = period === '3yr' ? pv.cagr_3yr : pv.cagr_5yr
+        if (v !== null) peerVals.push(v)
+      }
+    }
+
+    // Compute percentile if enough peers and stock has data
+    if (peerVals.length >= MIN_GROWTH_PEERS && stockVal !== null) {
+      const pct = computePercentile(stockVal, peerVals)
+      const rl = rankLabel(pct)
+
+      results.push({
+        metric: `${metric}_${period}`,
+        label,
+        value: stockVal,
+        formatted: fmtPct(stockVal),
+        percentile: pct,
+        peerCount: peerVals.length,
+        rankLabel: rl.label,
+        rankColor: rl.color,
+      })
+    } else {
+      // Not enough peers — fall back to null percentile
+      results.push({
+        metric: `${metric}_${period}`,
+        label,
+        value: stockVal,
+        formatted: fmtPct(stockVal),
+        percentile: null,
+        peerCount: peerVals.length,
+        rankLabel: 'N/A',
+        rankColor: '#888888',
+      })
+    }
+  }
+
+  return results
 }

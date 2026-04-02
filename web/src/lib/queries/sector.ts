@@ -79,3 +79,74 @@ export async function getSubsectorPeers(
     return nonNull >= 3
   })
 }
+
+/* ── Peer CAGR from normalized_metrics ──────────────────────────── */
+
+/**
+ * One peer's CAGR values for a single metric, pre-computed by the Python
+ * data normalizer pipeline and stored in normalized_metrics.
+ */
+export interface PeerCAGRRow {
+  ticker: string
+  metric_name: string
+  cagr_3yr: number | null
+  cagr_5yr: number | null
+}
+
+/** Per-peer CAGR values for a single metric. */
+export interface PeerCAGRValues {
+  cagr_3yr: number | null
+  cagr_5yr: number | null
+}
+
+/**
+ * Fetch cagr_3yr and cagr_5yr for all peers in a subsector (or sector
+ * fallback) from the normalized_metrics table.
+ *
+ * Returns a map: metric_name → Map<ticker, { cagr_3yr, cagr_5yr }>
+ */
+export async function getPeerCAGR(
+  subsector: string | null,
+  sector: string | null,
+): Promise<Map<string, Map<string, PeerCAGRValues>>> {
+  if (!subsector && !sector) return new Map()
+
+  const supabase = await createClient()
+
+  // The metrics the growth widget cares about
+  const growthMetrics = [
+    'revenue', 'net_income', 'operating_cash_flow', 'free_cash_flow', 'total_equity',
+  ]
+
+  const filterCol = subsector ? 'subsector' : 'sector'
+  const filterVal = subsector ?? sector!
+
+  // Join normalized_metrics with stocks to filter by subsector/sector
+  const { data, error } = await supabase
+    .from('normalized_metrics')
+    .select('ticker, metric_name, cagr_3yr, cagr_5yr, stocks!inner(ticker)')
+    .eq(`stocks.${filterCol}`, filterVal)
+    .in('metric_name', growthMetrics)
+
+  if (error) {
+    console.error('[getPeerCAGR]', error.message, error.details)
+    return new Map()
+  }
+
+  if (!data) return new Map()
+
+  // Build: metric_name → Map<ticker, { cagr_3yr, cagr_5yr }>
+  const result = new Map<string, Map<string, PeerCAGRValues>>()
+  for (const row of data as unknown as PeerCAGRRow[]) {
+    // Skip rows where both are null
+    if (row.cagr_3yr === null && row.cagr_5yr === null) continue
+    let metricMap = result.get(row.metric_name)
+    if (!metricMap) {
+      metricMap = new Map()
+      result.set(row.metric_name, metricMap)
+    }
+    metricMap.set(row.ticker, { cagr_3yr: row.cagr_3yr, cagr_5yr: row.cagr_5yr })
+  }
+
+  return result
+}

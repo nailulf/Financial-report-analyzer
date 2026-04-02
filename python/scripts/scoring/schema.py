@@ -61,6 +61,7 @@ class NormalizedMetric:
     latest_year: Optional[int] = None
     cagr_full: Optional[float] = None
     cagr_3yr: Optional[float] = None
+    cagr_5yr: Optional[float] = None
     trend_direction: str = "insufficient_data"
     trend_r2: Optional[float] = None
     trend_slope_pct: Optional[float] = None

@@ -499,7 +499,7 @@ def _run_ai_context_pipeline(
                     metric_rows.append({
                         "ticker": ticker, "metric_name": m.metric_name, "unit": m.unit,
                         "latest_value": m.latest_value, "latest_year": m.latest_year,
-                        "cagr_full": m.cagr_full, "cagr_3yr": m.cagr_3yr,
+                        "cagr_full": m.cagr_full, "cagr_3yr": m.cagr_3yr, "cagr_5yr": m.cagr_5yr,
                         "trend_direction": m.trend_direction, "trend_r2": m.trend_r2,
                         "trend_slope_pct": m.trend_slope_pct, "volatility": m.volatility,
                         "z_score_vs_sector": m.z_score_vs_sector,

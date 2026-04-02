@@ -103,6 +103,7 @@ METRIC_MAP: dict[str, dict[str, str]] = {
     "pe_ratio":           {"col": "pe_ratio",            "unit": "multiple"},
     "pb_ratio":           {"col": "pbv_ratio",           "unit": "multiple"},
     "dividend_yield":     {"col": "dividend_yield",      "unit": "percent"},
+    "total_equity":       {"col": "total_equity",        "unit": "idr"},
 }
 
 # Metrics where TTM (keystats) value should be used as latest display value

@@ -386,6 +386,31 @@ def run_full(tickers: list[str] | None, period: str, days: int, job_id: int | No
 # Phase 6: AI pipeline functions
 # ------------------------------------------------------------------
 
+def _run_market_phase_detection(
+    tickers: list[str] | None,
+    dry_run: bool = False,
+) -> None:
+    """
+    Phase 7: Detect market cycle phases from price/volume patterns.
+    Writes to: market_phases table.
+    """
+    from scripts.analysis.market_phase_detector import MarketPhaseDetector
+
+    console.rule("[bold cyan]PHASE 7: Market Phase Detection[/bold cyan]")
+
+    detector = MarketPhaseDetector()
+    results = detector.detect_batch(tickers, dry_run=dry_run)
+
+    ok = sum(1 for v in results.values() if v >= 0)
+    failed = sum(1 for v in results.values() if v < 0)
+    total_phases = sum(v for v in results.values() if v > 0)
+
+    console.print(
+        f"[green]Phase detection complete:[/green] "
+        f"{ok} tickers processed, {total_phases} phases detected, {failed} failed"
+    )
+
+
 def _run_ai_context_pipeline(
     tickers: list[str] | None,
     job_id: int | None = None,
@@ -586,24 +611,28 @@ def _run_ai_analysis_pipeline(
     analyst = AIAnalyst(provider=provider, model=model)
     console.print(f"[cyan]Provider: {analyst.provider_name} / Model: {analyst.model_name}[/cyan]")
 
-    # Get eligible tickers
+    # Get tickers with context cache
     query = sb.table("ai_context_cache").select("ticker, context_json, ready_for_ai")
     if tickers:
         query = query.in_("ticker", tickers)
-    query = query.eq("ready_for_ai", True)
     rows = query.execute().data or []
 
     if not rows:
-        console.print("[yellow]No tickers eligible for AI analysis (ready_for_ai=FALSE or no context cache).[/yellow]")
+        console.print("[yellow]No tickers with context cache found. Run --build-ai-context first.[/yellow]")
         return
 
-    # Filter by min_composite if scores available
-    if min_composite > 0:
+    # For batch runs (no explicit tickers), apply min_composite to save API costs
+    is_batch = tickers is None
+    if is_batch and min_composite > 0:
         score_resp = sb.table("stock_scores").select("ticker, composite_score").execute()
         score_map = {r["ticker"]: r.get("composite_score", 0) for r in (score_resp.data or [])}
         rows = [r for r in rows if score_map.get(r["ticker"], 0) >= min_composite]
-
-    console.print(f"[cyan]Analyzing {len(rows)} tickers (ready_for_ai=TRUE, composite>={min_composite})[/cyan]")
+        console.print(f"[cyan]Analyzing {len(rows)} tickers (batch mode, composite>={min_composite})[/cyan]")
+    else:
+        low_quality = [r["ticker"] for r in rows if not r.get("ready_for_ai")]
+        if low_quality:
+            console.print(f"[yellow]Note: {low_quality} have low data quality — AI will reason about data gaps in its analysis[/yellow]")
+        console.print(f"[cyan]Analyzing {len(rows)} tickers[/cyan]")
 
     from utils.helpers import RunResult
     result = RunResult("ai_analysis")
@@ -726,6 +755,11 @@ Examples:
   python run_all.py --full --ticker BBRI                       # scrape + AI (openai default)
   python run_all.py --full --ticker BBRI --ai-provider anthropic
   python run_all.py --full --ticker BBRI --dry-run             # scrape only, skip AI writes
+
+  # Market phase detection:
+  python run_all.py --detect-phases                            # all active tickers
+  python run_all.py --detect-phases --ticker BBCA BBRI         # specific tickers
+  python run_all.py --detect-phases --dry-run                  # detect but don't save
         """,
     )
 
@@ -749,6 +783,10 @@ Examples:
                       help="Phase 6: call LLM to generate investment thesis (requires ai_context_cache)")
     mode.add_argument("--ai-full", action="store_true",
                       help="Phase 6: full pipeline = build-ai-context + run-ai-analysis")
+
+    # Phase 7: Market phase detection
+    mode.add_argument("--detect-phases", action="store_true",
+                      help="Phase 7: detect market cycle phases from price/volume patterns")
 
     # Scope modifiers
     parser.add_argument("--ticker", nargs="+", metavar="TICKER", help="Limit to specific tickers")
@@ -892,7 +930,8 @@ Examples:
     all_modes = [args.daily, args.weekly, args.quarterly, args.full,
                  args.enrich_ratios, args.dividends, args.fill_gaps, args.fallback_financials,
                  args.broker_backfill, args.insider,
-                 args.build_ai_context, args.run_ai_analysis, args.ai_full]
+                 args.build_ai_context, args.run_ai_analysis, args.ai_full,
+                 args.detect_phases]
     if not any(all_modes):
         parser.print_help()
         console.print("\n[red]Error: specify at least one run mode.[/red]")
@@ -1002,6 +1041,10 @@ Examples:
                 job_id=job_id,
                 dry_run=args.dry_run,
             )
+
+        # ── Phase 7: Market phase detection ──────────────────────────
+        if args.detect_phases:
+            _run_market_phase_detection(tickers, dry_run=args.dry_run)
     except KeyboardInterrupt:
         if job_id and tickers and len(tickers) == 1:
             _finalize_job(job_id, tickers[0], "failed", "interrupted by user")

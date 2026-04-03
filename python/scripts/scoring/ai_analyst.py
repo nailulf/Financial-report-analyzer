@@ -60,6 +60,10 @@ ATURAN PENTING:
   Tandai kesimpulan yang membutuhkan konteks perusahaan yang lebih dalam.
 - data_gap_flags harus diakui. Katakan apa yang tidak kamu ketahui dan bagaimana
   hal itu akan mengubah pandanganmu.
+- Kualitas data BUKAN penghalang analisis. Data yang volatile, anomali, atau terbatas
+  adalah SINYAL BISNIS yang harus kamu interpretasikan (turnaround, transformasi,
+  akuisisi, restrukturisasi). Jelaskan mengapa data terlihat seperti ini.
+- Jika data terlalu terbatas, tetap analisis dengan confidence_level rendah dan caveats jelas.
 
 ATURAN SKENARIO & HARGA TARGET (WAJIB):
 - Setiap skenario (bull/bear/neutral) HARUS dikuantifikasi dengan asumsi keuangan spesifik.
@@ -520,6 +524,40 @@ def build_user_prompt(
         parts.append("2. ASSET QUALITY: Apa risiko NPL terbesar? Di segmen mana?")
         parts.append("3. PERTUMBUHAN: Dari mana pertumbuhan kredit akan datang?")
         parts.append("")
+
+    # Data quality narrative — instruct AI to reason about data patterns
+    dq = context_json.get("data_quality", {})
+    reliability = dq.get("reliability_score", 0)
+    confidence = dq.get("confidence_score", 0)
+    clean_years_count = dq.get("data_years_available", 0)
+    anomalous_years = dq.get("anomalous_years", [])
+    missing = dq.get("missing_metrics", [])
+    gap_flags = dq.get("data_gap_flags", [])
+
+    parts.append("KUALITAS DATA — ANALISIS INI SEBAGAI SINYAL, BUKAN HAMBATAN:")
+    parts.append(f"  Reliability: {dq.get('reliability_grade', '?')} ({reliability}/100)")
+    parts.append(f"  Confidence: {dq.get('confidence_grade', '?')} ({confidence}/100)")
+    parts.append(f"  Data years: {clean_years_count}")
+    if anomalous_years:
+        parts.append(f"  Tahun anomali: {anomalous_years}")
+    if missing:
+        parts.append(f"  Metrik tidak tersedia: {missing}")
+    if gap_flags:
+        parts.append(f"  Data gaps: {gap_flags}")
+    parts.append("")
+    parts.append("ATURAN KUALITAS DATA:")
+    parts.append("- Data yang volatile atau anomali BUKAN alasan untuk menolak analisis.")
+    parts.append("- Sebaliknya, INTERPRETASIKAN pola data sebagai sinyal bisnis:")
+    parts.append("  * Banyak anomali + tren membaik → kemungkinan turnaround/transformasi bisnis")
+    parts.append("  * Revenue/margin volatile → cyclical atau sedang restrukturisasi")
+    parts.append("  * Data terbatas (<5 tahun) → IPO baru atau transformasi besar (akuisisi, merger)")
+    parts.append("  * Perubahan skala mendadak → akuisisi, divestasi, atau perubahan model bisnis")
+    parts.append("- Jelaskan MENGAPA data terlihat seperti ini dan apa implikasinya untuk masa depan.")
+    parts.append("- Jika data terlalu sedikit untuk kesimpulan kuat, tetap berikan analisis terbaik")
+    parts.append("  dengan confidence_level rendah (1-4) dan caveats yang jelas.")
+    parts.append("- Contoh narasi: 'Tren 5 tahun sangat volatile, namun 2 tahun terakhir menunjukkan")
+    parts.append("  perbaikan konsisten — ini mengindikasikan transformasi bisnis sedang berjalan.'")
+    parts.append("")
 
     # Data bundle
     parts.append("STOCK DATA BUNDLE:")

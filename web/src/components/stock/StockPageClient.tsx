@@ -33,6 +33,7 @@ import { DataQualityWidget }        from './widgets/DataQualityWidget'
 import { PipelineDebugWidget }     from './widgets/PipelineDebugWidget'
 import { AnalystInsightWidget }     from './widgets/AnalystInsightWidget'
 import { SectionDivider }           from './widgets/SectionDivider'
+import { MarketPhaseWidget }        from './widgets/MarketPhaseWidget'
 
 export interface StockPageProps {
   header:             StockHeader
@@ -181,6 +182,18 @@ export function StockPageClient({
             shareholderHistory={shareholderHistory}
           />
         </div>
+      </div>
+
+      {/* ═══════════════════════════════════════════════════════════════
+          MARKET PHASE
+      ═══════════════════════════════════════════════════════════════ */}
+      <SectionDivider
+        id="market-phase"
+        title="FASE PASAR"
+        subtitle="Deteksi siklus pasar dari pola harga dan volume"
+      />
+      <div className="px-12 py-2">
+        <MarketPhaseWidget ticker={header.ticker} priceHistory={priceHistory} />
       </div>
 
       {/* ═══════════════════════════════════════════════════════════════

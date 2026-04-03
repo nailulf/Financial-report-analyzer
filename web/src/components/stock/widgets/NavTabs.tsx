@@ -6,6 +6,7 @@ const TABS = [
   { id: 'overview',      label: 'RINGKASAN' },
   { id: 'fundamentals',  label: 'FUNDAMENTAL' },
   { id: 'money-flow',    label: 'ARUS DANA' },
+  { id: 'market-phase',  label: 'FASE PASAR' },
   { id: 'about',         label: 'TENTANG' },
 ]
 

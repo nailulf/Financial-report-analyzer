@@ -334,7 +334,7 @@ export function AIInsightsWidget({ ticker }: Props) {
       // Step 2: Poll for result (check every 10s, max 3 minutes)
       let attempts = 0
       const maxAttempts = 18
-      const poll = async (): Promise<'done' | 'not_ready' | 'waiting'> => {
+      const poll = async (): Promise<'done' | 'waiting'> => {
         // Check if AI analysis exists
         const aiRes = await fetch(`/api/stocks/${ticker}/ai-analysis`)
         if (aiRes.ok) {
@@ -343,24 +343,6 @@ export function AIInsightsWidget({ ticker }: Props) {
             setData(result)
             setGenStatus(null)
             return 'done'
-          }
-        }
-
-        // Check if pipeline ran but stock wasn't eligible
-        const qualityRes = await fetch(`/api/stocks/${ticker}/context-quality`)
-        if (qualityRes.ok) {
-          const quality = await qualityRes.json()
-          if (quality && quality.readyForAI === false && quality.compositeScore != null) {
-            // Pipeline ran, but stock didn't pass the gate
-            setGenStatus(
-              `Data saham ini belum memenuhi syarat untuk analisis AI.\n` +
-              `Reliability: ${quality.reliabilityGrade ?? '?'} (${quality.reliabilityScore ?? 0}/100)\n` +
-              `Confidence: ${quality.confidenceGrade ?? '?'} (${quality.confidenceScore ?? 0}/100)\n` +
-              `Composite: ${quality.compositeScore}/100\n\n` +
-              `Syarat minimum: Reliability ≥ 45, Confidence ≥ 40, minimal 3 tahun data bersih.\n` +
-              (quality.dataGapFlags?.length ? `Data gaps: ${quality.dataGapFlags.join(', ')}` : '')
-            )
-            return 'not_ready'
           }
         }
 
@@ -377,7 +359,7 @@ export function AIInsightsWidget({ ticker }: Props) {
         }
         try {
           const status = await poll()
-          if (status === 'done' || status === 'not_ready') {
+          if (status === 'done') {
             clearInterval(interval)
             setGenerating(false)
           } else if (attempts > 6) {

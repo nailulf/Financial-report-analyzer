@@ -496,3 +496,45 @@ export interface ComparisonStock {
   net_income: number | null
   market_cap: number | null
 }
+
+// ---------------------------------------------------------------------------
+// Market Phase Detection (Phase 7)
+// ---------------------------------------------------------------------------
+
+export type MarketPhaseType = 'uptrend' | 'downtrend' | 'sideways_bullish' | 'sideways_bearish'
+
+export interface MarketPhase {
+  id: number
+  ticker: string
+  phase_type: MarketPhaseType
+  start_date: string
+  end_date: string
+  days: number
+  open_price: number
+  close_price: number
+  range_low: number
+  range_high: number
+  change_pct: number
+  phase_clarity: number           // 0-100, price+volume only
+  trend_strength: 'strong' | 'weak' | 'sideways'
+  smart_money_alignment: number | null  // 0-100, NULL if no data
+  broker_flow_alignment: string | null
+  bandar_signal_mode: string | null
+  insider_activity: { buys: number; sells: number; net_shares: number } | null
+  is_current: boolean
+  detection_version: string
+  detected_at: string
+}
+
+export interface MarketPhaseResponse {
+  ticker: string
+  phases: MarketPhase[]
+  currentPhase: MarketPhase | null
+  detectedAt: string | null
+  stats: {
+    totalPhases: number
+    avgClarity: number
+    phaseCounts: Record<MarketPhaseType, number>
+    coverageDays: number
+  }
+}

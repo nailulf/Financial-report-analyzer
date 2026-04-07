@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition, useEffect } from 'react'
+import { useState, useTransition, useEffect, useRef } from 'react'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 
 const BOARDS = ['Main', 'Development', 'Acceleration'] as const
@@ -18,6 +18,7 @@ const FILTER_KEYS = [
   'minDivAvg3yr', 'minDivAvg5yr',
   'minRevCagr3yr', 'minRevCagr5yr', 'minPriceCagr3yr', 'minPriceCagr5yr',
   'minMktCap', 'minCompleteness', 'minConfidence',
+  'maxPhaseDays',
   'board', 'phase',
 ] as const
 
@@ -47,6 +48,67 @@ function NumInput({ label, placeholder, value, onChange }: {
     <div>
       <label className="block text-xs text-gray-500 mb-1">{label}</label>
       <input type="number" placeholder={placeholder} value={value} onChange={(e) => onChange(e.target.value)} className={inputCls} />
+    </div>
+  )
+}
+
+function MultiSelect({ label, options, value, onChange }: {
+  label: string
+  options: readonly { value: string; label: string }[]
+  value: string   // comma-separated
+  onChange: (v: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const selected = new Set(value ? value.split(',') : [])
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    if (open) document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [open])
+
+  function toggle(v: string) {
+    const next = new Set(selected)
+    if (next.has(v)) next.delete(v)
+    else next.add(v)
+    onChange([...next].join(','))
+  }
+
+  const display = selected.size === 0
+    ? 'Any'
+    : options.filter((o) => selected.has(o.value)).map((o) => o.label).join(', ')
+
+  return (
+    <div ref={ref} className="relative">
+      <label className="block text-xs text-gray-500 mb-1">{label}</label>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className={`${inputCls} bg-white text-left truncate flex items-center justify-between gap-1`}
+      >
+        <span className="truncate">{display}</span>
+        <svg className="w-3 h-3 shrink-0 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full mt-1 z-20 w-48 bg-white border border-gray-200 rounded-lg shadow-lg p-1">
+          {options.map((o) => (
+            <label key={o.value} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-50 cursor-pointer text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={selected.has(o.value)}
+                onChange={() => toggle(o.value)}
+                className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              />
+              {o.label}
+            </label>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -122,13 +184,8 @@ export function ScreenerFilters() {
                   {BOARDS.map((b) => <option key={b} value={b}>{b}</option>)}
                 </select>
               </div>
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Phase</label>
-                <select value={filters.phase} onChange={(e) => set('phase')(e.target.value)} className={selectCls}>
-                  <option value="">Any</option>
-                  {PHASES.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
-                </select>
-              </div>
+              <MultiSelect label="Phase" options={PHASES} value={filters.phase} onChange={set('phase')} />
+              <NumInput label="Phase Days ≤" placeholder="20" value={filters.maxPhaseDays} onChange={set('maxPhaseDays')} />
             </div>
           </div>
 

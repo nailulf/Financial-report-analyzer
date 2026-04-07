@@ -24,6 +24,7 @@ export interface ScreenerFilters {
   minMktCap?: number
   minCompleteness?: number
   minConfidence?: number
+  maxPhaseDays?: number
   sortBy?: string
   sortDir?: 'asc' | 'desc'
 }
@@ -73,8 +74,16 @@ export async function getScreenerRows(
     countQuery = countQuery.eq('board', filters.board)
   }
   if (filters.phase) {
-    dataQuery = dataQuery.eq('current_phase', filters.phase)
-    countQuery = countQuery.eq('current_phase', filters.phase)
+    const phases = String(filters.phase).split(',').filter(Boolean)
+    if (phases.length === 1) {
+      dataQuery = dataQuery.eq('current_phase', phases[0])
+      countQuery = countQuery.eq('current_phase', phases[0])
+    } else if (phases.length > 1) {
+      // OR filter: stock's single current_phase matches any of the selected values
+      const orClause = phases.map((p) => `current_phase.eq.${p}`).join(',')
+      dataQuery = dataQuery.or(orClause)
+      countQuery = countQuery.or(orClause)
+    }
   }
   if (filters.minRoe != null) {
     dataQuery = dataQuery.gte('roe', filters.minRoe)
@@ -132,6 +141,13 @@ export async function getScreenerRows(
   if (filters.minConfidence != null) {
     dataQuery = dataQuery.gte('confidence_score', filters.minConfidence)
     countQuery = countQuery.gte('confidence_score', filters.minConfidence)
+  }
+  if (filters.maxPhaseDays != null) {
+    const days = Number(filters.maxPhaseDays)
+    if (!isNaN(days)) {
+      dataQuery = dataQuery.lte('current_phase_days', days)
+      countQuery = countQuery.lte('current_phase_days', days)
+    }
   }
 
   const [{ data, error }, { count, error: countError }] = await Promise.all([dataQuery, countQuery])

@@ -368,6 +368,11 @@ def run_full(tickers: list[str] | None, period: str, days: int, job_id: int | No
                      tickers=tickers, days=backfill_days, offset=offset, limit=batch_limit)
     _update_scores(tickers)
 
+    # ── Enrich ratios (denormalize PE/PBV/ROE etc. to stocks table) ──
+    if _should_run("ratio_enricher"):
+        console.rule("[bold cyan]ENRICH: screener ratios")
+        run_enrich_ratios(tickers, dry_run=dry_run)
+
     # ── Phase 6: AI pipeline (context + analysis) ──
     if _should_run("ai_context"):
         _run_ai_context_pipeline(tickers, job_id=job_id, dry_run=dry_run)

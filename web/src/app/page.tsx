@@ -11,7 +11,7 @@ const NUMERIC_PARAMS = [
   'minRoe', 'maxPe', 'maxPbv', 'minNetMargin', 'minDivYield',
   'minDivAvg3yr', 'minDivAvg5yr',
   'minRevCagr3yr', 'minRevCagr5yr', 'minPriceCagr3yr', 'minPriceCagr5yr',
-  'minMktCap', 'minCompleteness', 'minConfidence',
+  'minMktCap', 'minCompleteness', 'minConfidence', 'maxPhaseDays',
 ] as const
 
 const STRING_PARAMS = ['sector', 'board', 'phase'] as const

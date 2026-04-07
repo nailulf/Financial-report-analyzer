@@ -10,9 +10,12 @@ export interface ScreenerRow {
   ticker: string
   name: string | null
   sector: string | null
+  subsector: string | null
   board: string | null
   is_lq45: boolean
   is_idx30: boolean
+  listing_date: string | null
+  listed_shares: number | null
   market_cap: number | null      // parsed from string
   price: number | null
   pe_ratio: number | null
@@ -20,6 +23,15 @@ export interface ScreenerRow {
   roe: number | null
   net_margin: number | null
   dividend_yield: number | null
+  current_phase: MarketPhaseType | null
+  current_phase_clarity: number | null
+  current_phase_days: number | null
+  revenue_cagr_3yr: number | null
+  revenue_cagr_5yr: number | null
+  price_cagr_3yr: number | null
+  price_cagr_5yr: number | null
+  div_yield_avg_3yr: number | null
+  div_yield_avg_5yr: number | null
   completeness_score: number | null
   confidence_score: number | null
 }

@@ -9,11 +9,21 @@ type SortCol = typeof VALID_SORT_COLS[number]
 export interface ScreenerFilters {
   sector?: string
   board?: string
+  phase?: string
   minRoe?: number
   maxPe?: number
   maxPbv?: number
   minNetMargin?: number
   minDivYield?: number
+  minDivAvg3yr?: number
+  minDivAvg5yr?: number
+  minRevCagr3yr?: number
+  minRevCagr5yr?: number
+  minPriceCagr3yr?: number
+  minPriceCagr5yr?: number
+  minMktCap?: number
+  minCompleteness?: number
+  minConfidence?: number
   sortBy?: string
   sortDir?: 'asc' | 'desc'
 }
@@ -39,7 +49,7 @@ export async function getScreenerRows(
   // All screener metrics are denormalized onto stocks (see schema-v10).
   // No views, no joins — just a simple indexed table scan.
 
-  const SCREENER_COLS = 'ticker, name, sector, board, is_lq45, is_idx30, market_cap, current_price, pe_ratio, pbv_ratio, roe, net_margin, dividend_yield, completeness_score, confidence_score'
+  const SCREENER_COLS = 'ticker, name, sector, subsector, board, is_lq45, is_idx30, listing_date, listed_shares, market_cap, current_price, pe_ratio, pbv_ratio, roe, net_margin, dividend_yield, current_phase, current_phase_clarity, current_phase_days, revenue_cagr_3yr, revenue_cagr_5yr, price_cagr_3yr, price_cagr_5yr, div_yield_avg_3yr, div_yield_avg_5yr, completeness_score, confidence_score'
 
   let dataQuery = supabase
     .from('stocks')
@@ -62,6 +72,10 @@ export async function getScreenerRows(
     dataQuery = dataQuery.eq('board', filters.board)
     countQuery = countQuery.eq('board', filters.board)
   }
+  if (filters.phase) {
+    dataQuery = dataQuery.eq('current_phase', filters.phase)
+    countQuery = countQuery.eq('current_phase', filters.phase)
+  }
   if (filters.minRoe != null) {
     dataQuery = dataQuery.gte('roe', filters.minRoe)
     countQuery = countQuery.gte('roe', filters.minRoe)
@@ -82,6 +96,43 @@ export async function getScreenerRows(
     dataQuery = dataQuery.gte('dividend_yield', filters.minDivYield)
     countQuery = countQuery.gte('dividend_yield', filters.minDivYield)
   }
+  if (filters.minDivAvg3yr != null) {
+    dataQuery = dataQuery.gte('div_yield_avg_3yr', filters.minDivAvg3yr)
+    countQuery = countQuery.gte('div_yield_avg_3yr', filters.minDivAvg3yr)
+  }
+  if (filters.minDivAvg5yr != null) {
+    dataQuery = dataQuery.gte('div_yield_avg_5yr', filters.minDivAvg5yr)
+    countQuery = countQuery.gte('div_yield_avg_5yr', filters.minDivAvg5yr)
+  }
+  if (filters.minRevCagr3yr != null) {
+    dataQuery = dataQuery.gte('revenue_cagr_3yr', filters.minRevCagr3yr)
+    countQuery = countQuery.gte('revenue_cagr_3yr', filters.minRevCagr3yr)
+  }
+  if (filters.minRevCagr5yr != null) {
+    dataQuery = dataQuery.gte('revenue_cagr_5yr', filters.minRevCagr5yr)
+    countQuery = countQuery.gte('revenue_cagr_5yr', filters.minRevCagr5yr)
+  }
+  if (filters.minPriceCagr3yr != null) {
+    dataQuery = dataQuery.gte('price_cagr_3yr', filters.minPriceCagr3yr)
+    countQuery = countQuery.gte('price_cagr_3yr', filters.minPriceCagr3yr)
+  }
+  if (filters.minPriceCagr5yr != null) {
+    dataQuery = dataQuery.gte('price_cagr_5yr', filters.minPriceCagr5yr)
+    countQuery = countQuery.gte('price_cagr_5yr', filters.minPriceCagr5yr)
+  }
+  if (filters.minMktCap != null) {
+    // Input is in triliun (T), DB stores raw IDR
+    dataQuery = dataQuery.gte('market_cap', filters.minMktCap * 1_000_000_000_000)
+    countQuery = countQuery.gte('market_cap', filters.minMktCap * 1_000_000_000_000)
+  }
+  if (filters.minCompleteness != null) {
+    dataQuery = dataQuery.gte('completeness_score', filters.minCompleteness)
+    countQuery = countQuery.gte('completeness_score', filters.minCompleteness)
+  }
+  if (filters.minConfidence != null) {
+    dataQuery = dataQuery.gte('confidence_score', filters.minConfidence)
+    countQuery = countQuery.gte('confidence_score', filters.minConfidence)
+  }
 
   const [{ data, error }, { count, error: countError }] = await Promise.all([dataQuery, countQuery])
 
@@ -97,9 +148,12 @@ export async function getScreenerRows(
     ticker: string
     name: string | null
     sector: string | null
+    subsector: string | null
     board: string | null
     is_lq45: boolean
     is_idx30: boolean
+    listing_date: string | null
+    listed_shares: string | null
     market_cap: string | null
     current_price: number | null
     pe_ratio: number | null
@@ -107,6 +161,15 @@ export async function getScreenerRows(
     roe: number | null
     net_margin: number | null
     dividend_yield: number | null
+    current_phase: string | null
+    current_phase_clarity: number | null
+    current_phase_days: number | null
+    revenue_cagr_3yr: number | null
+    revenue_cagr_5yr: number | null
+    price_cagr_3yr: number | null
+    price_cagr_5yr: number | null
+    div_yield_avg_3yr: number | null
+    div_yield_avg_5yr: number | null
     completeness_score: number | null
     confidence_score: number | null
   }
@@ -115,9 +178,12 @@ export async function getScreenerRows(
     ticker: r.ticker,
     name: r.name,
     sector: r.sector,
+    subsector: r.subsector,
     board: r.board,
     is_lq45: r.is_lq45,
     is_idx30: r.is_idx30,
+    listing_date: r.listing_date,
+    listed_shares: parseBigInt(r.listed_shares),
     market_cap: parseBigInt(r.market_cap),
     price: r.current_price,
     pe_ratio: r.pe_ratio,
@@ -125,6 +191,15 @@ export async function getScreenerRows(
     roe: r.roe,
     net_margin: r.net_margin,
     dividend_yield: r.dividend_yield,
+    current_phase: r.current_phase as ScreenerRow['current_phase'],
+    current_phase_clarity: r.current_phase_clarity ?? null,
+    current_phase_days: r.current_phase_days ?? null,
+    revenue_cagr_3yr: r.revenue_cagr_3yr,
+    revenue_cagr_5yr: r.revenue_cagr_5yr,
+    price_cagr_3yr: r.price_cagr_3yr,
+    price_cagr_5yr: r.price_cagr_5yr,
+    div_yield_avg_3yr: r.div_yield_avg_3yr,
+    div_yield_avg_5yr: r.div_yield_avg_5yr,
     completeness_score: r.completeness_score ?? null,
     confidence_score: r.confidence_score ?? null,
   }))

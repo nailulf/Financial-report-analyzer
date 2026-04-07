@@ -6,12 +6,18 @@ import { ScreenerFilters } from '@/components/home/screener-filters'
 import { WatchlistBar } from '@/components/home/watchlist-bar'
 import { PAGE_SIZE } from '@/lib/constants'
 
+// All filter param keys (excluding sort/dir/page/sector which are handled separately)
+const NUMERIC_PARAMS = [
+  'minRoe', 'maxPe', 'maxPbv', 'minNetMargin', 'minDivYield',
+  'minDivAvg3yr', 'minDivAvg5yr',
+  'minRevCagr3yr', 'minRevCagr5yr', 'minPriceCagr3yr', 'minPriceCagr5yr',
+  'minMktCap', 'minCompleteness', 'minConfidence',
+] as const
+
+const STRING_PARAMS = ['sector', 'board', 'phase'] as const
+
 interface PageProps {
-  searchParams: Promise<{
-    sector?: string; page?: string; sort?: string; dir?: string
-    minRoe?: string; maxPe?: string; maxPbv?: string
-    minNetMargin?: string; minDivYield?: string; board?: string
-  }>
+  searchParams: Promise<Record<string, string | undefined>>
 }
 
 export default async function HomePage({ searchParams }: PageProps) {
@@ -20,16 +26,13 @@ export default async function HomePage({ searchParams }: PageProps) {
   const sortBy  = sp.sort ?? 'ticker'
   const sortDir = (sp.dir === 'asc' ? 'asc' : sp.dir === 'desc' ? 'desc' : sp.sort ? 'desc' : 'asc') as 'asc' | 'desc'
 
-  const filters = {
-    sector:       sp.sector,
-    board:        sp.board,
-    minRoe:       sp.minRoe       ? Number(sp.minRoe)       : undefined,
-    maxPe:        sp.maxPe        ? Number(sp.maxPe)        : undefined,
-    maxPbv:       sp.maxPbv       ? Number(sp.maxPbv)       : undefined,
-    minNetMargin: sp.minNetMargin ? Number(sp.minNetMargin) : undefined,
-    minDivYield:  sp.minDivYield  ? Number(sp.minDivYield)  : undefined,
-    sortBy,
-    sortDir,
+  // Build filters object
+  const filters: Record<string, string | number | undefined> = { sortBy, sortDir }
+  for (const key of STRING_PARAMS) {
+    if (sp[key]) filters[key] = sp[key]
+  }
+  for (const key of NUMERIC_PARAMS) {
+    if (sp[key]) filters[key] = Number(sp[key])
   }
 
   const { rows, total } = await getScreenerRows(filters, page)
@@ -37,13 +40,9 @@ export default async function HomePage({ searchParams }: PageProps) {
 
   // baseParams: all active filters except sort/dir/page (for sort header link building)
   const baseParams: Record<string, string> = {}
-  if (sp.sector)       baseParams.sector       = sp.sector
-  if (sp.board)        baseParams.board        = sp.board
-  if (sp.minRoe)       baseParams.minRoe       = sp.minRoe
-  if (sp.maxPe)        baseParams.maxPe        = sp.maxPe
-  if (sp.maxPbv)       baseParams.maxPbv       = sp.maxPbv
-  if (sp.minNetMargin) baseParams.minNetMargin = sp.minNetMargin
-  if (sp.minDivYield)  baseParams.minDivYield  = sp.minDivYield
+  for (const key of [...STRING_PARAMS, ...NUMERIC_PARAMS]) {
+    if (sp[key]) baseParams[key] = sp[key]!
+  }
 
   const paginationParams = { ...baseParams, sort: sortBy, dir: sortDir }
 

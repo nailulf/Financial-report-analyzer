@@ -21,7 +21,7 @@ import { HeroBar }                  from './widgets/HeroBar'
 import { NavTabs }                  from './widgets/NavTabs'
 import { AIInsightsWidget }         from './widgets/AIInsightsWidget'
 import { BrokerActivityWidget }     from './widgets/BrokerActivityWidget'
-import { TradingViewChart }          from '@/components/charts/tradingview-chart'
+import { PriceWidget }               from './widgets/PriceWidget'
 import { ShareholdersWidget }       from './widgets/ShareholdersWidget'
 import { FinancialStatementsWidget } from './widgets/FinancialStatementsWidget'
 import { CompanyMetricsWidget }      from './widgets/CompanyMetricsWidget'
@@ -131,9 +131,7 @@ export function StockPageClient({
           <AnalystInsightWidget ticker={header.ticker} />
         </div>
 
-        <div className="px-12 py-2">
-          <TradingViewChart ticker={header.ticker} />
-        </div>
+        <PriceWidget ticker={header.ticker} priceHistory={priceHistory} />
       </div>
 
       {/* ═══════════════════════════════════════════════════════════════

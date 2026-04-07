@@ -91,6 +91,10 @@ class MarketPhase:
     change_pct: float = 0.0
     phase_clarity: int = 30
     trend_strength: str = "sideways"
+    # Volume statistics (computed during _build_phase)
+    avg_volume: float = 0.0
+    vol_trend: float = 0.0          # >1 = expanding, <1 = contracting (2nd half / 1st half)
+    vol_spike_days: int = 0         # days where volume > vol_sma * threshold
     smart_money_alignment: Optional[int] = None
     broker_flow_alignment: Optional[str] = None
     bandar_signal_mode: Optional[str] = None
@@ -247,6 +251,13 @@ class MarketPhaseDetector:
 
             ma_spread = abs(d.short_sma - d.long_sma) / d.long_sma if d.long_sma else 0
 
+            # Volume spike detection
+            has_vol_spike = (
+                d.vol_sma is not None
+                and d.vol_sma > 0
+                and d.volume > d.vol_sma * p.vol_spike_threshold
+            )
+
             # ATR low-volatility override
             if d.atr is not None and avg_atr > 0 and d.atr < avg_atr * 0.85:
                 if d.close < d.long_sma:
@@ -255,6 +266,9 @@ class MarketPhaseDetector:
                     d.classification = SIDEWAYS_BULLISH
             # Standard SMA crossover classification
             elif ma_spread > p.ma_spread_threshold:
+                d.classification = UPTREND if d.short_sma > d.long_sma else DOWNTREND
+            # Volume-assisted: borderline spread + volume spike = treat as trending
+            elif has_vol_spike and ma_spread > p.ma_spread_threshold * 0.6:
                 d.classification = UPTREND if d.short_sma > d.long_sma else DOWNTREND
             else:
                 # Sideways — bias from SMA relationship
@@ -320,6 +334,25 @@ class MarketPhaseDetector:
             (close_price - open_price) / open_price * 100, 2
         ) if open_price else 0.0
 
+        # Volume statistics
+        volumes = [d.volume for d in days if d.volume > 0]
+        avg_volume = sum(volumes) / len(volumes) if volumes else 0.0
+
+        # Volume trend: compare 2nd half avg vs 1st half avg
+        vol_trend = 1.0
+        if len(volumes) >= 4:
+            mid = len(volumes) // 2
+            first_half = sum(volumes[:mid]) / mid
+            second_half = sum(volumes[mid:]) / (len(volumes) - mid)
+            vol_trend = round(second_half / first_half, 2) if first_half > 0 else 1.0
+
+        # Count volume spike days (volume > vol_sma * threshold)
+        threshold = self.params.vol_spike_threshold
+        vol_spike_days = sum(
+            1 for d in days
+            if d.vol_sma and d.vol_sma > 0 and d.volume > d.vol_sma * threshold
+        )
+
         return MarketPhase(
             ticker=ticker,
             phase_type=phase_type,
@@ -332,6 +365,9 @@ class MarketPhaseDetector:
             range_high=range_high,
             change_pct=change_pct,
             trend_strength=self._classify_trend_strength(change_pct),
+            avg_volume=avg_volume,
+            vol_trend=vol_trend,
+            vol_spike_days=vol_spike_days,
         )
 
     # =================================================================
@@ -459,14 +495,31 @@ class MarketPhaseDetector:
         else:
             score += 5  # type says up but price went down → low confidence
 
-        # 4. Volume confirmation placeholder (max 20)
-        # Without per-day data at this point, use trend_strength as proxy
-        if phase.trend_strength == "strong":
-            score += 20
-        elif phase.trend_strength == "weak":
-            score += 10
-        else:
-            score += 5
+        # 4. Volume confirmation (max 20)
+        # Trending phases: expanding volume confirms the trend
+        # Sideways phases: contracting volume confirms consolidation
+        vol_pts = 0
+        if phase.phase_type in (UPTREND, DOWNTREND):
+            # Expanding volume (2nd half > 1st half) confirms trend
+            if phase.vol_trend >= 1.2:
+                vol_pts = 15
+            elif phase.vol_trend >= 1.0:
+                vol_pts = 8
+            else:
+                vol_pts = 2  # contracting volume in a trend = weak
+            # Volume spike days add conviction
+            spike_ratio = phase.vol_spike_days / max(phase.days, 1)
+            if spike_ratio > 0.15:
+                vol_pts = min(vol_pts + 5, 20)
+        else:  # sideways
+            # Contracting volume confirms consolidation
+            if phase.vol_trend <= 0.85:
+                vol_pts = 15
+            elif phase.vol_trend <= 1.0:
+                vol_pts = 10
+            else:
+                vol_pts = 3  # expanding volume in sideways = unstable
+        score += vol_pts
 
         return min(max(score, 15), 100)  # floor 15, cap 100
 
@@ -665,6 +718,15 @@ class MarketPhaseDetector:
 
         if rows:
             bulk_upsert("market_phases", rows, on_conflict="ticker,start_date")
+
+        # Denormalize current phase onto stocks table for screener display
+        current = next((p for p in phases if p.is_current), None)
+        if current:
+            get_client().table("stocks").update({
+                "current_phase": current.phase_type,
+                "current_phase_clarity": current.phase_clarity,
+                "current_phase_days": current.days,
+            }).eq("ticker", ticker).execute()
 
     # =================================================================
     # Helpers

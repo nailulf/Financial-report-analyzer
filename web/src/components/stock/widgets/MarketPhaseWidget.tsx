@@ -1,13 +1,9 @@
 'use client'
 
-import { useState, useEffect, useMemo } from 'react'
-import {
-  AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, ReferenceArea,
-} from 'recharts'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import type { PricePoint, MarketPhase, MarketPhaseType, MarketPhaseResponse } from '@/lib/types/api'
 import { ChartSkeleton } from '@/components/ui/loading-skeleton'
-import { fmtNumID, formatPercent } from '@/lib/calculations/formatters'
+import { fmtNumID } from '@/lib/calculations/formatters'
 
 // ---------------------------------------------------------------------------
 // Phase colors & labels
@@ -25,13 +21,6 @@ const PHASE_LABELS: Record<MarketPhaseType, string> = {
   downtrend:        'Downtrend',
   sideways_bullish: 'Sideways ↑',
   sideways_bearish: 'Sideways ↓',
-}
-
-const PHASE_LABELS_ID: Record<MarketPhaseType, string> = {
-  uptrend:          'Tren Naik',
-  downtrend:        'Tren Turun',
-  sideways_bullish: 'Sideways Bullish',
-  sideways_bearish: 'Sideways Bearish',
 }
 
 const PHASE_SHORT: Record<MarketPhaseType, string> = {
@@ -53,13 +42,13 @@ const PERIODS = [
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatDate(dateStr: string) {
+function formatDateMed(dateStr: string) {
   const d = new Date(dateStr)
-  return d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: '2-digit' })
+  return d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
-function formatPrice(value: number) {
-  return `Rp${fmtNumID(value)}`
+function formatPriceCompact(value: number) {
+  return fmtNumID(value)
 }
 
 function clarityColor(clarity: number): string {
@@ -68,22 +57,60 @@ function clarityColor(clarity: number): string {
   return '#E24B4A'
 }
 
+function trendLabel(strength: string): string {
+  if (strength === 'strong') return 'Kuat'
+  if (strength === 'weak') return 'Lemah'
+  return 'Sideways'
+}
+
 function alignmentBadge(alignment: string | null) {
   if (!alignment) return null
   const colors: Record<string, string> = {
-    confirms: 'bg-emerald-50 text-emerald-700',
-    contradicts: 'bg-red-50 text-red-700',
-    neutral: 'bg-gray-50 text-gray-500',
+    confirms: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    contradicts: 'bg-red-50 text-red-700 border-red-200',
+    neutral: 'bg-gray-50 text-gray-500 border-gray-200',
+  }
+  const labels: Record<string, string> = {
+    confirms: 'Konfirmasi',
+    contradicts: 'Bertentangan',
+    neutral: 'Netral',
   }
   return (
-    <span className={`inline-block px-1.5 py-0.5 text-[10px] font-medium rounded ${colors[alignment] ?? colors.neutral}`}>
-      {alignment === 'confirms' ? 'Konfirmasi' : alignment === 'contradicts' ? 'Bertentangan' : 'Netral'}
+    <span className={`inline-block px-1.5 py-0.5 text-[10px] font-medium rounded border ${colors[alignment] ?? colors.neutral}`}>
+      {labels[alignment] ?? alignment}
     </span>
   )
 }
 
+function dateToUnix(dateStr: string): number {
+  return Math.floor(new Date(dateStr + 'T00:00:00').getTime() / 1000)
+}
+
+function hexToRgba(hex: string, alpha: number): string {
+  const r = parseInt(hex.slice(1, 3), 16)
+  const g = parseInt(hex.slice(3, 5), 16)
+  const b = parseInt(hex.slice(5, 7), 16)
+  return `rgba(${r},${g},${b},${alpha})`
+}
+
 // ---------------------------------------------------------------------------
-// Component
+// Phase overlay position
+// ---------------------------------------------------------------------------
+
+interface OverlayRect {
+  id: number
+  left: number
+  width: number
+  color: string
+  label: string
+  clarity: number
+  phaseType: MarketPhaseType
+}
+
+type LCModule = typeof import('lightweight-charts')
+
+// ---------------------------------------------------------------------------
+// Main Component
 // ---------------------------------------------------------------------------
 
 interface Props {
@@ -98,8 +125,19 @@ export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
   const [selectedPhaseId, setSelectedPhaseId] = useState<number | null>(null)
   const [phaseData, setPhaseData] = useState<MarketPhaseResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  const [lcModule, setLcModule] = useState<LCModule | null>(null)
+  const [overlayRects, setOverlayRects] = useState<OverlayRect[]>([])
 
-  useEffect(() => setMounted(true), [])
+  const chartWrapperRef = useRef<HTMLDivElement>(null)
+  const chartContainerRef = useRef<HTMLDivElement>(null)
+  const chartRef = useRef<any>(null)
+
+  useEffect(() => { setMounted(true) }, [])
+
+  // Dynamic import
+  useEffect(() => {
+    import('lightweight-charts').then(setLcModule)
+  }, [])
 
   // Fetch phase data
   useEffect(() => {
@@ -111,7 +149,7 @@ export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
         const data: MarketPhaseResponse = await res.json()
         if (!cancelled) setPhaseData(data)
       } catch {
-        // Phase data not available — widget still renders without overlays
+        // Phase data not available
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -120,10 +158,8 @@ export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
     return () => { cancelled = true }
   }, [ticker])
 
-  // Slice price data by period
   const sliced = useMemo(() => priceHistory.slice(-period), [priceHistory, period])
 
-  // Filter phases to visible date range
   const visiblePhases = useMemo(() => {
     if (!phaseData?.phases.length || !sliced.length) return []
     const firstDate = sliced[0].date
@@ -135,7 +171,154 @@ export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
 
   const currentPhase = phaseData?.currentPhase ?? null
 
-  if (!mounted) return <ChartSkeleton height={400} />
+  // ── Calculate overlay positions from chart timeScale ──────────
+  const recalcOverlays = useCallback(() => {
+    const chart = chartRef.current
+    if (!chart || !showPhases || !visiblePhases.length) {
+      setOverlayRects([])
+      return
+    }
+
+    const timeScale = chart.timeScale()
+    const rects: OverlayRect[] = []
+
+    for (const phase of visiblePhases) {
+      const x1 = timeScale.timeToCoordinate(dateToUnix(phase.start_date) as any)
+      const x2 = timeScale.timeToCoordinate(dateToUnix(phase.end_date) as any)
+
+      if (x1 == null || x2 == null) continue
+      const left = Math.min(x1, x2)
+      const width = Math.abs(x2 - x1)
+      if (width < 2) continue
+
+      rects.push({
+        id: phase.id,
+        left,
+        width,
+        color: PHASE_COLORS[phase.phase_type],
+        label: PHASE_SHORT[phase.phase_type],
+        clarity: phase.phase_clarity,
+        phaseType: phase.phase_type,
+      })
+    }
+
+    setOverlayRects(rects)
+  }, [showPhases, visiblePhases])
+
+  // ── Create chart ──────────────────────────────────────────────
+  useEffect(() => {
+    if (!mounted || !lcModule || !chartContainerRef.current || !sliced.length) return
+
+    // Destroy previous
+    if (chartRef.current) {
+      chartRef.current.remove()
+      chartRef.current = null
+    }
+
+    const chart = lcModule.createChart(chartContainerRef.current, {
+      layout: {
+        background: { color: '#FFFFFF' },
+        textColor: '#9C9B99',
+        fontFamily: 'monospace',
+        fontSize: 10,
+      },
+      grid: {
+        vertLines: { visible: false },
+        horzLines: { color: '#F5F4F1' },
+      },
+      rightPriceScale: { borderVisible: false },
+      timeScale: {
+        borderVisible: false,
+        timeVisible: false,
+        rightOffset: 5,
+      },
+      crosshair: {
+        horzLine: { color: '#E0E0E5', labelBackgroundColor: '#1A1A1A' },
+        vertLine: { color: '#E0E0E5', labelBackgroundColor: '#1A1A1A' },
+      },
+    })
+
+    chartRef.current = chart
+
+    // Candlestick series
+    const candleSeries = chart.addSeries(lcModule.CandlestickSeries, {
+      upColor: '#1D9E75',
+      downColor: '#E24B4A',
+      wickUpColor: '#1D9E75',
+      wickDownColor: '#E24B4A',
+      borderUpColor: '#1D9E75',
+      borderDownColor: '#E24B4A',
+    })
+
+    candleSeries.setData(
+      sliced
+        .filter((p) => p.close != null)
+        .map((p) => ({
+          time: dateToUnix(p.date) as any,
+          open: p.open ?? p.close!,
+          high: p.high ?? p.close!,
+          low: p.low ?? p.close!,
+          close: p.close!,
+        })),
+    )
+
+    // Volume histogram
+    const volumeSeries = chart.addSeries(lcModule.HistogramSeries, {
+      priceFormat: { type: 'volume' },
+      priceScaleId: 'volume',
+    })
+
+    chart.priceScale('volume').applyOptions({
+      scaleMargins: { top: 0.85, bottom: 0 },
+    })
+
+    volumeSeries.setData(
+      sliced
+        .filter((p) => p.volume != null && p.close != null)
+        .map((p) => ({
+          time: dateToUnix(p.date) as any,
+          value: p.volume!,
+          color: (p.close! >= (p.open ?? p.close!))
+            ? 'rgba(29,158,117,0.3)'
+            : 'rgba(226,75,74,0.3)',
+        })),
+    )
+
+    chart.timeScale().fitContent()
+
+    // Subscribe to visible range changes to reposition overlays
+    chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
+      recalcOverlays()
+    })
+
+    // Initial overlay calculation (after a frame so chart has rendered)
+    requestAnimationFrame(() => recalcOverlays())
+
+    return () => {
+      chart.remove()
+      chartRef.current = null
+    }
+  }, [mounted, lcModule, sliced, recalcOverlays])
+
+  // Recalc overlays when phase visibility or selection changes
+  useEffect(() => {
+    recalcOverlays()
+  }, [recalcOverlays, selectedPhaseId])
+
+  // Handle container resize
+  useEffect(() => {
+    if (!chartRef.current || !chartContainerRef.current) return
+    const observer = new ResizeObserver(() => {
+      if (chartRef.current && chartContainerRef.current) {
+        chartRef.current.applyOptions({ width: chartContainerRef.current.clientWidth })
+        requestAnimationFrame(() => recalcOverlays())
+      }
+    })
+    observer.observe(chartContainerRef.current)
+    return () => observer.disconnect()
+  }, [mounted, lcModule, recalcOverlays])
+
+  if (!mounted) return <ChartSkeleton height={500} />
 
   if (priceHistory.length === 0) {
     return (
@@ -145,17 +328,9 @@ export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
     )
   }
 
-  // Price range for Y axis
-  const prices = sliced.map((p) => p.close).filter((v): v is number => v != null)
-  const minPrice = Math.min(...prices)
-  const maxPrice = Math.max(...prices)
-  const priceRange = maxPrice - minPrice
-  const yMin = Math.floor((minPrice - priceRange * 0.05) / 10) * 10
-  const yMax = Math.ceil((maxPrice + priceRange * 0.05) / 10) * 10
-
   return (
     <div className="bg-white border border-[#E0E0E5]">
-      {/* Header */}
+      {/* ── Header bar ────────────────────────────────────────────── */}
       <div className="px-5 py-3 border-b border-[#E0E0E5] flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-3">
           <span className="font-mono text-[13px] font-bold tracking-[0.5px] text-[#1A1A1A]">
@@ -193,114 +368,56 @@ export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
           </div>
         </div>
       </div>
+      {/* ── Chart with HTML overlay divs ───────────────────────────── */}
+      <div className="px-4 pt-3 pb-1">
+        <div ref={chartWrapperRef} className="relative" style={{ height: 380 }}>
+          {/* Lightweight-charts canvas */}
+          <div ref={chartContainerRef} style={{ height: 380, width: '100%' }} />
 
-      {/* Current phase banner */}
-      {currentPhase && (
-        <div className="px-5 py-2.5 border-b border-[#E0E0E5] bg-[#FAFAFA]">
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex items-center gap-1.5">
-              <div
-                className="w-2.5 h-2.5 rounded-full"
-                style={{ backgroundColor: PHASE_COLORS[currentPhase.phase_type] }}
-              />
-              <span className="font-mono text-[12px] font-bold" style={{ color: PHASE_COLORS[currentPhase.phase_type] }}>
-                {PHASE_LABELS[currentPhase.phase_type]}
-              </span>
+          {/* Phase overlay divs — positioned absolutely on top of chart */}
+          {showPhases && overlayRects.map((rect) => (
+            <div
+              key={rect.id}
+              onClick={() => setSelectedPhaseId(selectedPhaseId === rect.id ? null : rect.id)}
+              style={{
+                position: 'absolute',
+                top: 0,
+                left: rect.left,
+                width: rect.width,
+                height: '100%',
+                backgroundColor: hexToRgba(rect.color, selectedPhaseId === rect.id ? 0.20 : 0.10),
+                borderTop: `2px solid ${hexToRgba(rect.color, 0.5)}`,
+                pointerEvents: 'none',
+                zIndex: 1,
+              }}
+            >
+              {rect.width > 35 && (
+                <span
+                  style={{
+                    position: 'absolute',
+                    top: 4,
+                    left: 4,
+                    fontSize: 9,
+                    fontFamily: 'monospace',
+                    fontWeight: 600,
+                    color: hexToRgba(rect.color, 0.85),
+                    whiteSpace: 'nowrap',
+                    pointerEvents: 'none',
+                  }}
+                >
+                  {rect.label} {rect.clarity}%
+                </span>
+              )}
             </div>
-            <span className="font-mono text-[11px] text-[#6D6C6A]">
-              {currentPhase.days} hari
-            </span>
-            <span className={`font-mono text-[11px] font-medium ${currentPhase.change_pct >= 0 ? 'text-[#1D9E75]' : 'text-[#E24B4A]'}`}>
-              {currentPhase.change_pct >= 0 ? '+' : ''}{currentPhase.change_pct.toFixed(1)}%
-            </span>
-            <span className="font-mono text-[11px]" style={{ color: clarityColor(currentPhase.phase_clarity) }}>
-              Kejelasan {currentPhase.phase_clarity}%
-            </span>
-            {currentPhase.broker_flow_alignment && alignmentBadge(currentPhase.broker_flow_alignment)}
-            {currentPhase.bandar_signal_mode && (
-              <span className="inline-block px-1.5 py-0.5 text-[10px] font-medium rounded bg-purple-50 text-purple-700">
-                Bandar: {currentPhase.bandar_signal_mode}
-              </span>
-            )}
-          </div>
+          ))}
         </div>
-      )}
-
-      {/* Price chart with phase overlays */}
-      <div className="p-4">
-        <ResponsiveContainer width="100%" height={240}>
-          <AreaChart data={sliced} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
-            <defs>
-              <linearGradient id="phaseGradient" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="5%" stopColor="#3D8A5A" stopOpacity={0.12} />
-                <stop offset="95%" stopColor="#3D8A5A" stopOpacity={0} />
-              </linearGradient>
-            </defs>
-
-            {/* Phase overlays — rendered before Area so they appear behind */}
-            {showPhases && visiblePhases.map((phase) => (
-              <ReferenceArea
-                key={phase.id}
-                x1={phase.start_date < sliced[0].date ? sliced[0].date : phase.start_date}
-                x2={phase.end_date > sliced[sliced.length - 1].date ? sliced[sliced.length - 1].date : phase.end_date}
-                fill={PHASE_COLORS[phase.phase_type]}
-                fillOpacity={selectedPhaseId === phase.id ? 0.22 : 0.08}
-                stroke={PHASE_COLORS[phase.phase_type]}
-                strokeOpacity={0.15}
-                onClick={() => setSelectedPhaseId(selectedPhaseId === phase.id ? null : phase.id)}
-                style={{ cursor: 'pointer' }}
-                label={phase.days >= 20 ? {
-                  value: `${PHASE_SHORT[phase.phase_type]} ${phase.phase_clarity}%`,
-                  position: 'insideTopLeft',
-                  fontSize: 9,
-                  fontFamily: 'monospace',
-                  fill: PHASE_COLORS[phase.phase_type],
-                } : undefined}
-              />
-            ))}
-
-            <CartesianGrid strokeDasharray="3 3" stroke="#F5F4F1" vertical={false} />
-            <XAxis
-              dataKey="date"
-              tickFormatter={formatDate}
-              tick={{ fontSize: 10, fill: '#9C9B99' }}
-              tickLine={false}
-              axisLine={false}
-              interval="preserveStartEnd"
-              tickCount={6}
-            />
-            <YAxis
-              domain={[yMin, yMax]}
-              tickFormatter={(v) => `${(v / 1000).toFixed(0)}K`}
-              tick={{ fontSize: 10, fill: '#9C9B99' }}
-              tickLine={false}
-              axisLine={false}
-              width={44}
-            />
-            <Tooltip
-              formatter={(value: number) => [formatPrice(value), 'Close']}
-              labelFormatter={formatDate}
-              contentStyle={{ fontSize: 12, borderRadius: 12, border: '1px solid #E5E4E1', background: '#fff', color: '#1A1918' }}
-            />
-            <Area
-              type="monotone"
-              dataKey="close"
-              stroke="#3D8A5A"
-              strokeWidth={1.5}
-              fill="url(#phaseGradient)"
-              dot={false}
-              activeDot={{ r: 3, fill: '#3D8A5A' }}
-              connectNulls
-            />
-          </AreaChart>
-        </ResponsiveContainer>
 
         {/* Phase legend */}
         {showPhases && (
-          <div className="flex items-center gap-4 mt-2 px-1">
+          <div className="flex items-center gap-4 mt-1 px-1">
             {(Object.keys(PHASE_COLORS) as MarketPhaseType[]).map((type) => (
               <div key={type} className="flex items-center gap-1">
-                <div className="w-2 h-2 rounded-sm" style={{ backgroundColor: PHASE_COLORS[type] }} />
+                <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: PHASE_COLORS[type], opacity: 0.7 }} />
                 <span className="text-[10px] text-[#888888] font-mono">{PHASE_LABELS[type]}</span>
               </div>
             ))}
@@ -308,7 +425,92 @@ export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
         )}
       </div>
 
-      {/* Phase history table */}
+      {/* ── Current phase detail banner ────────────────────────────── */}
+      {currentPhase && (
+        <div className="border-t border-[#E0E0E5]">
+          <div className="px-5 py-2.5 border-b border-[#E0E0E5] bg-[#FAFAFA] flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div className="w-3 h-3 rounded-full" style={{ backgroundColor: PHASE_COLORS[currentPhase.phase_type] }} />
+              <span className="font-mono text-[13px] font-bold" style={{ color: PHASE_COLORS[currentPhase.phase_type] }}>
+                Current: {PHASE_LABELS[currentPhase.phase_type]}
+              </span>
+            </div>
+            <span className="font-mono text-[12px] font-bold" style={{ color: clarityColor(currentPhase.phase_clarity) }}>
+              {currentPhase.phase_clarity}% conf.
+            </span>
+          </div>
+
+          <div className="grid grid-cols-3 gap-px bg-[#E0E0E5]">
+            <div className="bg-white px-5 py-3">
+              <div className="font-mono text-[10px] text-[#888888] tracking-[0.3px] mb-1">PERIOD</div>
+              <div className="font-mono text-[12px] text-[#1A1A1A] font-medium">
+                {formatDateMed(currentPhase.start_date)} &rarr; {formatDateMed(currentPhase.end_date)}
+              </div>
+              <div className="font-mono text-[11px] text-[#6D6C6A] mt-0.5">{currentPhase.days} hari</div>
+            </div>
+            <div className="bg-white px-5 py-3">
+              <div className="font-mono text-[10px] text-[#888888] tracking-[0.3px] mb-1">PRICE</div>
+              <div className="font-mono text-[12px] text-[#1A1A1A] font-medium">
+                {formatPriceCompact(currentPhase.open_price)} &rarr; {formatPriceCompact(currentPhase.close_price)}
+              </div>
+              <div className={`font-mono text-[11px] font-medium mt-0.5 ${
+                currentPhase.change_pct >= 0 ? 'text-[#1D9E75]' : 'text-[#E24B4A]'
+              }`}>
+                {currentPhase.change_pct >= 0 ? '+' : ''}{currentPhase.change_pct.toFixed(1)}%
+              </div>
+            </div>
+            <div className="bg-white px-5 py-3">
+              <div className="font-mono text-[10px] text-[#888888] tracking-[0.3px] mb-1">SMART MONEY</div>
+              <div className="flex items-center gap-2 flex-wrap">
+                {currentPhase.broker_flow_alignment
+                  ? alignmentBadge(currentPhase.broker_flow_alignment)
+                  : <span className="text-[11px] text-[#CCCCCC] font-mono">No data</span>
+                }
+                {currentPhase.bandar_signal_mode && (
+                  <span className="inline-block px-1.5 py-0.5 text-[10px] font-medium rounded border border-purple-200 bg-purple-50 text-purple-700">
+                    {currentPhase.bandar_signal_mode}
+                  </span>
+                )}
+              </div>
+              {currentPhase.smart_money_alignment != null && (
+                <div className="flex items-center gap-1.5 mt-1.5">
+                  <div className="w-16 h-1.5 bg-[#EDECEA] rounded-full overflow-hidden">
+                    <div className="h-full rounded-full" style={{
+                      width: `${currentPhase.smart_money_alignment}%`,
+                      backgroundColor: clarityColor(currentPhase.smart_money_alignment),
+                    }} />
+                  </div>
+                  <span className="font-mono text-[10px] text-[#6D6C6A]">SM {currentPhase.smart_money_alignment}</span>
+                </div>
+              )}
+            </div>
+            <div className="bg-white px-5 py-3">
+              <div className="font-mono text-[10px] text-[#888888] tracking-[0.3px] mb-1">TREND</div>
+              <div className="font-mono text-[12px] text-[#1A1A1A] font-medium">{trendLabel(currentPhase.trend_strength)}</div>
+            </div>
+            <div className="bg-white px-5 py-3">
+              <div className="font-mono text-[10px] text-[#888888] tracking-[0.3px] mb-1">RANGE (L — H)</div>
+              <div className="font-mono text-[12px] text-[#1A1A1A] font-medium">
+                {formatPriceCompact(currentPhase.range_low)} — {formatPriceCompact(currentPhase.range_high)}
+              </div>
+            </div>
+            <div className="bg-white px-5 py-3">
+              <div className="font-mono text-[10px] text-[#888888] tracking-[0.3px] mb-1">INSIDER</div>
+              {currentPhase.insider_activity ? (
+                <div className="font-mono text-[12px] text-[#1A1A1A]">
+                  <span className="text-[#1D9E75]">{currentPhase.insider_activity.buys} buy</span>
+                  {' / '}
+                  <span className="text-[#E24B4A]">{currentPhase.insider_activity.sells} sell</span>
+                </div>
+              ) : (
+                <span className="font-mono text-[11px] text-[#CCCCCC]">No data</span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Phase history table ────────────────────────────────────── */}
       {!loading && visiblePhases.length > 0 && (
         <div className="border-t border-[#E0E0E5]">
           <div className="px-5 py-2.5 border-b border-[#E0E0E5]">
@@ -320,12 +522,15 @@ export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
             <table className="w-full text-left">
               <thead>
                 <tr className="border-b border-[#E0E0E5] bg-[#FAFAFA]">
-                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px]">Fase</th>
-                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px]">Periode</th>
-                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px] text-right">Hari</th>
-                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px] text-right">Perubahan</th>
-                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px] text-right">Kejelasan</th>
-                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px]">Smart Money</th>
+                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px]">FASE</th>
+                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px]">PERIODE</th>
+                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px] text-right">HARI</th>
+                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px] text-right">OPEN &rarr; CLOSE</th>
+                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px] text-right">RANGE (L-H)</th>
+                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px] text-right">CHANGE</th>
+                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px]">TREND</th>
+                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px] text-right">CONF.</th>
+                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px]">SMART MONEY</th>
                 </tr>
               </thead>
               <tbody>
@@ -334,57 +539,54 @@ export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
                     key={phase.id}
                     onClick={() => setSelectedPhaseId(selectedPhaseId === phase.id ? null : phase.id)}
                     className={`border-b border-[#F0F0F2] cursor-pointer transition-colors ${
-                      selectedPhaseId === phase.id ? 'bg-[#F5F5F7]' : 'hover:bg-[#FAFAFA]'
+                      selectedPhaseId === phase.id ? 'bg-[#F0F3FF]' : 'hover:bg-[#FAFAFA]'
                     }`}
                   >
-                    <td className="px-4 py-2">
+                    <td className="px-4 py-2.5">
                       <div className="flex items-center gap-1.5">
-                        <div
-                          className="w-2 h-2 rounded-full flex-shrink-0"
-                          style={{ backgroundColor: PHASE_COLORS[phase.phase_type] }}
-                        />
+                        <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: PHASE_COLORS[phase.phase_type] }} />
                         <span className="font-mono text-[11px] font-medium" style={{ color: PHASE_COLORS[phase.phase_type] }}>
                           {PHASE_LABELS[phase.phase_type]}
                         </span>
                         {phase.is_current && (
-                          <span className="text-[9px] font-bold bg-[#1A1A1A] text-white px-1 py-0.5 rounded">NOW</span>
+                          <span className="text-[8px] font-bold bg-[#1A1A1A] text-white px-1 py-0.5 rounded tracking-wider">NOW</span>
                         )}
                       </div>
                     </td>
-                    <td className="px-4 py-2 font-mono text-[11px] text-[#6D6C6A]">
-                      {phase.start_date.slice(5)} — {phase.end_date.slice(5)}
+                    <td className="px-4 py-2.5 font-mono text-[11px] text-[#6D6C6A] whitespace-nowrap">
+                      {formatDateMed(phase.start_date)} &rarr; {formatDateMed(phase.end_date)}
                     </td>
-                    <td className="px-4 py-2 font-mono text-[11px] text-[#6D6C6A] text-right">
-                      {phase.days}
+                    <td className="px-4 py-2.5 font-mono text-[11px] text-[#6D6C6A] text-right">{phase.days}d</td>
+                    <td className="px-4 py-2.5 font-mono text-[11px] text-[#1A1A1A] text-right whitespace-nowrap">
+                      {formatPriceCompact(phase.open_price)} &rarr; {formatPriceCompact(phase.close_price)}
                     </td>
-                    <td className={`px-4 py-2 font-mono text-[11px] font-medium text-right ${
+                    <td className="px-4 py-2.5 font-mono text-[11px] text-[#6D6C6A] text-right whitespace-nowrap">
+                      {formatPriceCompact(phase.range_low)} - {formatPriceCompact(phase.range_high)}
+                    </td>
+                    <td className={`px-4 py-2.5 font-mono text-[11px] font-medium text-right ${
                       phase.change_pct >= 0 ? 'text-[#1D9E75]' : 'text-[#E24B4A]'
                     }`}>
                       {phase.change_pct >= 0 ? '+' : ''}{phase.change_pct.toFixed(1)}%
                     </td>
-                    <td className="px-4 py-2 text-right">
+                    <td className="px-4 py-2.5 font-mono text-[11px] text-[#6D6C6A]">{trendLabel(phase.trend_strength)}</td>
+                    <td className="px-4 py-2.5 text-right">
                       <div className="flex items-center justify-end gap-1.5">
                         <div className="w-12 h-1.5 bg-[#EDECEA] rounded-full overflow-hidden">
-                          <div
-                            className="h-full rounded-full"
-                            style={{
-                              width: `${phase.phase_clarity}%`,
-                              backgroundColor: clarityColor(phase.phase_clarity),
-                            }}
-                          />
+                          <div className="h-full rounded-full" style={{
+                            width: `${phase.phase_clarity}%`,
+                            backgroundColor: clarityColor(phase.phase_clarity),
+                          }} />
                         </div>
-                        <span className="font-mono text-[10px]" style={{ color: clarityColor(phase.phase_clarity) }}>
-                          {phase.phase_clarity}
+                        <span className="font-mono text-[10px] font-medium" style={{ color: clarityColor(phase.phase_clarity) }}>
+                          {phase.phase_clarity}%
                         </span>
                       </div>
                     </td>
-                    <td className="px-4 py-2">
+                    <td className="px-4 py-2.5">
                       <div className="flex items-center gap-1 flex-wrap">
                         {phase.broker_flow_alignment && alignmentBadge(phase.broker_flow_alignment)}
                         {phase.bandar_signal_mode && (
-                          <span className="text-[10px] font-mono text-[#888888]">
-                            {phase.bandar_signal_mode}
-                          </span>
+                          <span className="text-[10px] font-mono text-purple-600 font-medium">{phase.bandar_signal_mode}</span>
                         )}
                         {!phase.broker_flow_alignment && !phase.bandar_signal_mode && (
                           <span className="text-[10px] text-[#CCCCCC]">—</span>
@@ -399,7 +601,7 @@ export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
         </div>
       )}
 
-      {/* Disclaimer */}
+      {/* ── Disclaimer ─────────────────────────────────────────────── */}
       <div className="px-5 py-2 border-t border-[#E0E0E5] bg-[#FAFAFA]">
         <p className="font-mono text-[9px] text-[#AAAAAA] leading-relaxed">
           Indikator berbasis SMA(20/50) crossover + ATR. Bukan analisis Wyckoff struktural.

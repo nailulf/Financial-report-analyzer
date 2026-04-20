@@ -32,13 +32,14 @@ export function HeroBar({ header, metrics, priceHistory }: Props) {
 
   const priceColor = pos ? 'text-[#00FF88]' : 'text-red-400'
 
+  const lastDate = latest?.date ?? null
+
   const stats = [
     { label: 'KAP. PASAR', value: header.market_cap ? formatIDRCompact(header.market_cap) : '—' },
     { label: 'VOL',         value: fmtVol(latest?.volume ?? null) },
     { label: 'P/E',         value: metrics?.pe_ratio  ? formatMultiple(metrics.pe_ratio)  : '—' },
     { label: 'ROE',         value: metrics?.roe        ? formatPercent(metrics.roe)        : '—' },
     { label: '52M',         value: low52 && high52 ? `${fmtNumID(low52)}–${fmtNumID(high52)}` : '—' },
-    { label: 'BETA',        value: '—' },
   ]
 
   return (
@@ -65,17 +66,24 @@ export function HeroBar({ header, metrics, priceHistory }: Props) {
         )}
       </div>
 
-      {/* Quick stats row */}
-      <div className="flex items-center gap-1">
-        {stats.map((s, i) => (
-          <span key={s.label} className="flex items-center gap-1 font-mono text-[13px] font-medium tracking-[0.5px]">
-            <span className="text-[#555555]">{s.label}:</span>
-            <span className="text-[#555555]">{s.value}</span>
-            {i < stats.length - 1 && (
-              <span className="text-[#2f2f2f] mx-1">|</span>
-            )}
+      {/* Quick stats + last updated */}
+      <div className="flex flex-col items-end gap-1">
+        <div className="flex items-center gap-1">
+          {stats.map((s, i) => (
+            <span key={s.label} className="flex items-center gap-1 font-mono text-[13px] font-medium tracking-[0.5px]">
+              <span className="text-[#555555]">{s.label}:</span>
+              <span className="text-[#555555]">{s.value}</span>
+              {i < stats.length - 1 && (
+                <span className="text-[#2f2f2f] mx-1">|</span>
+              )}
+            </span>
+          ))}
+        </div>
+        {lastDate && (
+          <span className="font-mono text-[10px] text-[#9C9B99] tracking-[0.3px]">
+            Data terakhir: {lastDate}
           </span>
-        ))}
+        )}
       </div>
     </div>
   )

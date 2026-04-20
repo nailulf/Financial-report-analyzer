@@ -15,6 +15,8 @@ const SCRAPERS = [
   'money_flow',
   'dividend_scraper',
   'broker_backfill',
+  'ratio_enricher',
+  'market_phases',
 ]
 
 // ---------------------------------------------------------------------------

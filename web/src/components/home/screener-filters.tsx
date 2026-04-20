@@ -13,6 +13,11 @@ const PHASES = [
 ] as const
 
 // All filter keys that map to URL params
+const MACD_CROSS_OPTIONS = [
+  { value: 'golden_cross', label: 'Golden Cross' },
+  { value: 'death_cross',  label: 'Death Cross' },
+] as const
+
 const FILTER_KEYS = [
   'minRoe', 'maxPe', 'maxPbv', 'minNetMargin', 'minDivYield',
   'minDivAvg3yr', 'minDivAvg5yr',
@@ -20,6 +25,7 @@ const FILTER_KEYS = [
   'minMktCap', 'minCompleteness', 'minConfidence',
   'maxPhaseDays',
   'board', 'phase',
+  'minRsi', 'maxRsi', 'macdCross', 'maxMacdCrossDays', 'minVolChangePct', 'minVolAvg',
 ] as const
 
 type FilterKey = typeof FILTER_KEYS[number]
@@ -210,7 +216,26 @@ export function ScreenerFilters() {
             </div>
           </div>
 
-          {/* Row 4: Data Quality */}
+          {/* Row 4: Technical Signals */}
+          <div>
+            <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Technical Signals</div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+              <NumInput label="RSI ≥" placeholder="35" value={filters.minRsi} onChange={set('minRsi')} />
+              <NumInput label="RSI ≤" placeholder="60" value={filters.maxRsi} onChange={set('maxRsi')} />
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">MACD Cross</label>
+                <select value={filters.macdCross} onChange={(e) => set('macdCross')(e.target.value)} className={selectCls}>
+                  <option value="">Any</option>
+                  {MACD_CROSS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <NumInput label="Cross ≤ N days" placeholder="5" value={filters.maxMacdCrossDays} onChange={set('maxMacdCrossDays')} />
+              <NumInput label="Vol Change ≥ (%)" placeholder="150" value={filters.minVolChangePct} onChange={set('minVolChangePct')} />
+              <NumInput label="Avg Vol ≥ (Jt)" placeholder="1" value={filters.minVolAvg} onChange={set('minVolAvg')} />
+            </div>
+          </div>
+
+          {/* Row 5: Data Quality */}
           <div>
             <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Data Quality</div>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">

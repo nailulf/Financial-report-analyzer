@@ -30,6 +30,7 @@ type ColumnKey =
   | 'price_cagr_3yr' | 'price_cagr_5yr'
   | 'div_yield_avg_3yr' | 'div_yield_avg_5yr'
   | 'market_cap' | 'completeness' | 'confidence'
+  | 'rsi_14' | 'macd_cross' | 'volume_change' | 'volume_avg'
 
 interface ColumnDef {
   key: ColumnKey
@@ -170,6 +171,51 @@ const COLUMNS: ColumnDef[] = [
     key: 'price_cagr_5yr', label: 'Price CAGR 5Y', align: 'right',
     render: (r) => cagrCell(r.price_cagr_5yr),
   },
+  // ── Technical Signals ──
+  {
+    key: 'rsi_14', label: 'RSI (14)', shortLabel: 'RSI', align: 'right',
+    render: (r) => {
+      const v = r.rsi_14
+      if (v == null) return <span className="text-gray-400">—</span>
+      const c = v >= 70 ? 'text-red-500' : v <= 30 ? 'text-green-600' : 'text-gray-700'
+      return <span className={`font-medium ${c}`}>{v.toFixed(1)}</span>
+    },
+  },
+  {
+    key: 'macd_cross', label: 'MACD Cross', shortLabel: 'MACD', align: 'left',
+    render: (r) => {
+      const sig = r.macd_cross_signal
+      if (!sig || sig === 'none') return <span className="text-gray-400">—</span>
+      const isGolden = sig === 'golden_cross'
+      return (
+        <div className="flex items-center gap-1.5">
+          <Badge variant={isGolden ? 'green' : 'red'} size="xs">
+            {isGolden ? 'Golden' : 'Death'}
+          </Badge>
+          {r.macd_cross_days_ago != null && (
+            <span className="text-[10px] font-mono text-gray-400">{r.macd_cross_days_ago}d</span>
+          )}
+        </div>
+      )
+    },
+  },
+  {
+    key: 'volume_change', label: 'Vol vs Avg', shortLabel: 'Vol%', align: 'right',
+    render: (r) => {
+      const v = r.volume_change_pct
+      if (v == null) return <span className="text-gray-400">—</span>
+      const c = v >= 200 ? 'text-blue-600 font-medium' : v >= 150 ? 'text-blue-500' : 'text-gray-600'
+      return <span className={c}>{v.toFixed(0)}%</span>
+    },
+  },
+  {
+    key: 'volume_avg', label: 'Avg Vol (20d)', shortLabel: 'Avg Vol', align: 'right',
+    render: (r) => {
+      const v = r.volume_avg_20d
+      if (v == null) return <span className="text-gray-400">—</span>
+      return <span className="text-gray-600">{formatIDRCompact(v)}</span>
+    },
+  },
   // ── Data Quality ──
   {
     key: 'completeness', label: 'Completeness', align: 'right',
@@ -241,6 +287,7 @@ function ColumnPicker({
             { group: 'Fundamentals', keys: ['roe', 'net_margin'] },
             { group: 'Dividends', keys: ['dividend_yield', 'div_yield_avg_3yr', 'div_yield_avg_5yr'] },
             { group: 'Growth', keys: ['revenue_cagr_3yr', 'revenue_cagr_5yr', 'price_cagr_3yr', 'price_cagr_5yr'] },
+            { group: 'Technical', keys: ['rsi_14', 'macd_cross', 'volume_change', 'volume_avg'] },
             { group: 'Data Quality', keys: ['completeness', 'confidence'] },
           ].map(({ group, keys }) => (
             <div key={group}>
@@ -370,7 +417,7 @@ export function StockTable({
   return (
     <div>
       {/* Column picker row */}
-      <div className="px-4 py-2 border-b border-gray-100 flex justify-end">
+      <div className="relative px-4 py-2 border-b border-gray-100 flex justify-end">
         {mounted && <ColumnPicker visible={visibleCols} onChange={handleColumnsChange} />}
       </div>
 

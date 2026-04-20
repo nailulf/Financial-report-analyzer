@@ -25,6 +25,13 @@ export interface ScreenerFilters {
   minCompleteness?: number
   minConfidence?: number
   maxPhaseDays?: number
+  // Technical signals
+  minRsi?: number
+  maxRsi?: number
+  macdCross?: string           // 'golden_cross' | 'death_cross'
+  maxMacdCrossDays?: number
+  minVolChangePct?: number
+  minVolAvg?: number             // 20-day avg volume (in millions)
   sortBy?: string
   sortDir?: 'asc' | 'desc'
 }
@@ -50,7 +57,7 @@ export async function getScreenerRows(
   // All screener metrics are denormalized onto stocks (see schema-v10).
   // No views, no joins — just a simple indexed table scan.
 
-  const SCREENER_COLS = 'ticker, name, sector, subsector, board, is_lq45, is_idx30, listing_date, listed_shares, market_cap, current_price, pe_ratio, pbv_ratio, roe, net_margin, dividend_yield, current_phase, current_phase_clarity, current_phase_days, revenue_cagr_3yr, revenue_cagr_5yr, price_cagr_3yr, price_cagr_5yr, div_yield_avg_3yr, div_yield_avg_5yr, completeness_score, confidence_score'
+  const SCREENER_COLS = 'ticker, name, sector, subsector, board, is_lq45, is_idx30, listing_date, listed_shares, market_cap, current_price, pe_ratio, pbv_ratio, roe, net_margin, dividend_yield, current_phase, current_phase_clarity, current_phase_days, revenue_cagr_3yr, revenue_cagr_5yr, price_cagr_3yr, price_cagr_5yr, div_yield_avg_3yr, div_yield_avg_5yr, completeness_score, confidence_score, rsi_14, macd_histogram, macd_cross_signal, macd_cross_days_ago, volume_change_pct, volume_avg_20d'
 
   let dataQuery = supabase
     .from('stocks')
@@ -149,6 +156,32 @@ export async function getScreenerRows(
       countQuery = countQuery.lte('current_phase_days', days)
     }
   }
+  // Technical signal filters
+  if (filters.minRsi != null) {
+    dataQuery = dataQuery.gte('rsi_14', filters.minRsi)
+    countQuery = countQuery.gte('rsi_14', filters.minRsi)
+  }
+  if (filters.maxRsi != null) {
+    dataQuery = dataQuery.lte('rsi_14', filters.maxRsi)
+    countQuery = countQuery.lte('rsi_14', filters.maxRsi)
+  }
+  if (filters.macdCross) {
+    dataQuery = dataQuery.eq('macd_cross_signal', filters.macdCross)
+    countQuery = countQuery.eq('macd_cross_signal', filters.macdCross)
+  }
+  if (filters.maxMacdCrossDays != null) {
+    dataQuery = dataQuery.lte('macd_cross_days_ago', filters.maxMacdCrossDays)
+    countQuery = countQuery.lte('macd_cross_days_ago', filters.maxMacdCrossDays)
+  }
+  if (filters.minVolChangePct != null) {
+    dataQuery = dataQuery.gte('volume_change_pct', filters.minVolChangePct)
+    countQuery = countQuery.gte('volume_change_pct', filters.minVolChangePct)
+  }
+  if (filters.minVolAvg != null) {
+    // Input is in millions (Jt), DB stores raw volume
+    dataQuery = dataQuery.gte('volume_avg_20d', filters.minVolAvg * 1_000_000)
+    countQuery = countQuery.gte('volume_avg_20d', filters.minVolAvg * 1_000_000)
+  }
 
   const [{ data, error }, { count, error: countError }] = await Promise.all([dataQuery, countQuery])
 
@@ -188,6 +221,12 @@ export async function getScreenerRows(
     div_yield_avg_5yr: number | null
     completeness_score: number | null
     confidence_score: number | null
+    rsi_14: number | null
+    macd_histogram: number | null
+    macd_cross_signal: string | null
+    macd_cross_days_ago: number | null
+    volume_change_pct: number | null
+    volume_avg_20d: string | null   // BIGINT → string
   }
 
   const rows: ScreenerRow[] = ((data ?? []) as StocksRow[]).map((r) => ({
@@ -218,6 +257,12 @@ export async function getScreenerRows(
     div_yield_avg_5yr: r.div_yield_avg_5yr,
     completeness_score: r.completeness_score ?? null,
     confidence_score: r.confidence_score ?? null,
+    rsi_14: r.rsi_14 ?? null,
+    macd_histogram: r.macd_histogram ?? null,
+    macd_cross_signal: (r.macd_cross_signal as ScreenerRow['macd_cross_signal']) ?? null,
+    macd_cross_days_ago: r.macd_cross_days_ago ?? null,
+    volume_change_pct: r.volume_change_pct ?? null,
+    volume_avg_20d: parseBigInt(r.volume_avg_20d),
   }))
 
   return { rows, total: count ?? rows.length }

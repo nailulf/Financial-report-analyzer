@@ -12,9 +12,10 @@ const NUMERIC_PARAMS = [
   'minDivAvg3yr', 'minDivAvg5yr',
   'minRevCagr3yr', 'minRevCagr5yr', 'minPriceCagr3yr', 'minPriceCagr5yr',
   'minMktCap', 'minCompleteness', 'minConfidence', 'maxPhaseDays',
+  'minRsi', 'maxRsi', 'maxMacdCrossDays', 'minVolChangePct', 'minVolAvg',
 ] as const
 
-const STRING_PARAMS = ['sector', 'board', 'phase'] as const
+const STRING_PARAMS = ['sector', 'board', 'phase', 'macdCross'] as const
 
 interface PageProps {
   searchParams: Promise<Record<string, string | undefined>>
@@ -67,7 +68,7 @@ export default async function HomePage({ searchParams }: PageProps) {
         <ScreenerFilters />
       </Suspense>
 
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm">
         <StockTable
           rows={rows}
           sortBy={sortBy}

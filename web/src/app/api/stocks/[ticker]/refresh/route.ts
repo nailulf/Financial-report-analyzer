@@ -17,6 +17,7 @@ const SCRAPERS = [
   'broker_backfill',
   'ratio_enricher',
   'market_phases',
+  'technical_signals',
 ]
 
 // ---------------------------------------------------------------------------

@@ -13,6 +13,7 @@ Usage:
     python run_all.py --ticker BBRI    # all scrapers for one stock (testing)
     python run_all.py --broker-backfill   # Stockbit broker flow + bandar signals
     python run_all.py --insider           # KSEI insider transactions
+    python run_all.py --compute-signals   # MACD, RSI, volume change from daily prices
 
     # Mix and match:
     python run_all.py --daily --ticker BBRI ASII
@@ -201,13 +202,14 @@ def _update_scores(tickers: list[str] | None) -> None:
 
 
 def run_daily(tickers: list[str] | None, days: int, job_id: int | None = None) -> None:
-    """Runs: daily_prices → money_flow → scores"""
+    """Runs: daily_prices → money_flow → scores → technical signals"""
     _, dp, _, mf = _import_scrapers()
     console.rule("[bold blue]DAILY: daily_prices")
     _run_tracked(dp.run, "daily_prices", job_id, tickers=tickers)
     console.rule("[bold blue]DAILY: money_flow")
     _run_tracked(mf.run, "money_flow", job_id, tickers=tickers, days=days)
     _update_scores(tickers)
+    _run_technical_signals(tickers)
 
 
 def run_weekly(tickers: list[str] | None, job_id: int | None = None) -> None:
@@ -377,6 +379,10 @@ def run_full(tickers: list[str] | None, period: str, days: int, job_id: int | No
     if _should_run("market_phases"):
         _run_market_phase_detection(tickers, dry_run=dry_run)
 
+    # ── Phase 8: Technical signals (MACD, RSI, volume) ──
+    if _should_run("technical_signals"):
+        _run_technical_signals(tickers, dry_run=dry_run)
+
     # ── Phase 6: AI pipeline (context + analysis) ──
     if _should_run("ai_context"):
         _run_ai_context_pipeline(tickers, job_id=job_id, dry_run=dry_run)
@@ -417,6 +423,31 @@ def _run_market_phase_detection(
     console.print(
         f"[green]Phase detection complete:[/green] "
         f"{ok} tickers processed, {total_phases} phases detected, {failed} failed"
+    )
+
+
+def _run_technical_signals(
+    tickers: list[str] | None,
+    dry_run: bool = False,
+) -> None:
+    """
+    Phase 8: Compute MACD, RSI, volume change from price data.
+    Writes to: technical_signals table + denormalized to stocks table.
+    """
+    from scripts.analysis.technical_signal_detector import TechnicalSignalDetector
+
+    console.rule("[bold cyan]PHASE 8: Technical Signals (MACD / RSI / Volume)[/bold cyan]")
+
+    detector = TechnicalSignalDetector()
+    results = detector.compute_batch(tickers, dry_run=dry_run)
+
+    ok = sum(1 for v in results.values() if v >= 0)
+    failed = sum(1 for v in results.values() if v < 0)
+    total_rows = sum(v for v in results.values() if v > 0)
+
+    console.print(
+        f"[green]Technical signals complete:[/green] "
+        f"{ok} tickers processed, {total_rows} signal rows, {failed} failed"
     )
 
 
@@ -797,6 +828,10 @@ Examples:
     mode.add_argument("--detect-phases", action="store_true",
                       help="Phase 7: detect market cycle phases from price/volume patterns")
 
+    # Phase 8: Technical signals
+    mode.add_argument("--compute-signals", action="store_true",
+                      help="Phase 8: compute MACD, RSI, volume change from daily prices")
+
     # Scope modifiers
     parser.add_argument("--ticker", nargs="+", metavar="TICKER", help="Limit to specific tickers")
     parser.add_argument(
@@ -940,7 +975,7 @@ Examples:
                  args.enrich_ratios, args.dividends, args.fill_gaps, args.fallback_financials,
                  args.broker_backfill, args.insider,
                  args.build_ai_context, args.run_ai_analysis, args.ai_full,
-                 args.detect_phases]
+                 args.detect_phases, args.compute_signals]
     if not any(all_modes):
         parser.print_help()
         console.print("\n[red]Error: specify at least one run mode.[/red]")
@@ -1054,6 +1089,10 @@ Examples:
         # ── Phase 7: Market phase detection ──────────────────────────
         if args.detect_phases:
             _run_market_phase_detection(tickers, dry_run=args.dry_run)
+
+        # ── Phase 8: Technical signals ───────────────────────────────
+        if args.compute_signals:
+            _run_technical_signals(tickers, dry_run=args.dry_run)
     except KeyboardInterrupt:
         if job_id and tickers and len(tickers) == 1:
             _finalize_job(job_id, tickers[0], "failed", "interrupted by user")

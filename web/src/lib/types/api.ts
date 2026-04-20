@@ -34,6 +34,13 @@ export interface ScreenerRow {
   div_yield_avg_5yr: number | null
   completeness_score: number | null
   confidence_score: number | null
+  // Technical signals (denormalized from technical_signals table)
+  rsi_14: number | null
+  macd_histogram: number | null
+  macd_cross_signal: 'golden_cross' | 'death_cross' | 'none' | null
+  macd_cross_days_ago: number | null
+  volume_change_pct: number | null
+  volume_avg_20d: number | null
 }
 
 export interface StockHeader {

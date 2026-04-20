@@ -91,16 +91,27 @@ When `--quarterly` or `--full` runs:
 | `company_profiles` | `company_profiles`, `company_officers`, `shareholders` | IDX API | `--quarterly`, `--full` |
 | `document_links` | `document_links` | IDX API | `--quarterly`, `--full` (non-fatal) |
 | `corporate_events` | `corporate_events` | IDX API | `--quarterly`, `--full` (non-fatal) |
-| `ratio_enricher` | `financials` (fills NULL ratio columns) | DB only (no API) | `--enrich-ratios` |
+| `ratio_enricher` | `financials` + `stocks` (screener ratios) | DB only (no API) | `--enrich-ratios`, `--full` |
 | `dividend_scraper` | `dividend_history` | yfinance | `--dividends` |
 | `gap_filler` | various (re-runs targeted scrapers) | various | `--fill-gaps` |
+| `broker_backfill` | `broker_flow`, `bandar_signal` | Stockbit | `--broker-backfill`, `--full` |
+| `insider` | `insider_transactions` | Stockbit (KSEI) | `--insider` |
+
+### Analysis & AI pipeline (managed by `run_all.py`)
+
+| Module | Table(s) populated | Source | Run mode |
+|--------|-------------------|--------|----------|
+| `market_phase_detector` | `market_phases`, `stocks` (current_phase) | DB only (price + broker data) | `--detect-phases`, runs after `--daily` chain |
+| `data_cleaner` | `data_quality_flags` | DB only | `--build-ai-context`, `--ai-full` |
+| `data_normalizer` | `normalized_metrics` | DB only | `--build-ai-context`, `--ai-full` |
+| `scoring_engine` | `stock_scores` | DB only | `--build-ai-context`, `--ai-full` |
+| `context_builder` | `ai_context_cache` | DB only | `--build-ai-context`, `--ai-full` |
+| `ai_analyst` | `ai_analysis` | OpenAI / Anthropic | `--run-ai-analysis`, `--ai-full` |
 
 ### CLI-only scrapers (NOT in `run_all.py`, run manually)
 
 | Scraper | Table(s) populated | Source | How to run |
 |---------|-------------------|--------|------------|
-| `money_flow --broker-backfill` | `broker_flow`, `bandar_signal` | Stockbit | `python -m scrapers.money_flow --broker-backfill 30` |
-| `money_flow --insider` | `insider_transactions` | Stockbit (KSEI) | `python -m scrapers.money_flow --insider` |
 | `shareholders_pdf` | `shareholders_major` | Local PDF/Excel/CSV | `python -m scrapers.shareholders_pdf --file <path> --date <YYYY-MM-DD>` |
 | `financials` | `financials` (fills gaps) | yfinance | `python -m scrapers.financials --ticker BBRI` |
 
@@ -111,14 +122,18 @@ When `--quarterly` or `--full` runs:
 ### `--full` (everything, dependency order)
 
 ```
-1. stock_universe        → stocks table
-2. financials_fallback   → financials table (Stockbit)
-3. company_profiles      → company_profiles, company_officers, shareholders
-4. document_links        → document_links (non-fatal if table missing)
-5. corporate_events      → corporate_events (non-fatal if table missing)
-6. daily_prices          → daily_prices (OHLCV)
-7. money_flow            → daily_prices (foreign flow) + broker_summary
-8. update_scores         → stocks (completeness_score, confidence_score)
+ 1. stock_universe        → stocks table
+ 2. financials_fallback   → financials table (Stockbit)
+ 3. company_profiles      → company_profiles, company_officers, shareholders
+ 4. document_links        → document_links (non-fatal if table missing)
+ 5. corporate_events      → corporate_events (non-fatal if table missing)
+ 6. daily_prices          → daily_prices (OHLCV)
+ 7. money_flow            → daily_prices (foreign flow) + broker_summary
+ 8. broker_backfill       → broker_flow, bandar_signal (Stockbit, last 90 days)
+ 9. update_scores         → stocks (completeness_score, confidence_score)
+10. enrich_ratios         → stocks (PE, PBV, ROE, net_margin, dividend_yield)
+11. ai_context_pipeline   → data_quality_flags → normalized_metrics → stock_scores → ai_context_cache
+12. ai_analysis           → ai_analysis (LLM investment thesis)
 ```
 
 ### `--quarterly`
@@ -234,26 +249,93 @@ Gap categories: `prices`, `financials_annual`, `financials_quarterly`, `ratios`,
 
 ---
 
-## CLI-Only Scrapers (Manual)
+## Smart Money Pipeline (Broker Flow, Bandar, Insider)
 
-These scrapers are NOT part of the `run_all.py` pipeline and must be run directly.
+These populate the money flow analysis widgets (broker activity, bandar detection, insider tracking).
 
 ### Broker flow backfill (Stockbit)
 ```bash
-python -m scrapers.money_flow --broker-backfill 30                 # last 30 days, top stocks by market cap
-python -m scrapers.money_flow --broker-backfill 60 --ticker BBRI   # specific ticker, 60 days
-python -m scrapers.money_flow --broker-backfill 30 --offset 100 --limit 50  # batch: skip 100, process 50
+python run_all.py --broker-backfill                                # last 90 days, top stocks by market cap
+python run_all.py --broker-backfill --backfill-days 60 --ticker BBRI
+python run_all.py --broker-backfill --offset 100 --batch-limit 50  # batch processing
 ```
 Populates `broker_flow` and `bandar_signal` tables from Stockbit marketdetectors API.
 
+> Also runs automatically in `--full` mode.
+
 ### Insider transactions (Stockbit / KSEI)
 ```bash
-python -m scrapers.money_flow --insider                            # top stocks, 5 pages each
-python -m scrapers.money_flow --insider --ticker BBRI              # specific ticker
-python -m scrapers.money_flow --insider --insider-pages 10         # more pages per ticker
-python -m scrapers.money_flow --insider --offset 50 --limit 25    # batch processing
+python run_all.py --insider                                        # top stocks, 5 pages each
+python run_all.py --insider --ticker BBRI                          # specific ticker
+python run_all.py --insider --insider-pages 10                     # more pages per ticker
+python run_all.py --insider --offset 50 --batch-limit 25           # batch processing
 ```
 Populates `insider_transactions` table from KSEI major holder movement data.
+
+---
+
+## Market Phase Detection (Fase Pasar)
+
+Detects market cycle phases (Uptrend, Downtrend, Sideways Bullish, Sideways Bearish) using SMA(20/50) crossover + ATR volatility + volume patterns. Enriches each phase with broker flow, bandar signal, and insider confirmation data.
+
+```bash
+python run_all.py --detect-phases                                  # all active tickers
+python run_all.py --detect-phases --ticker BBCA BBRI BMRI          # specific tickers
+python run_all.py --detect-phases --dry-run                        # detect but don't save
+```
+
+**What it does:**
+1. Fetches ~3 years of daily_prices (OHLCV) per ticker
+2. Classifies each day using SMA crossover + ATR + volume spikes
+3. Merges consecutive same-type days into phases (min 8 days)
+4. Enriches with broker_flow, bandar_signal, insider_transactions
+5. Scores phase clarity (0-100) from price/volume signals
+6. Scores smart money alignment (0-100) from broker/bandar/insider data
+7. Writes to `market_phases` table + denormalizes `current_phase` onto `stocks`
+
+**Liquidity filter:** Stocks with avg volume < 500K shares/day are skipped.
+
+**Dependencies:** Requires `daily_prices` data. For smart money enrichment, also needs `broker_flow`, `bandar_signal`, and `insider_transactions`.
+
+**Tables populated:** `market_phases`, `stocks` (current_phase, current_phase_clarity, current_phase_days)
+
+---
+
+## AI Analysis Pipeline (Phase 6)
+
+Builds investment context from financial data, then generates LLM-based investment theses.
+
+### Build AI context (no LLM calls)
+```bash
+python run_all.py --build-ai-context                               # all eligible tickers
+python run_all.py --build-ai-context --ticker BBRI                 # single ticker
+python run_all.py --build-ai-context --dry-run
+```
+
+Runs 4 stages: data_cleaner → data_normalizer → scoring_engine → context_builder.
+Populates: `data_quality_flags`, `normalized_metrics`, `stock_scores`, `ai_context_cache`.
+
+### Generate AI investment thesis (LLM calls)
+```bash
+python run_all.py --run-ai-analysis                                # requires ai_context_cache
+python run_all.py --run-ai-analysis --ai-provider anthropic        # use Claude instead of GPT
+python run_all.py --run-ai-analysis --ai-model claude-sonnet-4     # specific model
+python run_all.py --run-ai-analysis --min-composite 60             # only high-quality stocks
+```
+
+### Full AI pipeline (context + analysis)
+```bash
+python run_all.py --ai-full                                        # build context then generate thesis
+python run_all.py --ai-full --ticker BBRI --ai-provider anthropic
+```
+
+Populates: `ai_analysis` (lynch_category, buffett_moat, bull/bear/neutral cases, analyst_verdict).
+
+---
+
+## CLI-Only Scrapers (Manual)
+
+These scrapers are NOT part of the `run_all.py` pipeline and must be run directly.
 
 ### Shareholders PDF import (local files)
 ```bash
@@ -293,15 +375,18 @@ Job tracking flow:
 
 ## Recommended Cadence
 
-| Frequency | Command |
-|-----------|---------|
-| Every trading day (after 16:00 WIB) | `python run_all.py --daily` |
-| Weekly (Sunday) | `python run_all.py --weekly` |
-| After each earnings season | `python run_all.py --quarterly` then `python run_all.py --enrich-ratios` |
-| Monthly | `python run_all.py --dividends` |
-| Monthly (optional) | `python -m scrapers.money_flow --broker-backfill 30` |
-| Monthly (optional) | `python -m scrapers.money_flow --insider` |
-| Ongoing (whenever completeness is low) | `python run_all.py --fill-gaps --gap-limit 50` |
+| Frequency | Command | Notes |
+|-----------|---------|-------|
+| Every trading day (after 16:00 WIB) | `python run_all.py --daily` | Prices + foreign flow |
+| Every trading day (after --daily) | `python run_all.py --detect-phases` | Update market phase overlays |
+| Weekly (Sunday) | `python run_all.py --weekly` | Refresh stock universe |
+| After each earnings season | `python run_all.py --quarterly` then `--enrich-ratios` | Financials + screener sync |
+| Monthly | `python run_all.py --dividends` | Dividend history |
+| Monthly | `python run_all.py --broker-backfill` | Broker flow + bandar signals |
+| Monthly | `python run_all.py --insider` | KSEI insider transactions |
+| Monthly (after broker data) | `python run_all.py --detect-phases` | Refresh phases with new smart money data |
+| Quarterly (after financials) | `python run_all.py --ai-full` | Regenerate AI investment theses |
+| Ongoing (low completeness) | `python run_all.py --fill-gaps --gap-limit 50` | Fix data gaps |
 
 ---
 
@@ -387,4 +472,8 @@ python -m scrapers.shareholders_pdf --file <path> --date 2025-12-31 --dry-run
 - `ratio_enricher` makes **no API calls** — safe to run anytime without worrying about rate limits.
 - `gap_filler` is the "fix everything" meta-scraper — it calls other scrapers internally based on detected gaps.
 - `document_links` and `corporate_events` are **non-fatal** — if their DB tables don't exist, the pipeline continues.
-- Broker backfill and insider scraping require **manual CLI invocation** — they are not part of `run_all.py`.
+- Broker backfill runs automatically in `--full` mode. Can also run standalone via `--broker-backfill`.
+- Insider scraping requires standalone `--insider` invocation (not included in `--full`).
+- `--detect-phases` detects market phases from price/volume data. No API calls — pure computation. Run after `--daily`.
+- `--ai-full` = `--build-ai-context` + `--run-ai-analysis`. Context build is free (DB only); analysis costs LLM tokens.
+- `--enrich-ratios` now runs automatically in `--full` mode after scoring. Syncs PE/PBV/ROE from financials to stocks table.

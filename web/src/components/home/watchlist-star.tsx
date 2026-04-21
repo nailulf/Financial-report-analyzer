@@ -1,38 +1,24 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-
-const KEY = 'idx_watchlist'
-
-function getWatchlist(): string[] {
-  try {
-    return JSON.parse(localStorage.getItem(KEY) ?? '[]')
-  } catch {
-    return []
-  }
-}
-
-function saveWatchlist(list: string[]) {
-  localStorage.setItem(KEY, JSON.stringify(list))
-  window.dispatchEvent(new Event('watchlist-change'))
-}
+import { isTickerInActiveWatchlist, toggleTickerInActive } from '@/lib/watchlists'
 
 export function WatchlistStar({ ticker }: { ticker: string }) {
   const [starred, setStarred] = useState(false)
 
   useEffect(() => {
-    setStarred(getWatchlist().includes(ticker))
+    setStarred(isTickerInActiveWatchlist(ticker))
+
+    const handler = () => setStarred(isTickerInActiveWatchlist(ticker))
+    window.addEventListener('watchlist-change', handler)
+    return () => window.removeEventListener('watchlist-change', handler)
   }, [ticker])
 
   function toggle(e: React.MouseEvent) {
     e.preventDefault()
     e.stopPropagation()
-    const list = getWatchlist()
-    const next = list.includes(ticker)
-      ? list.filter((t) => t !== ticker)
-      : [...list, ticker]
-    saveWatchlist(next)
-    setStarred(next.includes(ticker))
+    const nowStarred = toggleTickerInActive(ticker)
+    setStarred(nowStarred)
   }
 
   return (

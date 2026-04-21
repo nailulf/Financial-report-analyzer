@@ -12,6 +12,7 @@ import type {
   Officer,
   Shareholder,
   DataQuality,
+  TechnicalSignalPoint,
 } from '@/lib/types/api'
 import type { StockBrokerSummary, InsiderTransactionRow, DailyFlowByType, BrokerConcentrationRow } from '@/lib/queries/broker'
 import type { AnnualDPS } from '@/lib/queries/dividends'
@@ -55,6 +56,7 @@ export interface StockPageProps {
   dailyBrokerFlow:    DailyFlowByType[]
   brokerConcentration: BrokerConcentrationRow[]
   dividendHistory:    AnnualDPS[]
+  technicalSignals:   TechnicalSignalPoint[]
   peerPercentiles:    PeerPercentiles | null
   // Pre-computed DCF inputs (server-side, avoids serialization issues)
   dcfFcf:             number | null
@@ -83,6 +85,7 @@ export function StockPageClient({
   dailyBrokerFlow,
   brokerConcentration,
   dividendHistory,
+  technicalSignals,
   peerPercentiles,
   dcfFcf,
   dcfDividends,
@@ -191,7 +194,7 @@ export function StockPageClient({
         subtitle="Deteksi siklus pasar dari pola harga dan volume"
       />
       <div className="px-12 py-2">
-        <MarketPhaseWidget ticker={header.ticker} priceHistory={priceHistory} />
+        <MarketPhaseWidget ticker={header.ticker} priceHistory={priceHistory} technicalSignals={technicalSignals} />
       </div>
 
       {/* ═══════════════════════════════════════════════════════════════

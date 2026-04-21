@@ -51,7 +51,7 @@ class DetectionParams:
     vol_spike_threshold: float = 1.8  # Volume spike = volume > volSMA * this
     lookback_days: int = 756        # ~3 years of trading data
     ma_spread_threshold: float = 0.015  # 1.5% spread = trending
-    min_avg_volume: int = 500_000   # Liquidity filter: skip if avg vol < this
+    min_avg_volume: int = 100_000   # Liquidity filter: skip if avg vol < this
 
 
 # ---------------------------------------------------------------------------

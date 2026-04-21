@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import type { PricePoint, MarketPhase, MarketPhaseType, MarketPhaseResponse } from '@/lib/types/api'
+import type { PricePoint, MarketPhase, MarketPhaseType, MarketPhaseResponse, TechnicalSignalPoint } from '@/lib/types/api'
 import { ChartSkeleton } from '@/components/ui/loading-skeleton'
 import { fmtNumID } from '@/lib/calculations/formatters'
 
@@ -116,9 +116,10 @@ type LCModule = typeof import('lightweight-charts')
 interface Props {
   ticker: string
   priceHistory: PricePoint[]
+  technicalSignals?: TechnicalSignalPoint[]
 }
 
-export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
+export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] }: Props) {
   const [mounted, setMounted] = useState(false)
   const [period, setPeriod] = useState<number>(252)
   const [showPhases, setShowPhases] = useState(true)
@@ -159,6 +160,26 @@ export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
   }, [ticker])
 
   const sliced = useMemo(() => priceHistory.slice(-period), [priceHistory, period])
+
+  // Build a date→signal lookup, then create date-aligned arrays that use
+  // the SAME date axis as the price chart. This ensures logical index N
+  // maps to the same calendar date across all three charts.
+  const signalsByDate = useMemo(() => {
+    const map = new Map<string, TechnicalSignalPoint>()
+    for (const s of technicalSignals) map.set(s.date, s)
+    return map
+  }, [technicalSignals])
+
+  const slicedSignals = useMemo(() => {
+    if (!signalsByDate.size || !sliced.length) return []
+    return sliced.map((p) => signalsByDate.get(p.date) ?? null)
+  }, [signalsByDate, sliced])
+
+  // Price dates as unix timestamps (shared across all charts)
+  const priceDates = useMemo(
+    () => sliced.filter((p) => p.close != null).map((p) => dateToUnix(p.date)),
+    [sliced],
+  )
 
   const visiblePhases = useMemo(() => {
     if (!phaseData?.phases.length || !sliced.length) return []
@@ -205,16 +226,17 @@ export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
     setOverlayRects(rects)
   }, [showPhases, visiblePhases])
 
-  // ── Create chart ──────────────────────────────────────────────
+  const hasSignals = slicedSignals.some((s) => s != null)
+
+  // ── Single unified chart with stacked price scales ────────────
   useEffect(() => {
     if (!mounted || !lcModule || !chartContainerRef.current || !sliced.length) return
 
-    // Destroy previous
-    if (chartRef.current) {
-      chartRef.current.remove()
-      chartRef.current = null
-    }
+    if (chartRef.current) { chartRef.current.remove(); chartRef.current = null }
 
+    // Vertical layout via scaleMargins (percentage of chart height):
+    //   With signals:    Price 0–55%, Volume 50–58%, MACD 60–78%, RSI 80–98%
+    //   Without signals: Price 0–85%, Volume 85–100%
     const chart = lcModule.createChart(chartContainerRef.current, {
       layout: {
         background: { color: '#FFFFFF' },
@@ -226,12 +248,11 @@ export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
         vertLines: { visible: false },
         horzLines: { color: '#F5F4F1' },
       },
-      rightPriceScale: { borderVisible: false },
-      timeScale: {
+      rightPriceScale: {
         borderVisible: false,
-        timeVisible: false,
-        rightOffset: 5,
+        scaleMargins: { top: 0, bottom: hasSignals ? 0.45 : 0.15 },
       },
+      timeScale: { borderVisible: false, timeVisible: false, rightOffset: 5 },
       crosshair: {
         horzLine: { color: '#E0E0E5', labelBackgroundColor: '#1A1A1A' },
         vertLine: { color: '#E0E0E5', labelBackgroundColor: '#1A1A1A' },
@@ -240,72 +261,126 @@ export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
 
     chartRef.current = chart
 
-    // Candlestick series
+    // ── Candlestick ──
     const candleSeries = chart.addSeries(lcModule.CandlestickSeries, {
-      upColor: '#1D9E75',
-      downColor: '#E24B4A',
-      wickUpColor: '#1D9E75',
-      wickDownColor: '#E24B4A',
-      borderUpColor: '#1D9E75',
-      borderDownColor: '#E24B4A',
+      upColor: '#1D9E75', downColor: '#E24B4A',
+      wickUpColor: '#1D9E75', wickDownColor: '#E24B4A',
+      borderUpColor: '#1D9E75', borderDownColor: '#E24B4A',
     })
-
     candleSeries.setData(
-      sliced
-        .filter((p) => p.close != null)
-        .map((p) => ({
-          time: dateToUnix(p.date) as any,
-          open: p.open ?? p.close!,
-          high: p.high ?? p.close!,
-          low: p.low ?? p.close!,
-          close: p.close!,
-        })),
+      sliced.filter((p) => p.close != null).map((p) => ({
+        time: dateToUnix(p.date) as any,
+        open: p.open ?? p.close!, high: p.high ?? p.close!,
+        low: p.low ?? p.close!, close: p.close!,
+      })),
     )
 
-    // Volume histogram
+    // ── Volume ──
     const volumeSeries = chart.addSeries(lcModule.HistogramSeries, {
       priceFormat: { type: 'volume' },
       priceScaleId: 'volume',
+      lastValueVisible: false,
+      priceLineVisible: false,
     })
-
     chart.priceScale('volume').applyOptions({
-      scaleMargins: { top: 0.85, bottom: 0 },
+      scaleMargins: { top: hasSignals ? 0.50 : 0.85, bottom: hasSignals ? 0.42 : 0 },
     })
-
     volumeSeries.setData(
-      sliced
-        .filter((p) => p.volume != null && p.close != null)
-        .map((p) => ({
-          time: dateToUnix(p.date) as any,
-          value: p.volume!,
-          color: (p.close! >= (p.open ?? p.close!))
-            ? 'rgba(29,158,117,0.3)'
-            : 'rgba(226,75,74,0.3)',
-        })),
+      sliced.filter((p) => p.volume != null && p.close != null).map((p) => ({
+        time: dateToUnix(p.date) as any,
+        value: p.volume!,
+        color: (p.close! >= (p.open ?? p.close!)) ? 'rgba(29,158,117,0.3)' : 'rgba(226,75,74,0.3)',
+      })),
     )
 
+    // ── MACD + RSI (only if signal data exists) ──
+    if (hasSignals) {
+      // Build date-aligned data arrays
+      const histData: any[] = []
+      const macdLineData: any[] = []
+      const signalLineData: any[] = []
+      const rsiData: any[] = []
+
+      for (let i = 0; i < sliced.length; i++) {
+        const p = sliced[i]
+        if (p.close == null) continue
+        const s = slicedSignals[i]
+        const time = dateToUnix(p.date) as any
+        if (s?.macd_histogram != null)
+          histData.push({ time, value: s.macd_histogram, color: s.macd_histogram >= 0 ? 'rgba(29,158,117,0.5)' : 'rgba(226,75,74,0.5)' })
+        if (s?.macd_line != null)
+          macdLineData.push({ time, value: s.macd_line })
+        if (s?.macd_signal != null)
+          signalLineData.push({ time, value: s.macd_signal })
+        if (s?.rsi_14 != null)
+          rsiData.push({ time, value: s.rsi_14 })
+      }
+
+      // MACD pane — scaleMargins: 60%–78%
+      const macdHistSeries = chart.addSeries(lcModule.HistogramSeries, {
+        priceScaleId: 'macd',
+        priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        lastValueVisible: false, priceLineVisible: false,
+      })
+      chart.priceScale('macd').applyOptions({
+        scaleMargins: { top: 0.60, bottom: 0.22 },
+        borderVisible: false,
+      })
+      macdHistSeries.setData(histData)
+
+      chart.addSeries(lcModule.LineSeries, {
+        color: '#3B82F6', lineWidth: 2,
+        priceScaleId: 'macd',
+        priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        lastValueVisible: false, priceLineVisible: false,
+      }).setData(macdLineData)
+
+      chart.addSeries(lcModule.LineSeries, {
+        color: '#FF6B6B', lineWidth: 1, lineStyle: 2,
+        priceScaleId: 'macd',
+        priceFormat: { type: 'price', precision: 2, minMove: 0.01 },
+        lastValueVisible: false, priceLineVisible: false,
+      }).setData(signalLineData)
+
+      // RSI pane — scaleMargins: 80%–98%
+      chart.addSeries(lcModule.LineSeries, {
+        color: '#8B5CF6', lineWidth: 2,
+        priceScaleId: 'rsi',
+        priceFormat: { type: 'price', precision: 1, minMove: 0.1 },
+      }).setData(rsiData)
+
+      chart.priceScale('rsi').applyOptions({
+        scaleMargins: { top: 0.80, bottom: 0.02 },
+        borderVisible: false,
+      })
+
+      // RSI reference lines at 30 and 70
+      if (rsiData.length >= 2) {
+        const first = rsiData[0].time
+        const last = rsiData[rsiData.length - 1].time
+        for (const [val, clr] of [[70, 'rgba(226,75,74,0.3)'], [30, 'rgba(29,158,117,0.3)']] as const) {
+          chart.addSeries(lcModule.LineSeries, {
+            color: clr, lineWidth: 1, lineStyle: 2,
+            priceScaleId: 'rsi',
+            crosshairMarkerVisible: false, lastValueVisible: false, priceLineVisible: false,
+          }).setData([{ time: first, value: val }, { time: last, value: val }])
+        }
+      }
+    }
+
     chart.timeScale().fitContent()
-
-    // Subscribe to visible range changes to reposition overlays
-    chart.timeScale().subscribeVisibleLogicalRangeChange(() => {
-      recalcOverlays()
-    })
-
-    // Initial overlay calculation (after a frame so chart has rendered)
+    chart.timeScale().subscribeVisibleLogicalRangeChange(() => recalcOverlays())
     requestAnimationFrame(() => recalcOverlays())
 
-    return () => {
-      chart.remove()
-      chartRef.current = null
-    }
-  }, [mounted, lcModule, sliced, recalcOverlays])
+    return () => { chart.remove(); chartRef.current = null }
+  }, [mounted, lcModule, sliced, slicedSignals, hasSignals, recalcOverlays])
 
   // Recalc overlays when phase visibility or selection changes
   useEffect(() => {
     recalcOverlays()
   }, [recalcOverlays, selectedPhaseId])
 
-  // Handle container resize
+  // ── Resize handler ────────────────────────────────────────────
   useEffect(() => {
     if (!chartRef.current || !chartContainerRef.current) return
     const observer = new ResizeObserver(() => {
@@ -370,9 +445,9 @@ export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
       </div>
       {/* ── Chart with HTML overlay divs ───────────────────────────── */}
       <div className="px-4 pt-3 pb-1">
-        <div ref={chartWrapperRef} className="relative" style={{ height: 380 }}>
+        <div ref={chartWrapperRef} className="relative" style={{ height: hasSignals ? 620 : 380 }}>
           {/* Lightweight-charts canvas */}
-          <div ref={chartContainerRef} style={{ height: 380, width: '100%' }} />
+          <div ref={chartContainerRef} style={{ height: hasSignals ? 620 : 380, width: '100%' }} />
 
           {/* Phase overlay divs — positioned absolutely on top of chart */}
           {showPhases && overlayRects.map((rect) => (
@@ -424,6 +499,22 @@ export function MarketPhaseWidget({ ticker, priceHistory }: Props) {
           </div>
         )}
       </div>
+
+      {/* ── Technical indicator legends ────────────────────────────── */}
+      {hasSignals && (
+        <div className="flex items-center gap-6 px-5 pb-1">
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[10px] font-bold text-[#888888]">MACD (5,20,9)</span>
+            <div className="flex items-center gap-1"><div className="w-3 h-0.5 bg-[#3B82F6]" /><span className="text-[9px] text-[#888888] font-mono">MACD</span></div>
+            <div className="flex items-center gap-1"><div className="w-3 h-0" style={{ borderTop: '1px dashed #FF6B6B' }} /><span className="text-[9px] text-[#888888] font-mono">Signal</span></div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-[10px] font-bold text-[#888888]">RSI (14)</span>
+            <div className="flex items-center gap-1"><div className="w-3 h-0.5 bg-[#8B5CF6]" /><span className="text-[9px] text-[#888888] font-mono">RSI</span></div>
+            <span className="text-[9px] text-[#AAAAAA] font-mono">30/70</span>
+          </div>
+        </div>
+      )}
 
       {/* ── Current phase detail banner ────────────────────────────── */}
       {currentPhase && (

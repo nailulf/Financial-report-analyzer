@@ -120,6 +120,14 @@ export interface PricePoint {
   foreign_net: number | null
 }
 
+export interface TechnicalSignalPoint {
+  date: string
+  rsi_14: number | null
+  macd_line: number | null
+  macd_signal: number | null
+  macd_histogram: number | null
+}
+
 export interface QuarterlyFinancial {
   year: number
   quarter: number

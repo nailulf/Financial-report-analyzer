@@ -39,8 +39,8 @@ NO_CROSS = "none"
 class SignalParams:
     """Tunable parameters for technical signal computation."""
     rsi_period: int = 14
-    macd_short: int = 12
-    macd_long: int = 26
+    macd_short: int = 5
+    macd_long: int = 20
     macd_signal: int = 9
     volume_sma_period: int = 20
     lookback_days: int = 400        # ~1.5 years: enough for EMA warmup + output

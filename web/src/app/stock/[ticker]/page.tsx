@@ -7,6 +7,7 @@ import {
   getAnnualSeriesForTable,
 } from '@/lib/queries/financials'
 import { getPriceHistory } from '@/lib/queries/prices'
+import { getTechnicalSignals } from '@/lib/queries/technical-signals'
 import {
   getCompanyProfile,
   getOfficers,
@@ -48,6 +49,7 @@ export default async function StockPage({
     dailyBrokerFlow,
     brokerConcentration,
     dividendHistory,
+    technicalSignals,
   ] = await Promise.all([
     getStockHeader(t),
     getLatestMetrics(t),
@@ -65,6 +67,7 @@ export default async function StockPage({
     getDailyBrokerFlowByType(t, 30),
     getBrokerConcentration(t, 30),
     getDividendHistory(t),
+    getTechnicalSignals(t, 252),
   ])
 
   if (!header) notFound()
@@ -124,6 +127,7 @@ export default async function StockPage({
       dailyBrokerFlow={dailyBrokerFlow}
       brokerConcentration={brokerConcentration}
       dividendHistory={dividendHistory}
+      technicalSignals={technicalSignals}
       peerPercentiles={peerPercentiles}
       dcfFcf={dcfFcf}
       dcfDividends={(() => {

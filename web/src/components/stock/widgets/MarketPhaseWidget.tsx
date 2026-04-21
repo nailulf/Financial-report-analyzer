@@ -445,7 +445,7 @@ export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] 
       </div>
       {/* ── Chart with HTML overlay divs ───────────────────────────── */}
       <div className="px-4 pt-3 pb-1">
-        <div ref={chartWrapperRef} className="relative" style={{ height: hasSignals ? 620 : 380 }}>
+        <div ref={chartWrapperRef} className="relative overflow-hidden" style={{ height: hasSignals ? 620 : 380 }}>
           {/* Lightweight-charts canvas */}
           <div ref={chartContainerRef} style={{ height: hasSignals ? 620 : 380, width: '100%' }} />
 
@@ -459,7 +459,7 @@ export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] 
                 top: 0,
                 left: rect.left,
                 width: rect.width,
-                height: '100%',
+                height: hasSignals ? '55%' : '100%',
                 backgroundColor: hexToRgba(rect.color, selectedPhaseId === rect.id ? 0.20 : 0.10),
                 borderTop: `2px solid ${hexToRgba(rect.color, 0.5)}`,
                 pointerEvents: 'none',

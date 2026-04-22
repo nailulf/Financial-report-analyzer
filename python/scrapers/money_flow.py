@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 """
-money_flow.py — Layer 2 + 5 scraper (foreign flow + broker summary + smart money)
+money_flow.py — Broker flow + bandar signal + insider transactions scraper
 
 Updates tables:
-  - daily_prices:         foreign_buy, foreign_sell, foreign_net (IDX API)
-  - broker_summary:       per-broker combined totals (IDX API, legacy)
   - broker_flow:          per-broker buy/sell split (Stockbit marketdetectors)
   - bandar_signal:        accumulation/distribution signals (Stockbit marketdetectors)
   - insider_transactions: KSEI major holder movements (Stockbit insider API)
@@ -20,7 +18,6 @@ Run:
     cd python && python -m scrapers.money_flow --insider --days 90
 """
 import argparse
-import json
 import logging
 import sys
 from datetime import date, datetime, timedelta, timezone
@@ -30,8 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import BROKER_SUMMARY_TOP_N
 from utils.helpers import RunResult, setup_logging, safe_int, safe_float, safe_str
-from utils.idx_client import IDXClient
-from utils.supabase_client import bulk_upsert, fetch_all, fetch_column, get_client, start_run, finish_run
+from utils.supabase_client import bulk_upsert, fetch_all, start_run, finish_run
 
 logger = logging.getLogger(__name__)
 
@@ -52,83 +48,6 @@ def _last_n_trading_dates(n: int) -> list[date]:
             dates.append(d)
         d -= timedelta(days=1)
     return dates
-
-
-# ------------------------------------------------------------------
-# Parser: IDX trading info (foreign flow + value + frequency)
-# ------------------------------------------------------------------
-
-def _parse_trading_info_row(ticker: str, record: dict) -> dict | None:
-    """
-    Map a single IDX GetTradingInfoSS reply to a daily_prices UPDATE dict.
-
-    Verified field names from live API (March 2026):
-      Date, ForeignBuy, ForeignSell, Value, Frequency
-    """
-    raw_date = record.get("Date")
-    if not raw_date:
-        return None
-
-    trade_date = _parse_date(raw_date)
-    if not trade_date:
-        return None
-
-    foreign_buy = safe_int(record.get("ForeignBuy"))
-    foreign_sell = safe_int(record.get("ForeignSell"))
-    foreign_net = None
-    if foreign_buy is not None and foreign_sell is not None:
-        foreign_net = foreign_buy - foreign_sell
-
-    return {
-        "ticker": ticker,
-        "date": trade_date,
-        "foreign_buy": foreign_buy,
-        "foreign_sell": foreign_sell,
-        "foreign_net": foreign_net,
-        "value": safe_int(record.get("Value")),
-        "frequency": safe_int(record.get("Frequency")),
-        "last_updated": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-# ------------------------------------------------------------------
-# Parser: IDX broker summary
-# ------------------------------------------------------------------
-
-def _parse_broker_row(ticker: str, trade_date: str, record: dict) -> dict | None:
-    """
-    Map a single IDX GetBrokerSummary record to a broker_summary row.
-
-    Verified field names from live API (March 2026):
-      IDFirm (broker_code), FirmName (broker_name),
-      Volume (total), Value (total IDR), Frequency
-
-    NOTE: IDX API returns total volume/value per broker only.
-    Buy/sell split is NOT available from this endpoint.
-    buy_volume/buy_value store total; sell_volume/sell_value are NULL.
-    """
-    broker_code = safe_str(record.get("IDFirm"))
-    if not broker_code:
-        return None
-
-    total_volume = safe_int(record.get("Volume"))
-    total_value = safe_int(record.get("Value"))
-
-    return {
-        "ticker": ticker,
-        "date": trade_date,
-        "broker_code": broker_code,
-        "broker_name": safe_str(record.get("FirmName")),
-        # IDX only provides total (buy+sell combined) — no split available
-        "buy_volume": total_volume,
-        "buy_value": total_value,
-        "sell_volume": None,
-        "sell_value": None,
-        "net_volume": None,
-        "net_value": None,
-        "frequency": safe_int(record.get("Frequency")),
-        "last_updated": datetime.now(timezone.utc).isoformat(),
-    }
 
 
 # ------------------------------------------------------------------
@@ -283,34 +202,26 @@ def run(
     days: int = 2,
 ) -> RunResult:
     """
-    Fetch foreign flow and broker summary.
+    Fetch broker_flow + bandar_signal from Stockbit marketdetectors.
 
     Args:
-        tickers: If None, uses top BROKER_SUMMARY_TOP_N stocks by market cap.
+        tickers: If None, uses all active stocks.
         dates:   If None, defaults to last `days` trading days.
         days:    Number of recent trading days to fetch (default: 2).
     """
     result = RunResult("money_flow")
     run_id = start_run(
         "money_flow",
-        metadata={"mode": "single" if tickers else "top_n", "days": days},
+        metadata={"mode": "single" if tickers else "all", "days": days},
     )
 
     # --- Determine ticker list ---
     if tickers:
         ticker_list = [t.upper() for t in tickers]
     else:
-        # Top N stocks by market cap
-        rows = fetch_all(
-            "stocks",
-            "ticker",
-            filters={"status": "Active"},
-        )
-        # Sort by market_cap descending — fetch all then sort
-        all_stocks = fetch_all("stocks", "ticker, market_cap", filters={"status": "Active"})
-        all_stocks.sort(key=lambda r: r.get("market_cap") or 0, reverse=True)
-        ticker_list = [r["ticker"] for r in all_stocks[:BROKER_SUMMARY_TOP_N]]
-        logger.info("Targeting top %d stocks by market cap", len(ticker_list))
+        all_stocks = fetch_all("stocks", "ticker", filters={"status": "Active"})
+        ticker_list = [r["ticker"] for r in all_stocks]
+        logger.info("Targeting all %d active stocks", len(ticker_list))
 
     # --- Determine date list ---
     if dates:
@@ -319,52 +230,62 @@ def run(
         date_list = [d.isoformat() for d in _last_n_trading_dates(days)]
     logger.info("Fetching data for dates: %s", date_list)
 
-    client = IDXClient()
-    trading_info_rows: list[dict] = []
-    broker_rows: list[dict] = []
+    # --- Init Stockbit client ---
+    try:
+        from utils.stockbit_client import StockbitClient
+        sb_client = StockbitClient()
+    except Exception as e:
+        logger.error("Stockbit client init failed: %s", e)
+        finish_run(run_id, "failed", error_message=str(e))
+        return result
+
+    if not sb_client.is_authenticated:
+        logger.error("Stockbit token required for money_flow")
+        finish_run(run_id, "failed", error_message="no token")
+        return result
+
+    all_broker_rows: list[dict] = []
+    all_bandar_rows: list[dict] = []
 
     for i, ticker in enumerate(ticker_list, 1):
-        logger.debug("[%d/%d] %s", i, len(ticker_list), ticker)
+        ticker_broker_count = 0
         try:
-            # --- Foreign flow (covers multiple days per call) ---
-            trading_records = client.get_trading_info(ticker, days=max(days + 3, 10))
-            for record in trading_records:
-                row = _parse_trading_info_row(ticker, record)
-                if row and row["date"] in date_list:
-                    trading_info_rows.append(row)
-
-            # --- Broker summary (one call per date) ---
             for trade_date in date_list:
-                broker_records = client.get_broker_summary(ticker, trade_date)
-                for record in broker_records:
-                    row = _parse_broker_row(ticker, trade_date, record)
-                    if row:
-                        broker_rows.append(row)
+                broker_rows, bandar_row = _fetch_broker_marketdetector(
+                    ticker, trade_date, sb_client,
+                )
+                if broker_rows:
+                    all_broker_rows.extend(broker_rows)
+                    ticker_broker_count += len(broker_rows)
+                if bandar_row:
+                    all_bandar_rows.append(bandar_row)
 
+            logger.info("[%d/%d] %s: %d broker rows, %d bandar signals",
+                        i, len(ticker_list), ticker, ticker_broker_count,
+                        sum(1 for r in all_bandar_rows if r["ticker"] == ticker))
             result.ok(ticker)
 
         except Exception as e:
             logger.warning("Failed %s: %s", ticker, e)
             result.fail(ticker, str(e))
 
-    # --- Upsert foreign flow into daily_prices ---
-    if trading_info_rows:
-        logger.info("Upserting %d trading info rows into daily_prices...", len(trading_info_rows))
-        # Only update the foreign flow + value + frequency columns
-        # Use upsert which will merge with existing OHLCV data
-        bulk_upsert("daily_prices", trading_info_rows, on_conflict="ticker,date")
+        # Batch upsert to avoid huge memory usage
+        if len(all_broker_rows) > 5000:
+            logger.info("Batch upserting %d broker_flow rows...", len(all_broker_rows))
+            bulk_upsert("broker_flow", all_broker_rows, on_conflict="ticker,trade_date,broker_code")
+            all_broker_rows.clear()
+        if len(all_bandar_rows) > 500:
+            logger.info("Batch upserting %d bandar_signal rows...", len(all_bandar_rows))
+            bulk_upsert("bandar_signal", all_bandar_rows, on_conflict="ticker,trade_date")
+            all_bandar_rows.clear()
 
-    # --- Upsert broker summary ---
-    if broker_rows:
-        # Filter out tickers not in stocks table (avoids FK violation for newly listed stocks)
-        known_tickers = set(fetch_column("stocks", "ticker") or [])
-        valid_broker_rows = [r for r in broker_rows if r.get("ticker") in known_tickers]
-        skipped = len(broker_rows) - len(valid_broker_rows)
-        if skipped:
-            logger.warning("Skipped %d broker rows for unknown tickers (run --weekly to update stock universe)", skipped)
-        if valid_broker_rows:
-            logger.info("Upserting %d broker summary rows...", len(valid_broker_rows))
-            bulk_upsert("broker_summary", valid_broker_rows, on_conflict="ticker,date,broker_code")
+    # Final upserts
+    if all_broker_rows:
+        logger.info("Upserting %d broker_flow rows...", len(all_broker_rows))
+        bulk_upsert("broker_flow", all_broker_rows, on_conflict="ticker,trade_date,broker_code")
+    if all_bandar_rows:
+        logger.info("Upserting %d bandar_signal rows...", len(all_bandar_rows))
+        bulk_upsert("bandar_signal", all_bandar_rows, on_conflict="ticker,trade_date")
 
     result.print_summary()
     finish_run(run_id, **result.to_db_kwargs())

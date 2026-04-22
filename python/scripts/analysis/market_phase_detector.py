@@ -67,7 +67,6 @@ class DayData:
     low: float
     close: float
     volume: int
-    foreign_net: Optional[float] = None
     # Computed indicators (filled in Layer 1)
     short_sma: Optional[float] = None
     long_sma: Optional[float] = None
@@ -581,7 +580,7 @@ class MarketPhaseDetector:
 
         resp = (
             client.table("daily_prices")
-            .select("date, open, high, low, close, volume, foreign_net")
+            .select("date, open, high, low, close, volume")
             .eq("ticker", ticker)
             .gte("date", cutoff)
             .order("date")
@@ -596,7 +595,6 @@ class MarketPhaseDetector:
                 low=float(r["low"] or 0),
                 close=float(r["close"] or 0),
                 volume=int(r["volume"] or 0),
-                foreign_net=float(r["foreign_net"]) if r.get("foreign_net") else None,
             )
             for r in rows
             if r.get("close")  # skip days with no close price

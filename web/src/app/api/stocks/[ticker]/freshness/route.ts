@@ -8,15 +8,18 @@ interface RouteParams {
 
 // Thresholds (in days) for each category to be considered "fresh"
 const THRESHOLDS: Record<string, number> = {
-  daily_prices:     3,    // covers weekends
-  money_flow:       3,
-  financials:       90,   // quarterly cadence
-  company_profiles: 90,
-  document_links:   90,
-  corporate_events: 90,
-  dividend_history: 30,
-  broker_flow:      7,
-  stock_universe:   30,
+  daily_prices:       3,    // covers weekends
+  money_flow:         3,
+  financials:         90,   // quarterly cadence
+  company_profiles:   90,
+  document_links:     90,
+  corporate_events:   90,
+  dividend_history:   30,
+  broker_flow:        7,
+  stock_universe:     30,
+  market_phases:      3,    // should follow daily prices
+  technical_signals:  3,    // should follow daily prices
+  ratio_enricher:     90,   // follows financials cadence
 }
 
 function computeStatus(lastDate: string | null, thresholdDays: number): { status: FreshnessStatus; daysSince: number | null } {
@@ -35,7 +38,7 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
   const supabase = await createClient()
 
   // Run all queries in parallel — each returns at most 1 row
-  const [priceRes, financialsRes, profileRes, brokerRes, dividendRes, stockRes, docsRes, eventsRes] = await Promise.all([
+  const [priceRes, financialsRes, profileRes, brokerRes, dividendRes, stockRes, docsRes, eventsRes, phasesRes, signalsRes] = await Promise.all([
     supabase.from('daily_prices').select('date').eq('ticker', t).order('date', { ascending: false }).limit(1),
     supabase.from('financials').select('last_updated').eq('ticker', t).order('last_updated', { ascending: false }).limit(1),
     supabase.from('company_profiles').select('last_updated').eq('ticker', t).limit(1),
@@ -45,6 +48,8 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
     // These tables may not exist yet — errors are treated as "missing"
     supabase.from('document_links').select('fetched_at').eq('ticker', t).order('fetched_at', { ascending: false }).limit(1),
     supabase.from('corporate_events').select('fetched_at').eq('ticker', t).order('fetched_at', { ascending: false }).limit(1),
+    supabase.from('market_phases').select('detected_at').eq('ticker', t).order('detected_at', { ascending: false }).limit(1),
+    supabase.from('technical_signals').select('computed_at').eq('ticker', t).order('computed_at', { ascending: false }).limit(1),
   ])
 
   const extract = (res: { data: any[] | null; error: any }, field: string): string | null => {
@@ -60,6 +65,8 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
   const stockDate    = extract(stockRes, 'last_updated')
   const docsDate     = extract(docsRes, 'fetched_at')
   const eventsDate   = extract(eventsRes, 'fetched_at')
+  const phasesDate   = extract(phasesRes, 'detected_at')
+  const signalsDate  = extract(signalsRes, 'computed_at')
 
   const categories: CategoryFreshness[] = [
     {
@@ -72,7 +79,7 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
     {
       category: 'money_flow',
       label: 'Arus Dana Asing',
-      lastUpdated: priceDate, // money_flow writes to daily_prices.foreign_net
+      lastUpdated: priceDate, // money_flow writes value/frequency; foreign flow from broker_flow
       ...computeStatus(priceDate, THRESHOLDS.money_flow),
       scrapers: ['money_flow'],
     },
@@ -110,6 +117,27 @@ export async function GET(_req: NextRequest, { params }: RouteParams) {
       lastUpdated: docsDate ?? eventsDate,
       ...computeStatus(docsDate ?? eventsDate, THRESHOLDS.document_links),
       scrapers: ['document_links', 'corporate_events'],
+    },
+    {
+      category: 'ratio_enricher',
+      label: 'Rasio Keuangan',
+      lastUpdated: finDate,
+      ...computeStatus(finDate, THRESHOLDS.ratio_enricher),
+      scrapers: ['ratio_enricher'],
+    },
+    {
+      category: 'market_phases',
+      label: 'Deteksi Fase Pasar',
+      lastUpdated: phasesDate,
+      ...computeStatus(phasesDate, THRESHOLDS.market_phases),
+      scrapers: ['market_phases'],
+    },
+    {
+      category: 'technical_signals',
+      label: 'Sinyal Teknikal (RSI/MACD)',
+      lastUpdated: signalsDate,
+      ...computeStatus(signalsDate, THRESHOLDS.technical_signals),
+      scrapers: ['technical_signals'],
     },
   ]
 

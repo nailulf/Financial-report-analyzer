@@ -922,7 +922,7 @@ def fetch_all_data(sb, ticker: str):
     print(f"[fetch] Annual financials: {len(financials)} rows ({min(years) if years else '?'}–{max(years) if years else '?'})")
 
     # Latest price
-    price = (sb.table("daily_prices").select("date, close, foreign_net")
+    price = (sb.table("daily_prices").select("date, close")
              .eq("ticker", ticker).order("date", desc=True).limit(1).execute().data or [{}])[0]
     print(f"[fetch] Latest price: {price.get('close')} on {price.get('date')}")
 

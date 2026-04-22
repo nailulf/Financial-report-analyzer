@@ -11,7 +11,6 @@ import { ChartSkeleton } from '@/components/ui/loading-skeleton'
 interface Props {
   buyers: FlowRow[]
   sellers: FlowRow[]
-  /** When set, hides the 5D/20D toggle and shows this label instead */
   rangeLabel?: string
 }
 
@@ -21,24 +20,23 @@ function formatFlow(value: number) {
   if (abs >= 1e12) return `${sign}${(abs / 1e12).toFixed(1)}T`
   if (abs >= 1e9)  return `${sign}${(abs / 1e9).toFixed(1)}M`
   if (abs >= 1e6)  return `${sign}${(abs / 1e6).toFixed(1)}Jt`
-  return `${sign}${abs.toLocaleString('id-ID')}`
+  if (abs >= 1e3)  return `${sign}${(abs / 1e3).toFixed(0)}K`
+  return `${sign}${abs}`
 }
 
 function FlowBar({
   data,
   title,
   color,
-  dataKey,
 }: {
   data: FlowRow[]
   title: string
   color: string
-  dataKey: 'foreign_net_5d' | 'foreign_net_20d'
 }) {
   const chartData = data.map((r) => ({
     ticker: r.ticker,
     name: r.name ?? r.ticker,
-    value: r[dataKey] ?? 0,
+    value: r.asing_net,
   }))
 
   return (
@@ -70,7 +68,7 @@ function FlowBar({
               width={48}
             />
             <Tooltip
-              formatter={(value: number) => [formatFlow(value), 'Foreign Net']}
+              formatter={(value: number) => [formatFlow(value), 'Asing Net']}
               labelFormatter={(label) => {
                 const row = chartData.find((r) => r.ticker === label)
                 return `${label}${row?.name ? ` — ${row.name}` : ''}`
@@ -92,44 +90,22 @@ function FlowBar({
 
 export function ForeignFlowChart({ buyers, sellers, rangeLabel }: Props) {
   const [mounted, setMounted] = useState(false)
-  const [period, setPeriod] = useState<'foreign_net_5d' | 'foreign_net_20d'>('foreign_net_5d')
 
   useEffect(() => setMounted(true), [])
 
   if (!mounted) return <ChartSkeleton height={400} />
-
-  // In range mode always use foreign_net_5d (which holds the range total)
-  const activePeriod = rangeLabel ? 'foreign_net_5d' : period
-  const sortedBuyers  = [...buyers].sort((a, b) => (b[activePeriod] ?? 0) - (a[activePeriod] ?? 0))
-  const sortedSellers = [...sellers].sort((a, b) => (a[activePeriod] ?? 0) - (b[activePeriod] ?? 0))
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-6">
       <div className="flex items-center justify-between mb-5">
         <div>
           <h2 className="text-sm font-semibold text-gray-700">Foreign Flow Leaderboard</h2>
-          <p className="text-xs text-gray-400 mt-0.5">Net foreign buy/sell value (IDR)</p>
+          <p className="text-xs text-gray-400 mt-0.5">Net foreign (Asing) broker flow (IDR) — from Stockbit</p>
         </div>
-        {rangeLabel ? (
+        {rangeLabel && (
           <span className="text-xs font-medium text-blue-600 bg-blue-50 border border-blue-100 rounded px-2 py-1">
             {rangeLabel}
           </span>
-        ) : (
-          <div className="flex gap-1">
-            {([['foreign_net_5d', '5D'], ['foreign_net_20d', '20D']] as const).map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => setPeriod(key)}
-                className={`px-3 py-1 text-xs rounded-md font-medium transition-colors ${
-                  period === key
-                    ? 'bg-blue-600 text-white'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
         )}
       </div>
 
@@ -140,10 +116,9 @@ export function ForeignFlowChart({ buyers, sellers, rangeLabel }: Props) {
             <span className="text-xs font-semibold text-green-700">Top Net Buyers</span>
           </div>
           <FlowBar
-            data={sortedBuyers}
+            data={buyers}
             title=""
             color="#10B981"
-            dataKey={activePeriod}
           />
         </div>
         <div>
@@ -152,10 +127,9 @@ export function ForeignFlowChart({ buyers, sellers, rangeLabel }: Props) {
             <span className="text-xs font-semibold text-red-600">Top Net Sellers</span>
           </div>
           <FlowBar
-            data={sortedSellers}
+            data={sellers}
             title=""
             color="#EF4444"
-            dataKey={activePeriod}
           />
         </div>
       </div>

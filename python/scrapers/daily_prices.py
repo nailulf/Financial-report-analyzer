@@ -4,8 +4,8 @@ from __future__ import annotations
 daily_prices.py — Layer 2 scraper (OHLCV)
 
 Populates `daily_prices` with end-of-day price and volume data via yfinance.
-Foreign flow columns (foreign_buy, foreign_sell, foreign_net) are filled
-separately by money_flow.py.
+Value and frequency columns are filled separately by money_flow.py.
+Foreign flow data is sourced from Stockbit broker_flow (broker_type='Asing').
 
 Behaviour:
   - First run (bootstrap): fetches DAILY_PRICE_HISTORY_YEARS years of history

@@ -117,7 +117,6 @@ export interface PricePoint {
   low: number | null
   close: number | null
   volume: number | null
-  foreign_net: number | null
 }
 
 export interface TechnicalSignalPoint {

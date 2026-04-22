@@ -28,9 +28,6 @@ export interface DailyPrice {
   volume: string | null          // BIGINT → string
   value: string | null           // BIGINT → string
   frequency: number | null
-  foreign_buy: string | null     // BIGINT → string
-  foreign_sell: string | null    // BIGINT → string
-  foreign_net: string | null     // BIGINT → string
   last_updated: string
 }
 
@@ -176,7 +173,6 @@ export interface VLatestPrice {
   low: number | null
   volume: string | null
   value: string | null
-  foreign_net: string | null
 }
 
 export interface VLatestAnnualFinancials extends Financials {
@@ -201,7 +197,6 @@ export interface VScreenerRow {
   status: string
   price: number | null
   price_date: string | null
-  latest_foreign_net: string | null
   financial_year: number | null
   revenue: string | null
   gross_profit: string | null

@@ -6,6 +6,8 @@ import type { FlowScoreRow } from '@/lib/queries/money-flow'
 import { ChartSkeleton } from '@/components/ui/loading-skeleton'
 import { formatIDRCompact } from '@/lib/calculations/formatters'
 
+const VISIBLE_ROWS = 5
+
 // ─── Score badge ─────────────────────────────────────────────────────────────
 
 export function FlowScoreBadge({ score, size = 'sm' }: { score: number; size?: 'sm' | 'lg' }) {
@@ -56,13 +58,13 @@ function ScoreBreakdown({ row }: { row: FlowScoreRow }) {
   return (
     <div className="flex items-center gap-3 text-xs text-gray-400">
       <span title="Foreign flow score">
-        🌍 <span className="tabular-nums">{row.foreign_score}</span>
+        F <span className="tabular-nums">{row.foreign_score}</span>
       </span>
-      <span title="Volume × price score">
-        📊 <span className="tabular-nums">{row.volume_score}</span>
+      <span title="Volume x price score">
+        V <span className="tabular-nums">{row.volume_score}</span>
       </span>
       <span title="Price momentum score">
-        📈 <span className="tabular-nums">{row.price_score}</span>
+        P <span className="tabular-nums">{row.price_score}</span>
       </span>
     </div>
   )
@@ -102,9 +104,60 @@ function ScoreRow({ row, rank }: { row: FlowScoreRow; rank: number }) {
         ) : '—'}
       </td>
       <td className="py-2 text-right font-mono text-xs text-gray-500 tabular-nums">
-        {row.foreign_net_5d != null ? formatIDRCompact(row.foreign_net_5d) : '—'}
+        {row.asing_net != null ? formatIDRCompact(row.asing_net) : '—'}
       </td>
     </tr>
+  )
+}
+
+// ─── Collapsible score table ─────────────────────────────────────────────────
+
+function ScoreTable({ rows, title, emptyMsg }: { rows: FlowScoreRow[]; title: string; emptyMsg: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const hasMore = rows.length > VISIBLE_ROWS
+  const visible = expanded ? rows : rows.slice(0, VISIBLE_ROWS)
+
+  return (
+    <div>
+      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">{title}</h3>
+      {rows.length === 0 ? (
+        <div className="h-32 flex items-center justify-center text-sm text-gray-400">{emptyMsg}</div>
+      ) : (
+        <>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-100">
+                <th className="text-left py-1.5 pr-3 text-xs font-semibold text-gray-400 w-6">#</th>
+                <th className="text-left py-1.5 pr-4 text-xs font-semibold text-gray-400">Ticker</th>
+                <th className="text-left py-1.5 pr-4 text-xs font-semibold text-gray-400">Signal</th>
+                <th className="text-right py-1.5 pr-4 text-xs font-semibold text-gray-400">Score</th>
+                <th className="text-right py-1.5 pr-3 text-xs font-semibold text-gray-400">5D Chg</th>
+                <th className="text-right py-1.5 text-xs font-semibold text-gray-400">Foreign 5D</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50">
+              {visible.map((row, i) => (
+                <ScoreRow key={row.ticker} row={row} rank={i + 1} />
+              ))}
+            </tbody>
+          </table>
+          {hasMore && (
+            <button
+              onClick={() => setExpanded((v) => !v)}
+              className="mt-2 w-full py-1.5 text-xs font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded-lg transition-colors flex items-center justify-center gap-1"
+            >
+              {expanded ? 'Show less' : `Show ${rows.length - VISIBLE_ROWS} more`}
+              <svg
+                className={`w-3.5 h-3.5 transition-transform ${expanded ? 'rotate-180' : ''}`}
+                fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+          )}
+        </>
+      )}
+    </div>
   )
 }
 
@@ -116,41 +169,12 @@ interface Props {
 }
 
 const SCORE_LEGEND = [
-  { range: '70–100', label: 'Kuat',       desc: 'Strong accumulation', color: 'bg-green-500' },
-  { range: '51–69',  label: 'Akumulasi',  desc: 'Mild accumulation',   color: 'bg-emerald-400' },
-  { range: '40–50',  label: 'Netral',     desc: 'No clear signal',     color: 'bg-gray-300' },
-  { range: '25–39',  label: 'Lemah',      desc: 'Mild distribution',   color: 'bg-orange-400' },
-  { range: '0–24',   label: 'Distribusi', desc: 'Strong distribution', color: 'bg-red-500' },
+  { range: '70-100', label: 'Kuat',       color: 'bg-green-500' },
+  { range: '51-69',  label: 'Akumulasi',  color: 'bg-emerald-400' },
+  { range: '40-50',  label: 'Netral',     color: 'bg-gray-300' },
+  { range: '25-39',  label: 'Lemah',      color: 'bg-orange-400' },
+  { range: '0-24',   label: 'Distribusi', color: 'bg-red-500' },
 ]
-
-function ScoreTable({ rows, title, emptyMsg }: { rows: FlowScoreRow[]; title: string; emptyMsg: string }) {
-  return (
-    <div>
-      <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">{title}</h3>
-      {rows.length === 0 ? (
-        <div className="h-32 flex items-center justify-center text-sm text-gray-400">{emptyMsg}</div>
-      ) : (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-100">
-              <th className="text-left py-1.5 pr-3 text-xs font-semibold text-gray-400 w-6">#</th>
-              <th className="text-left py-1.5 pr-4 text-xs font-semibold text-gray-400">Ticker</th>
-              <th className="text-left py-1.5 pr-4 text-xs font-semibold text-gray-400">Signal</th>
-              <th className="text-right py-1.5 pr-4 text-xs font-semibold text-gray-400">Score</th>
-              <th className="text-right py-1.5 pr-3 text-xs font-semibold text-gray-400">5D Chg</th>
-              <th className="text-right py-1.5 text-xs font-semibold text-gray-400">Foreign 5D</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-50">
-            {rows.map((row, i) => (
-              <ScoreRow key={row.ticker} row={row} rank={i + 1} />
-            ))}
-          </tbody>
-        </table>
-      )}
-    </div>
-  )
-}
 
 export function FlowScoreSection({ bullish, bearish }: Props) {
   const [mounted, setMounted] = useState(false)

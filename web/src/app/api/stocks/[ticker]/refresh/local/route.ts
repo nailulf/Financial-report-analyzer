@@ -23,6 +23,9 @@ const SCRAPER_FLAGS: Record<string, string[]> = {
   daily_prices:        ['--daily'],
   money_flow:          ['--daily'],
   dividend_scraper:    ['--dividends'],
+  ratio_enricher:      ['--enrich-ratios'],
+  market_phases:       ['--detect-phases'],
+  technical_signals:   ['--compute-signals'],
   // broker_backfill handled separately (needs --backfill-days)
 }
 

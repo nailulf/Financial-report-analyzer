@@ -1,392 +1,370 @@
 # Data Scraping Playbook
 
 Operational guide for running the IDX Stock Analyzer data pipeline.
+All commands assume you are in the `python/` directory with virtualenv active.
+
+```bash
+cd python
+source venv/bin/activate
+```
 
 ---
 
 ## Prerequisites
 
+### Environment
+
 ```bash
-cd python
-source venv/bin/activate        # activate virtualenv
-cp ../.env.example ../.env      # first time only — fill in Supabase credentials
+cp ../.env.example ../.env   # first time only — fill in credentials
 ```
 
-Required `.env` values:
-| Key | Where to get it |
-|-----|----------------|
-| `SUPABASE_URL` | Supabase project → Settings → API |
-| `SUPABASE_SERVICE_KEY` | Supabase project → Settings → API → service_role key |
-| `TWELVE_DATA_API_KEY` | Optional. twelvedata.com free tier — used as fallback only |
+| Key | Where to get it | Required? |
+|-----|----------------|-----------|
+| `SUPABASE_URL` | Supabase → Settings → API | Yes |
+| `SUPABASE_SERVICE_KEY` | Supabase → Settings → API → service_role key | Yes |
+| `TWELVE_DATA_API_KEY` | twelvedata.com free tier | No (fallback only) |
 
-> **Stockbit token** is no longer stored in `.env`. It's managed interactively — see below.
+### Stockbit Token
 
----
+Stockbit is the **primary** data source for financials, broker flow, and insider data. A bearer token is required.
 
-## Stockbit Token Setup
-
-Stockbit is the **primary** financial data source. A bearer token is required for full statement endpoints (income, balance sheet, cash flow) and broker/insider data. Public endpoints (ratios, keystats) work without a token.
-
-**First time / token expired:**
+**Setup / refresh:**
 ```bash
-cd python
 python -c "from utils.token_manager import get_stockbit_token; get_stockbit_token()"
 ```
-Or just run any scraper — you'll be prompted automatically:
+Or just run any Stockbit scraper — you'll be prompted automatically.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│             Stockbit Bearer Token Required                  │
-├─────────────────────────────────────────────────────────────┤
-│  1. Open  https://stockbit.com  in Chrome                   │
-│  2. Log in to your account                                  │
-│  3. Open DevTools  (F12 / Cmd+Opt+I)                        │
-│  4. Go to  Network  tab                                     │
-│  5. Click any request → Headers → Authorization             │
-│  6. Copy the token value  (without "Bearer " prefix)        │
-└─────────────────────────────────────────────────────────────┘
+**How to get the token:**
+1. Open https://stockbit.com in Chrome, log in
+2. Open DevTools (F12) → Network tab
+3. Click any request → Headers → Authorization
+4. Copy the token value (without "Bearer " prefix)
 
-Paste token: <paste here>
-```
-
-**How it works:**
-- Token is cached in `~/.stockbit_token` (file, not .env)
-- JWT expiry is decoded automatically — you're warned when it's about to expire
-- On 401 errors, the cached token is cleared and you're re-prompted next run
-- Token lasts ~30 days before needing refresh
-- Backward compat: `STOCKBIT_BEARER_TOKEN` in `.env` still works (auto-migrated to file)
+**Token behavior:**
+- Cached in `~/.stockbit_token` (not `.env`)
+- JWT expiry decoded automatically — warns when expiring
+- On 401 → auto-cleared, re-prompted next run
+- Lasts ~30 days
 
 ---
 
-## Data Source Hierarchy
+## Data Sources
 
-```
-Financial data:  Stockbit (primary, sole source in pipeline)
-Price data:      yfinance
-Money flow:      IDX API (foreign flow), Stockbit (broker flow, bandar signals)
-Insider data:    Stockbit (KSEI major holder movements)
-Company info:    IDX API
-Dividends:       yfinance
-```
+| Data type | Source | Notes |
+|-----------|--------|-------|
+| Financial statements | **Stockbit** (sole source) | keystats + full income/balance/cashflow |
+| Price data (OHLCV) | yfinance | `.JK` suffix added internally |
+| Foreign flow | **Stockbit** broker_flow (`broker_type='Asing'`) | Confirmed IDR values |
+| Broker activity | **Stockbit** marketdetectors API | buy/sell split per broker |
+| Bandar signals | **Stockbit** marketdetectors API | accumulation/distribution |
+| Insider transactions | **Stockbit** (KSEI data) | Major holder movements |
+| Company info | IDX API | profiles, officers, shareholders |
+| Dividends | yfinance | Full history |
+| Broker summary (legacy) | IDX API | Combined totals only, no buy/sell split |
 
-When `--quarterly` or `--full` runs:
-1. **Stockbit** fetches all financials (keystats + full statements)
-2. **company_profiles** fetches company info, officers, shareholders from IDX API
-3. **document_links** + **corporate_events** fetch supplementary data from IDX API
-
-> **Note:** `financials.py` (yfinance-based) exists in the codebase but is **not called** by the pipeline. Stockbit is the sole financials source.
+> `financials.py` (yfinance-based) exists but is **not called** by the pipeline. Stockbit is the sole financials source.
 
 ---
 
-## The Scrapers
+## Quick Reference — What to Run When
 
-### Pipeline scrapers (managed by `run_all.py`)
-
-| Scraper | Table(s) populated | Source | Run mode |
-|---------|-------------------|--------|----------|
-| `stock_universe` | `stocks` | IDX API | `--weekly`, `--full` |
-| `daily_prices` | `daily_prices` (OHLCV) | yfinance | `--daily`, `--full` |
-| `money_flow` | `daily_prices` (foreign flow), `broker_summary` | IDX API | `--daily`, `--full` |
-| `financials_fallback` | `financials` (annual + quarterly) | **Stockbit** | `--quarterly`, `--full`, `--fallback-financials` |
-| `company_profiles` | `company_profiles`, `company_officers`, `shareholders` | IDX API | `--quarterly`, `--full` |
-| `document_links` | `document_links` | IDX API | `--quarterly`, `--full` (non-fatal) |
-| `corporate_events` | `corporate_events` | IDX API | `--quarterly`, `--full` (non-fatal) |
-| `ratio_enricher` | `financials` + `stocks` (screener ratios) | DB only (no API) | `--enrich-ratios`, `--full` |
-| `dividend_scraper` | `dividend_history` | yfinance | `--dividends` |
-| `gap_filler` | various (re-runs targeted scrapers) | various | `--fill-gaps` |
-| `broker_backfill` | `broker_flow`, `bandar_signal` | Stockbit | `--broker-backfill`, `--full` |
-| `insider` | `insider_transactions` | Stockbit (KSEI) | `--insider` |
-
-### Analysis & AI pipeline (managed by `run_all.py`)
-
-| Module | Table(s) populated | Source | Run mode |
-|--------|-------------------|--------|----------|
-| `market_phase_detector` | `market_phases`, `stocks` (current_phase) | DB only (price + broker data) | `--detect-phases`, runs after `--daily` chain |
-| `data_cleaner` | `data_quality_flags` | DB only | `--build-ai-context`, `--ai-full` |
-| `data_normalizer` | `normalized_metrics` | DB only | `--build-ai-context`, `--ai-full` |
-| `scoring_engine` | `stock_scores` | DB only | `--build-ai-context`, `--ai-full` |
-| `context_builder` | `ai_context_cache` | DB only | `--build-ai-context`, `--ai-full` |
-| `ai_analyst` | `ai_analysis` | OpenAI / Anthropic | `--run-ai-analysis`, `--ai-full` |
-
-### CLI-only scrapers (NOT in `run_all.py`, run manually)
-
-| Scraper | Table(s) populated | Source | How to run |
-|---------|-------------------|--------|------------|
-| `shareholders_pdf` | `shareholders_major` | Local PDF/Excel/CSV | `python -m scrapers.shareholders_pdf --file <path> --date <YYYY-MM-DD>` |
-| `financials` | `financials` (fills gaps) | yfinance | `python -m scrapers.financials --ticker BBRI` |
+| Situation | Command |
+|-----------|---------|
+| End of trading day | `python run_all.py --daily` |
+| Weekly stock list refresh | `python run_all.py --weekly` |
+| After earnings season | `python run_all.py --quarterly` |
+| Everything from scratch | `python run_all.py --full` |
+| Single stock test | `python run_all.py --full --ticker BBRI` |
+| Broker flow for money-flow page | `python run_all.py --broker-backfill` |
+| Insider transactions | `python run_all.py --insider` |
+| Market phase overlays | `python run_all.py --detect-phases` |
+| Technical signals (MACD/RSI) | `python run_all.py --compute-signals` |
+| AI investment thesis | `python run_all.py --ai-full --ticker BBRI` |
+| Fix data gaps | `python run_all.py --fill-gaps` |
 
 ---
 
-## Pipeline Execution Order
+## Detailed Use Cases
 
-### `--full` (everything, dependency order)
+### Case 1: Daily Refresh (after market close, ~16:00 WIB)
 
-```
- 1. stock_universe        → stocks table
- 2. financials_fallback   → financials table (Stockbit)
- 3. company_profiles      → company_profiles, company_officers, shareholders
- 4. document_links        → document_links (non-fatal if table missing)
- 5. corporate_events      → corporate_events (non-fatal if table missing)
- 6. daily_prices          → daily_prices (OHLCV)
- 7. money_flow            → daily_prices (foreign flow) + broker_summary
- 8. broker_backfill       → broker_flow, bandar_signal (Stockbit, last 90 days)
- 9. update_scores         → stocks (completeness_score, confidence_score)
-10. enrich_ratios         → stocks (PE, PBV, ROE, net_margin, dividend_yield)
-11. ai_context_pipeline   → data_quality_flags → normalized_metrics → stock_scores → ai_context_cache
-12. ai_analysis           → ai_analysis (LLM investment thesis)
-```
-
-### `--quarterly`
-
-```
-1. financials_fallback   → financials (Stockbit)
-2. company_profiles      → profiles, officers, shareholders
-3. document_links        → document_links (non-fatal)
-4. corporate_events      → corporate_events (non-fatal)
-5. update_scores
-```
-
-### `--daily`
-
-```
-1. daily_prices          → OHLCV
-2. money_flow            → foreign flow + broker summary
-3. update_scores
-```
-
-### `--weekly`
-
-```
-1. stock_universe        → stocks
-2. update_scores
-```
-
----
-
-## Common Operations
-
-All commands are run from the `python/` directory.
-
-### Daily refresh (prices + money flow)
 ```bash
 python run_all.py --daily
 ```
 
-### Weekly refresh (stock list)
-```bash
-python run_all.py --weekly
-```
+**What runs:** daily_prices → money_flow → update_scores → compute_signals
 
-### Quarterly refresh (Stockbit financials → profiles → docs → events)
-```bash
-python run_all.py --quarterly
-```
+**What it populates:**
+- `daily_prices` — OHLCV from yfinance
+- `broker_summary` — IDX API broker totals
+- `stocks` — completeness/confidence scores
+- `technical_signals` + `stocks` — RSI, MACD, volume change
 
-### Full refresh (everything, in dependency order)
+**Follow up with (optional):**
 ```bash
-python run_all.py --full
-```
-
-### Test on a single stock
-```bash
-python run_all.py --full --ticker BBRI
-python run_all.py --daily --ticker BBRI ASII BBCA
-```
-
-### Sector-scoped run
-```bash
-python run_all.py --quarterly --sector finance
-python run_all.py --daily --sector energy
-python run_all.py --fallback-financials --sector "barang konsumen"   # matches both consumer sectors
-python run_all.py --daily --sector healthcare technology             # multiple sectors
-```
-Sector matching is case-insensitive and supports partial names (e.g. "finance" → "Financials").
-
-### Year range filtering (Stockbit financials)
-```bash
-python run_all.py --quarterly --year-from 2020 --year-to 2025
-python run_all.py --fallback-financials --year-from 2023
-python run_all.py --full --ticker BBRI --year-from 2015
+python run_all.py --detect-phases    # update market phase overlays
 ```
 
 ---
 
-## Enrichment & Gap Filling
+### Case 2: Broker Flow Backfill (for Money Flow page)
 
-Run these **after** the primary scrapers, not instead of them.
+The Money Flow page's Foreign Flow Leaderboard uses `broker_flow` data from Stockbit.
 
-### Fill NULL ratio columns (no API calls, safe to run anytime)
 ```bash
-python run_all.py --enrich-ratios
-python run_all.py --enrich-ratios --ticker BBRI    # single stock
-python run_all.py --enrich-ratios --dry-run        # preview without writing
+# Default: top 200 stocks by market cap, last 90 trading days
+python run_all.py --broker-backfill
+
+# Specific tickers
+python run_all.py --broker-backfill --ticker BBRI BMRI BBCA
+
+# Specific number of days
+python run_all.py --broker-backfill --backfill-days 30
+
+# All stocks (not just top 200) — pass a limit higher than total stock count
+python run_all.py --broker-backfill --batch-limit 900
+
+# Batch processing (for large runs to avoid timeouts)
+python run_all.py --broker-backfill --offset 0 --batch-limit 300
+python run_all.py --broker-backfill --offset 300 --batch-limit 300
+python run_all.py --broker-backfill --offset 600 --batch-limit 300
 ```
 
-### Fetch dividend history
+**What it populates:** `broker_flow` (per-broker buy/sell/net in IDR + lots), `bandar_signal`
+
+**Default stock selection:** Top `BROKER_SUMMARY_TOP_N` (200) stocks by market_cap from the `stocks` table. Change in `config.py` to increase permanently.
+
+**Also runs automatically in:** `--full` mode
+
+> **Important:** If the Money Flow page shows few tickers in the leaderboard for a date, it means broker_backfill hasn't run for that date yet. Run `--broker-backfill --backfill-days 1` to fill the latest trading day.
+
+---
+
+### Case 3: Insider Transactions
+
+```bash
+# Default: top 200 stocks, 5 pages per ticker
+python run_all.py --insider
+
+# Specific ticker with more pages
+python run_all.py --insider --ticker BBRI --insider-pages 10
+
+# All stocks
+python run_all.py --insider --batch-limit 900
+
+# Batch processing
+python run_all.py --insider --offset 0 --batch-limit 200
+python run_all.py --insider --offset 200 --batch-limit 200
+```
+
+**What it populates:** `insider_transactions` (KSEI major holder movements from Stockbit)
+
+**Not included in:** `--full` mode — must be run standalone.
+
+---
+
+### Case 4: Quarterly Financial Refresh
+
+```bash
+# Standard quarterly refresh
+python run_all.py --quarterly
+
+# Scoped to a sector
+python run_all.py --quarterly --sector finance
+python run_all.py --quarterly --sector "barang konsumen"
+
+# With year range
+python run_all.py --quarterly --year-from 2020 --year-to 2025
+
+# Single stock
+python run_all.py --quarterly --ticker BBRI
+```
+
+**What runs:** financials_fallback → company_profiles → document_links → corporate_events → update_scores
+
+**Follow up with:**
+```bash
+python run_all.py --enrich-ratios    # sync PE/PBV/ROE to stocks table
+```
+
+---
+
+### Case 5: Stockbit Financials Only (standalone)
+
+```bash
+# Only fill NULL fields (safe, default)
+python run_all.py --fallback-financials
+
+# Re-process even if data exists
+python run_all.py --fallback-financials --fallback-all
+
+# Preview without writing
+python run_all.py --fallback-financials --dry-run
+
+# Specific ticker + year range
+python run_all.py --fallback-financials --ticker BBRI --year-from 2015
+```
+
+---
+
+### Case 6: Market Phase Detection
+
+```bash
+python run_all.py --detect-phases                          # all active tickers
+python run_all.py --detect-phases --ticker BBCA BBRI BMRI  # specific tickers
+python run_all.py --detect-phases --dry-run                # detect but don't save
+```
+
+**What it does:**
+1. Fetches ~3 years of daily_prices (OHLCV) per ticker
+2. Classifies each day: SMA(20/50) crossover + ATR + volume spikes
+3. Merges consecutive same-type days into phases (min 8 days)
+4. Enriches with broker_flow, bandar_signal, insider_transactions
+5. Scores phase clarity (0-100) and smart money alignment (0-100)
+6. Writes to `market_phases` + denormalizes `current_phase` onto `stocks`
+
+**Liquidity filter:** Stocks with avg volume < 100K shares/day are skipped.
+
+**Dependencies:** Requires `daily_prices`. For smart money enrichment, also needs `broker_flow`, `bandar_signal`, `insider_transactions`.
+
+---
+
+### Case 7: Technical Signals (MACD, RSI, Volume)
+
+```bash
+python run_all.py --compute-signals                          # all active tickers
+python run_all.py --compute-signals --ticker BBCA BBRI BMRI  # specific tickers
+python run_all.py --compute-signals --dry-run                # compute but don't save
+```
+
+**What it computes:**
+- **RSI (14-period)** — Wilder's smoothed relative strength index
+- **MACD (5, 20, 9)** — line, signal, histogram + golden/death cross detection
+- **Volume change** — current volume vs 20-day SMA (percentage)
+
+**What it writes:**
+- `technical_signals` table — one row per ticker per day
+- `stocks` table (denormalized) — `rsi_14`, `macd_histogram`, `macd_cross_signal`, `macd_cross_days_ago`, `volume_change_pct`, `volume_avg_20d`
+
+**Auto-runs in:** `--daily` and `--full`
+
+**Dependencies:** Requires `daily_prices` with at least 50 trading days per ticker.
+
+---
+
+### Case 8: AI Analysis Pipeline
+
+```bash
+# Build context only (no LLM calls, no cost)
+python run_all.py --build-ai-context
+python run_all.py --build-ai-context --ticker BBRI
+
+# Generate investment thesis (costs LLM tokens)
+python run_all.py --run-ai-analysis
+python run_all.py --run-ai-analysis --ai-provider anthropic
+python run_all.py --run-ai-analysis --ai-model claude-sonnet-4
+python run_all.py --run-ai-analysis --min-composite 60  # only high-quality stocks
+
+# Both context + analysis in one command
+python run_all.py --ai-full
+python run_all.py --ai-full --ticker BBRI --ai-provider anthropic
+```
+
+**Context pipeline (4 stages):** data_cleaner → data_normalizer → scoring_engine → context_builder
+
+**Tables:** `data_quality_flags`, `normalized_metrics`, `stock_scores`, `ai_context_cache`, `ai_analysis`
+
+---
+
+### Case 9: Enrichment & Gap Filling
+
+#### Fill NULL ratio columns (no API calls, safe anytime)
+```bash
+python run_all.py --enrich-ratios
+python run_all.py --enrich-ratios --ticker BBRI
+python run_all.py --enrich-ratios --dry-run
+```
+
+#### Fetch dividend history
 ```bash
 python run_all.py --dividends
 python run_all.py --dividends --ticker BBRI TLKM
 ```
 
-### Run Stockbit financials standalone
+#### Auto-fix low-completeness stocks
 ```bash
-python run_all.py --fallback-financials             # only fills NULL fields (default)
-python run_all.py --fallback-financials --ticker BBRI
-python run_all.py --fallback-financials --fallback-all   # re-process even if data exists
-python run_all.py --fallback-financials --dry-run
-```
-
-### Fix low-completeness stocks (auto-detects what's missing and re-runs the right scrapers)
-```bash
-python run_all.py --fill-gaps                         # top 100 most incomplete stocks (default)
-python run_all.py --fill-gaps --min-score 50          # only stocks with score < 50
-python run_all.py --fill-gaps --gap-limit 20          # process 20 stocks per run
-python run_all.py --fill-gaps --gap-category ratios prices   # specific gap types only
-python run_all.py --fill-gaps --dry-run               # detect gaps, no writes
+python run_all.py --fill-gaps                              # top 100 most incomplete (default)
+python run_all.py --fill-gaps --min-score 50               # only stocks scoring < 50
+python run_all.py --fill-gaps --gap-limit 20               # process 20 stocks
+python run_all.py --fill-gaps --gap-category ratios prices # specific gap types only
+python run_all.py --fill-gaps --dry-run                    # detect gaps, no writes
 ```
 
 Gap categories: `prices`, `financials_annual`, `financials_quarterly`, `ratios`, `profile`, `officers`, `shareholders`, `dividends`
 
 ---
 
-## Smart Money Pipeline (Broker Flow, Bandar, Insider)
+### Case 10: Full Pipeline (everything from scratch)
 
-These populate the money flow analysis widgets (broker activity, bandar detection, insider tracking).
-
-### Broker flow backfill (Stockbit)
 ```bash
-python run_all.py --broker-backfill                                # last 90 days, top stocks by market cap
-python run_all.py --broker-backfill --backfill-days 60 --ticker BBRI
-python run_all.py --broker-backfill --offset 100 --batch-limit 50  # batch processing
+python run_all.py --full
+python run_all.py --full --ticker BBRI   # single stock test
 ```
-Populates `broker_flow` and `bandar_signal` tables from Stockbit marketdetectors API.
 
-> Also runs automatically in `--full` mode.
-
-### Insider transactions (Stockbit / KSEI)
-```bash
-python run_all.py --insider                                        # top stocks, 5 pages each
-python run_all.py --insider --ticker BBRI                          # specific ticker
-python run_all.py --insider --insider-pages 10                     # more pages per ticker
-python run_all.py --insider --offset 50 --batch-limit 25           # batch processing
+**Execution order:**
 ```
-Populates `insider_transactions` table from KSEI major holder movement data.
+ 1. stock_universe        → stocks
+ 2. financials_fallback   → financials (Stockbit)
+ 3. company_profiles      → profiles, officers, shareholders
+ 4. document_links        → document_links (non-fatal)
+ 5. corporate_events      → corporate_events (non-fatal)
+ 6. daily_prices          → daily_prices (OHLCV)
+ 7. money_flow            → broker_summary (IDX API)
+ 8. broker_backfill       → broker_flow, bandar_signal (Stockbit, last 90 days)
+ 9. update_scores         → stocks (completeness_score, confidence_score)
+10. enrich_ratios         → stocks (PE, PBV, ROE, net_margin, dividend_yield)
+11. detect_phases         → market_phases, stocks (current_phase)
+12. compute_signals       → technical_signals, stocks (rsi_14, macd_*, volume_*)
+13. ai_context_pipeline   → data_quality → normalized → scores → ai_context_cache
+14. ai_analysis           → ai_analysis (LLM investment thesis)
+```
 
 ---
 
-## Market Phase Detection (Fase Pasar)
+### Case 11: Scoping by Ticker / Sector
 
-Detects market cycle phases (Uptrend, Downtrend, Sideways Bullish, Sideways Bearish) using SMA(20/50) crossover + ATR volatility + volume patterns. Enriches each phase with broker flow, bandar signal, and insider confirmation data.
-
+**Single or multiple tickers:**
 ```bash
-python run_all.py --detect-phases                                  # all active tickers
-python run_all.py --detect-phases --ticker BBCA BBRI BMRI          # specific tickers
-python run_all.py --detect-phases --dry-run                        # detect but don't save
+python run_all.py --daily --ticker BBRI
+python run_all.py --daily --ticker BBRI ASII BBCA
+python run_all.py --full --ticker BBRI
 ```
 
-**What it does:**
-1. Fetches ~3 years of daily_prices (OHLCV) per ticker
-2. Classifies each day using SMA crossover + ATR + volume spikes
-3. Merges consecutive same-type days into phases (min 8 days)
-4. Enriches with broker_flow, bandar_signal, insider_transactions
-5. Scores phase clarity (0-100) from price/volume signals
-6. Scores smart money alignment (0-100) from broker/bandar/insider data
-7. Writes to `market_phases` table + denormalizes `current_phase` onto `stocks`
+**By sector:**
+```bash
+python run_all.py --quarterly --sector finance
+python run_all.py --daily --sector energy
+python run_all.py --fallback-financials --sector "barang konsumen"
+python run_all.py --daily --sector healthcare technology   # multiple sectors
+```
 
-**Liquidity filter:** Stocks with avg volume < 500K shares/day are skipped.
-
-**Dependencies:** Requires `daily_prices` data. For smart money enrichment, also needs `broker_flow`, `bandar_signal`, and `insider_transactions`.
-
-**Tables populated:** `market_phases`, `stocks` (current_phase, current_phase_clarity, current_phase_days)
+Sector matching is case-insensitive and supports partial names (e.g. "finance" → "Financials").
 
 ---
 
-## AI Analysis Pipeline (Phase 6)
+### Case 12: CLI-Only Scrapers (not in run_all.py)
 
-Builds investment context from financial data, then generates LLM-based investment theses.
-
-### Build AI context (no LLM calls)
-```bash
-python run_all.py --build-ai-context                               # all eligible tickers
-python run_all.py --build-ai-context --ticker BBRI                 # single ticker
-python run_all.py --build-ai-context --dry-run
-```
-
-Runs 4 stages: data_cleaner → data_normalizer → scoring_engine → context_builder.
-Populates: `data_quality_flags`, `normalized_metrics`, `stock_scores`, `ai_context_cache`.
-
-### Generate AI investment thesis (LLM calls)
-```bash
-python run_all.py --run-ai-analysis                                # requires ai_context_cache
-python run_all.py --run-ai-analysis --ai-provider anthropic        # use Claude instead of GPT
-python run_all.py --run-ai-analysis --ai-model claude-sonnet-4     # specific model
-python run_all.py --run-ai-analysis --min-composite 60             # only high-quality stocks
-```
-
-### Full AI pipeline (context + analysis)
-```bash
-python run_all.py --ai-full                                        # build context then generate thesis
-python run_all.py --ai-full --ticker BBRI --ai-provider anthropic
-```
-
-Populates: `ai_analysis` (lynch_category, buffett_moat, bull/bear/neutral cases, analyst_verdict).
-
----
-
-## CLI-Only Scrapers (Manual)
-
-These scrapers are NOT part of the `run_all.py` pipeline and must be run directly.
-
-### Shareholders PDF import (local files)
+#### Shareholders PDF import
 ```bash
 python -m scrapers.shareholders_pdf --file ./data/shareholders.pdf --date 2025-12-31
 python -m scrapers.shareholders_pdf --file ./data/holders.xlsx --date 2025-12-31 --dry-run
 ```
-Parses local PDF/Excel/CSV files containing ≥1% shareholder data and upserts into `shareholders_major` table.
 
-### yfinance financials (standalone, secondary source)
+#### yfinance financials (secondary source, fills gaps)
 ```bash
 python -m scrapers.financials --ticker BBRI
 python -m scrapers.financials --ticker BBRI --period annual
 ```
-Fetches from yfinance and fills NULL fields only. Not part of the automated pipeline.
-
----
-
-## Refresh Job Tracking
-
-When running for a single ticker, `run_all.py` auto-detects pending `stock_refresh_requests` jobs from the UI:
-
-```bash
-# Auto-detected:
-python run_all.py --full --ticker BBRI    # finds pending job, tracks progress per scraper
-
-# Explicit:
-python run_all.py --full --ticker BBRI --job-id 42
-```
-
-Job tracking flow:
-1. Detects pending job → sets status to `running`
-2. Each scraper reports progress to `refresh_scraper_progress` table
-3. On completion → writes after-scores, sets `no_new_data` if all scrapers added 0 rows
-4. On failure → records error message, marks job as `failed`
-
----
-
-## Recommended Cadence
-
-| Frequency | Command | Notes |
-|-----------|---------|-------|
-| Every trading day (after 16:00 WIB) | `python run_all.py --daily` | Prices + foreign flow |
-| Every trading day (after --daily) | `python run_all.py --detect-phases` | Update market phase overlays |
-| Weekly (Sunday) | `python run_all.py --weekly` | Refresh stock universe |
-| After each earnings season | `python run_all.py --quarterly` then `--enrich-ratios` | Financials + screener sync |
-| Monthly | `python run_all.py --dividends` | Dividend history |
-| Monthly | `python run_all.py --broker-backfill` | Broker flow + bandar signals |
-| Monthly | `python run_all.py --insider` | KSEI insider transactions |
-| Monthly (after broker data) | `python run_all.py --detect-phases` | Refresh phases with new smart money data |
-| Quarterly (after financials) | `python run_all.py --ai-full` | Regenerate AI investment theses |
-| Ongoing (low completeness) | `python run_all.py --fill-gaps --gap-limit 50` | Fix data gaps |
 
 ---
 
@@ -395,85 +373,135 @@ Job tracking flow:
 If `run_all.py` is overkill and you only need one scraper:
 
 ```bash
-cd python
+# Stock universe (IDX API)
 python -m scrapers.stock_universe
 python -m scrapers.stock_universe --ticker BBRI
 
+# Prices (yfinance)
 python -m scrapers.daily_prices
 python -m scrapers.daily_prices --ticker BBRI ASII
-python -m scrapers.daily_prices --full              # force full history re-fetch
+python -m scrapers.daily_prices --full                   # force full history re-fetch
 
-python -m scrapers.financials_fallback              # Stockbit (primary)
+# Financials (Stockbit — primary)
+python -m scrapers.financials_fallback
 python -m scrapers.financials_fallback --ticker BBRI
 python -m scrapers.financials_fallback --dry-run
-python -m scrapers.financials_fallback --all        # re-process even if data exists
+python -m scrapers.financials_fallback --all             # re-process even if data exists
 
-python -m scrapers.financials                       # yfinance (secondary, standalone only)
-python -m scrapers.financials --ticker BBRI
-python -m scrapers.financials --ticker BBRI --period annual
-
+# Money flow (IDX API — value + frequency only)
 python -m scrapers.money_flow
 python -m scrapers.money_flow --ticker BBRI
-python -m scrapers.money_flow --days 5              # last 5 trading days
-python -m scrapers.money_flow --date 2026-03-14     # specific date
-python -m scrapers.money_flow --broker-backfill 30  # Stockbit broker flow
-python -m scrapers.money_flow --insider             # KSEI insider transactions
+python -m scrapers.money_flow --days 5
+python -m scrapers.money_flow --date 2026-03-14
 
+# Broker flow + bandar (Stockbit)
+python -m scrapers.money_flow --broker-backfill 30
+
+# Insider transactions (Stockbit / KSEI)
+python -m scrapers.money_flow --insider
+python -m scrapers.money_flow --insider --ticker BBRI
+
+# Company profiles (IDX API)
 python -m scrapers.company_profiles
 python -m scrapers.company_profiles --ticker BBRI
 
+# Document links & corporate events (IDX API)
 python -m scrapers.document_links
-python -m scrapers.document_links --ticker BBRI
-
 python -m scrapers.corporate_events
-python -m scrapers.corporate_events --ticker BBRI
 
+# Ratio enrichment (DB only, no API calls)
 python -m scrapers.ratio_enricher
 python -m scrapers.ratio_enricher --ticker BBRI ASII
 python -m scrapers.ratio_enricher --dry-run
 
+# Dividends (yfinance)
 python -m scrapers.dividend_scraper
 python -m scrapers.dividend_scraper --ticker BBRI TLKM
 
-python -m scrapers.gap_filler --dry-run             # always dry-run first
+# Gap filler (meta-scraper)
+python -m scrapers.gap_filler --dry-run
 python -m scrapers.gap_filler --category ratios
 
-python -m scrapers.shareholders_pdf --file <path> --date 2025-12-31
-python -m scrapers.shareholders_pdf --file <path> --date 2025-12-31 --dry-run
+# Analysis modules (via run_all.py only)
+python run_all.py --detect-phases
+python run_all.py --detect-phases --ticker BBRI
+python run_all.py --compute-signals
+python run_all.py --compute-signals --ticker BBRI
 ```
+
+---
+
+## Refresh Job Tracking
+
+When running for a single ticker, `run_all.py` auto-detects pending `stock_refresh_requests` jobs from the UI:
+
+```bash
+python run_all.py --full --ticker BBRI          # auto-detects pending job
+python run_all.py --full --ticker BBRI --job-id 42   # explicit job ID
+```
+
+**Flow:** detects pending job → sets `running` → each scraper reports to `refresh_scraper_progress` → on completion writes after-scores → marks `completed` or `failed`
+
+---
+
+## Recommended Cadence
+
+| Frequency | Command | What it does |
+|-----------|---------|-------------|
+| Every trading day (after 16:00 WIB) | `--daily` | Prices + value/frequency + technical signals |
+| Every trading day (after --daily) | `--detect-phases` | Market phase overlays |
+| Weekly (Sunday) | `--weekly` | Refresh stock universe from IDX |
+| Weekly or bi-weekly | `--broker-backfill --backfill-days 7` | Keep money flow leaderboard fresh |
+| After each earnings season | `--quarterly` then `--enrich-ratios` | Financials + screener sync |
+| Monthly | `--dividends` | Dividend history from yfinance |
+| Monthly | `--broker-backfill` | Full 90-day broker flow refresh |
+| Monthly | `--insider` | KSEI insider transactions |
+| Quarterly (after financials) | `--ai-full` | Regenerate AI investment theses |
+| As needed | `--fill-gaps --gap-limit 50` | Fix incomplete stocks |
+
+---
+
+## Config Defaults (`python/config.py`)
+
+| Setting | Default | What it controls |
+|---------|---------|-----------------|
+| `BROKER_SUMMARY_TOP_N` | 200 | Max stocks for `--broker-backfill` / `--insider` when no `--ticker` given |
+| `DAILY_PRICE_HISTORY_YEARS` | 5 | Bootstrap price history on first run |
+| `YFINANCE_BATCH_SIZE` | 100 | Tickers per yfinance bulk download |
+| `RATE_LIMIT_IDX_SECONDS` | 0.6 | Delay between IDX API requests (~1.6 req/s) |
+| `RATE_LIMIT_STOCKBIT_SECONDS` | 0.8 | Delay between Stockbit API requests |
 
 ---
 
 ## Troubleshooting
 
-| Symptom | Likely cause | Fix |
-|---------|-------------|-----|
-| `Missing required environment variable` | `.env` not loaded or key missing | Check `.env` file exists and has Supabase credentials |
-| `No active stocks found` | `stocks` table empty | Run `--weekly` or `stock_universe` first |
-| IDX API returns 403 / empty | IDX blocked the request | Wait a few minutes and retry; IDX rate limit is ~1.6 req/s |
-| Stockbit "token required" prompt | No token or expired | Paste a fresh token from browser DevTools (see Token Setup above) |
-| Stockbit 401 during run | Token just expired mid-run | Cached token auto-cleared — re-run and paste a new token |
-| yfinance data is stale / missing | yfinance occasionally has gaps | Stockbit is now primary; yfinance is secondary. Run `--fill-gaps` for stubborn gaps |
-| Scores not updating | Scores are recalculated automatically at the end of each mode | Run `python run_all.py --enrich-ratios` to force a score refresh |
-| Run interrupted mid-way | Ctrl+C or crash | Re-run the same command — all scrapers are idempotent (upsert, safe to re-run) |
-| `--period annual` has no effect | Known issue: `--period` flag is accepted but not forwarded to Stockbit scraper | Use `financials_fallback` directly with `--annual-only` or `--quarterly-only` flags |
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `Missing required environment variable` | `.env` not loaded | Check `.env` file exists with Supabase credentials |
+| `No active stocks found` | `stocks` table empty | Run `--weekly` first |
+| IDX API returns 403 / empty | Rate limited | Wait a few minutes, retry |
+| Stockbit "token required" prompt | No token or expired | Paste fresh token from browser DevTools |
+| Stockbit 401 mid-run | Token expired during run | Auto-cleared — re-run and paste new token |
+| Money Flow page shows few tickers | `broker_backfill` incomplete for that date | Run `--broker-backfill --backfill-days 1` |
+| Money Flow page shows no data | No `broker_flow` data for the date range | Run `--broker-backfill` |
+| Scores not updating | Scores auto-recalculate per mode | Run `--enrich-ratios` to force |
+| Run interrupted | Ctrl+C or crash | Safe to re-run — all scrapers use upsert |
+| Phase detection skips a stock | Avg volume < 100K shares/day | Liquidity filter — by design |
+| Technical signals skips a stock | < 50 trading days of data | Need more price history |
 
 ---
 
-## Key Facts to Remember
+## Key Facts
 
-- **Stockbit is the sole financial data source in the pipeline.** `financials.py` (yfinance) exists but is not called by `run_all.py`.
-- Token is stored in `~/.stockbit_token` (not `.env`). Managed automatically — just paste when prompted.
-- Tickers are stored **without** `.JK` suffix (e.g., `BBRI`, not `BBRI.JK`). The suffix is added internally when calling yfinance.
-- All monetary values in the DB are **IDR as BIGINT** (no decimals).
-- Ratios/percentages are stored as **15.5**, not 0.155.
-- `quarter=0` means **annual** data; `quarter=1-4` means quarterly.
-- `--quarterly` runs Stockbit → profiles → docs → events. No separate `--fallback-financials` step needed.
-- `ratio_enricher` makes **no API calls** — safe to run anytime without worrying about rate limits.
-- `gap_filler` is the "fix everything" meta-scraper — it calls other scrapers internally based on detected gaps.
-- `document_links` and `corporate_events` are **non-fatal** — if their DB tables don't exist, the pipeline continues.
-- Broker backfill runs automatically in `--full` mode. Can also run standalone via `--broker-backfill`.
-- Insider scraping requires standalone `--insider` invocation (not included in `--full`).
-- `--detect-phases` detects market phases from price/volume data. No API calls — pure computation. Run after `--daily`.
-- `--ai-full` = `--build-ai-context` + `--run-ai-analysis`. Context build is free (DB only); analysis costs LLM tokens.
-- `--enrich-ratios` now runs automatically in `--full` mode after scoring. Syncs PE/PBV/ROE from financials to stocks table.
+- **Stockbit is the sole financial data source.** `financials.py` (yfinance) exists but is not in the pipeline.
+- **Foreign flow comes from `broker_flow`** (Stockbit, `broker_type='Asing'`), not from `daily_prices`. The IDX API foreign flow fields were removed (unreliable data, unknown units).
+- Token is in `~/.stockbit_token` (not `.env`). Managed automatically.
+- Tickers stored **without** `.JK` suffix. Added internally when calling yfinance.
+- All monetary values: **IDR as BIGINT**. Ratios stored as **15.5**, not 0.155.
+- `quarter=0` = annual data; `quarter=1-4` = quarterly.
+- `ratio_enricher` and `--compute-signals` make **no API calls** — safe to run anytime.
+- `gap_filler` is the "fix everything" meta-scraper — detects gaps and calls the right scrapers.
+- `--broker-backfill` defaults to top 200 by market cap. Use `--batch-limit 900` for all stocks.
+- `--insider` is **not included** in `--full` — run standalone.
+- `--detect-phases` and `--compute-signals` make no API calls — pure DB computation.
+- `--ai-full` = `--build-ai-context` (free) + `--run-ai-analysis` (costs LLM tokens).

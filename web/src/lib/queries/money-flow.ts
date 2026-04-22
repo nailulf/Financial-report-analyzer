@@ -4,8 +4,7 @@ import { parseBigInt } from '@/lib/calculations/formatters'
 export interface FlowRow {
   ticker: string
   name: string | null
-  foreign_net_5d: number | null
-  foreign_net_20d: number | null
+  asing_net: number       // net foreign flow IDR (from broker_flow)
 }
 
 export interface BrokerRow {
@@ -38,7 +37,7 @@ export interface FlowScoreRow {
   foreign_percentile: number
   pct_change_5d: number | null
   volume_ratio: number | null
-  foreign_net_5d: number | null
+  asing_net: number | null
 }
 
 // ─── Default date helpers ─────────────────────────────────────────────────────
@@ -51,75 +50,47 @@ export function defaultDateRange(): { from: string; to: string } {
   return { from: fmt(from), to: fmt(to) }
 }
 
-// ─── Foreign flow leaderboard ─────────────────────────────────────────────────
-// Default (no dates): reads v_foreign_flow_summary with built-in 5d/20d windows.
-// With date range: queries daily_prices directly and aggregates in JS.
+// ─── Foreign flow leaderboard (from Stockbit broker_flow) ────────────────────
+// Aggregates net_value from broker_flow WHERE broker_type = 'Asing'
+// across the given date range. Always uses broker_flow as sole data source.
 
 export async function getForeignFlowLeaderboard(
   topN = 15,
   from?: string,
   to?: string,
-): Promise<{ buyers: FlowRow[]; sellers: FlowRow[]; isRangeMode: boolean }> {
+): Promise<{ buyers: FlowRow[]; sellers: FlowRow[] }> {
   const supabase = await createClient()
 
-  // ── Range mode: query daily_prices directly ──────────────────────────────
-  if (from && to) {
-    const { data, error } = await supabase
-      .from('daily_prices')
-      .select('ticker, foreign_net')
-      .gte('date', from)
-      .lte('date', to)
-      .not('foreign_net', 'is', null)
-      .limit(100_000)
+  // Use defaults if not provided
+  const { from: defaultFrom, to: defaultTo } = defaultDateRange()
+  const dateFrom = from ?? defaultFrom
+  const dateTo   = to   ?? defaultTo
 
-    if (error || !data || data.length === 0) return { buyers: [], sellers: [], isRangeMode: true }
+  const { data, error } = await supabase
+    .from('broker_flow')
+    .select('ticker, broker_type, net_value')
+    .eq('broker_type', 'Asing')
+    .gte('trade_date', dateFrom)
+    .lte('trade_date', dateTo)
+    .limit(100_000)
 
-    // Aggregate foreign_net per ticker in JS
-    const totals = new Map<string, number>()
-    for (const row of data as any[]) {
-      const n = parseBigInt(row.foreign_net) ?? 0
-      totals.set(row.ticker, (totals.get(row.ticker) ?? 0) + n)
-    }
+  if (error || !data || data.length === 0) return { buyers: [], sellers: [] }
 
-    const sorted = Array.from(totals.entries())
-      .map(([ticker, net]) => ({ ticker, foreign_net_5d: net, foreign_net_20d: null }))
-      .sort((a, b) => b.foreign_net_5d - a.foreign_net_5d)
-
-    if (sorted.length === 0) return { buyers: [], sellers: [], isRangeMode: true }
-
-    const topBuyers  = sorted.slice(0, topN)
-    const topSellers = sorted.slice(-topN).reverse()
-    const allTickers = [...topBuyers, ...topSellers].map((r) => r.ticker)
-
-    const { data: stocks } = await supabase
-      .from('stocks').select('ticker, name').in('ticker', allTickers)
-    const nameMap = new Map((stocks as any[] ?? []).map((s: any) => [s.ticker, s.name]))
-
-    const enrich = (rows: typeof sorted): FlowRow[] =>
-      rows.map((r) => ({ ...r, name: nameMap.get(r.ticker) ?? null }))
-
-    return { buyers: enrich(topBuyers), sellers: enrich(topSellers), isRangeMode: true }
+  // Aggregate net_value per ticker
+  const totals = new Map<string, number>()
+  for (const row of data as any[]) {
+    const n = parseBigInt(row.net_value) ?? 0
+    totals.set(row.ticker, (totals.get(row.ticker) ?? 0) + n)
   }
 
-  // ── Default mode: use the pre-aggregated view ────────────────────────────
-  const { data, error } = await supabase
-    .from('v_foreign_flow_summary')
-    .select('ticker, foreign_net_5d, foreign_net_20d')
-    .not('foreign_net_5d', 'is', null)
+  const sorted = Array.from(totals.entries())
+    .map(([ticker, net]) => ({ ticker, asing_net: net }))
+    .sort((a, b) => b.asing_net - a.asing_net)
 
-  if (error || !data || data.length === 0) return { buyers: [], sellers: [], isRangeMode: false }
+  if (sorted.length === 0) return { buyers: [], sellers: [] }
 
-  const sorted = (data as any[])
-    .map((r) => ({
-      ticker: r.ticker as string,
-      foreign_net_5d: parseBigInt(r.foreign_net_5d),
-      foreign_net_20d: parseBigInt(r.foreign_net_20d),
-    }))
-    .filter((r) => r.foreign_net_5d !== null)
-    .sort((a, b) => (b.foreign_net_5d ?? 0) - (a.foreign_net_5d ?? 0))
-
-  const topBuyers  = sorted.slice(0, topN)
-  const topSellers = sorted.slice(-topN).reverse()
+  const topBuyers  = sorted.filter((r) => r.asing_net > 0).slice(0, topN)
+  const topSellers = sorted.filter((r) => r.asing_net < 0).slice(-topN).reverse()
   const allTickers = [...topBuyers, ...topSellers].map((r) => r.ticker)
 
   const { data: stocks } = await supabase
@@ -129,7 +100,7 @@ export async function getForeignFlowLeaderboard(
   const enrich = (rows: typeof sorted): FlowRow[] =>
     rows.map((r) => ({ ...r, name: nameMap.get(r.ticker) ?? null }))
 
-  return { buyers: enrich(topBuyers), sellers: enrich(topSellers), isRangeMode: false }
+  return { buyers: enrich(topBuyers), sellers: enrich(topSellers) }
 }
 
 // ─── Broker dates (for single-day date pills) ─────────────────────────────────
@@ -341,7 +312,7 @@ export async function getFlowScoreLeaderboard(topN = 15): Promise<{
 
   const { data, error } = await supabase
     .from('v_flow_score')
-    .select('ticker, flow_score, foreign_score, volume_score, price_score, foreign_percentile, pct_change_5d, volume_ratio, foreign_net_5d')
+    .select('ticker, flow_score, foreign_score, volume_score, price_score, foreign_percentile, pct_change_5d, volume_ratio')
     .not('flow_score', 'is', null)
 
   if (error || !data || data.length === 0) return { bullish: [], bearish: [] }
@@ -356,7 +327,7 @@ export async function getFlowScoreLeaderboard(topN = 15): Promise<{
       foreign_percentile: Number(r.foreign_percentile ?? 50),
       pct_change_5d: r.pct_change_5d != null ? Number(r.pct_change_5d) : null,
       volume_ratio: r.volume_ratio != null ? Number(r.volume_ratio) : null,
-      foreign_net_5d: r.foreign_net_5d != null ? parseBigInt(r.foreign_net_5d) : null,
+      asing_net: null as number | null,
     }))
     .sort((a, b) => b.flow_score - a.flow_score)
 

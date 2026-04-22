@@ -6,7 +6,7 @@ export async function getPriceHistory(ticker: string, days = 252): Promise<Price
   const supabase = await createClient()
   const { data, error } = await supabase
     .from('daily_prices')
-    .select('date, open, high, low, close, volume, foreign_net')
+    .select('date, open, high, low, close, volume')
     .eq('ticker', ticker.toUpperCase())
     .order('date', { ascending: false })
     .limit(days)
@@ -20,7 +20,6 @@ export async function getPriceHistory(ticker: string, days = 252): Promise<Price
     low: r.low != null ? Number(r.low) : null,
     close: r.close != null ? Number(r.close) : null,
     volume: r.volume != null ? Number(r.volume) : null,
-    foreign_net: r.foreign_net != null ? Number(r.foreign_net) : null,
   }))
 }
 

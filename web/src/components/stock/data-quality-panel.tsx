@@ -158,6 +158,9 @@ const SCRAPER_LABELS: Record<string, string> = {
   money_flow:          'Arus Dana Asing',
   dividend_scraper:    'Riwayat Dividen',
   broker_backfill:     'Broker Summary',
+  ratio_enricher:      'Rasio Keuangan',
+  market_phases:       'Deteksi Fase Pasar',
+  technical_signals:   'Sinyal Teknikal (RSI/MACD)',
 }
 
 function freshnessIcon(status: string): { icon: string; color: string; bg: string } {
@@ -281,6 +284,7 @@ function StockbitRefreshModal({
         'daily_prices', 'money_flow', 'financials_fallback', 'stock_universe',
         'company_profiles', 'broker_backfill', 'dividend_scraper',
         'document_links', 'corporate_events',
+        'ratio_enricher', 'market_phases', 'technical_signals',
       ]))
     } finally {
       setLoadingFreshness(false)
@@ -335,7 +339,7 @@ function StockbitRefreshModal({
       const refreshRes = await fetch(`/api/stocks/${ticker}/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ scrapers: scraperList }),
+        body: JSON.stringify({ scrapers: scraperList, bearer_token: token.trim() || undefined }),
       })
       const refreshBody = await refreshRes.json() as {
         job_id?: number; error?: string
@@ -349,11 +353,33 @@ function StockbitRefreshModal({
 
       const jobId = refreshBody.job_id
 
-      // 3. Check if GitHub Actions dispatch succeeded
+      // 3. If GitHub Actions dispatch failed, fall back to local execution
       if (refreshBody.dispatch && !refreshBody.dispatch.ok) {
-        const flags = ['--full', `--ticker ${ticker}`, `--job-id ${jobId}`]
-        setManualCmd(`cd python && python run_all.py ${flags.join(' ')}`)
-        setDispatchFailed(true)
+        try {
+          const localRes = await fetch(`/api/stocks/${ticker}/refresh/local`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              job_id: jobId,
+              scrapers: scraperList,
+              broker_days: brokerDays,
+              bearer_token: token.trim() || undefined,
+            }),
+          })
+          const localBody = await localRes.json() as { ok?: boolean; error?: string; cmd?: string }
+          if (!localRes.ok || !localBody.ok) {
+            // Local spawn also failed — show manual command with token
+            const envPrefix = token.trim() ? `STOCKBIT_BEARER_TOKEN='${token.trim()}' ` : ''
+            const flags = ['--full', `--ticker ${ticker}`, `--job-id ${jobId}`]
+            setManualCmd(`cd python && ${envPrefix}python run_all.py ${flags.join(' ')}`)
+            setDispatchFailed(true)
+          }
+        } catch {
+          const envPrefix = token.trim() ? `STOCKBIT_BEARER_TOKEN='${token.trim()}' ` : ''
+          const flags = ['--full', `--ticker ${ticker}`, `--job-id ${jobId}`]
+          setManualCmd(`cd python && ${envPrefix}python run_all.py ${flags.join(' ')}`)
+          setDispatchFailed(true)
+        }
       }
 
       // 4. Start polling

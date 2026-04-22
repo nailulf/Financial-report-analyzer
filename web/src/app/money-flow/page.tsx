@@ -40,7 +40,6 @@ export default async function MoneyFlowPage({ searchParams }: PageProps) {
   const { from: defaultFrom, to: defaultTo } = defaultDateRange()
   const from = fromParam ?? defaultFrom
   const to   = toParam   ?? defaultTo
-  const isRangeFiltered = fromParam != null || toParam != null
   const rangeLabel = formatRangeLabel(from, to)
 
   // Broker-specific range (independent — falls back to global range)
@@ -48,11 +47,11 @@ export default async function MoneyFlowPage({ searchParams }: PageProps) {
   const brokerTo   = broker_to   ?? to
 
   const [
-    { buyers, sellers, isRangeMode },
+    { buyers, sellers },
     anomalies,
     { bullish, bearish },
   ] = await Promise.all([
-    getForeignFlowLeaderboard(15, isRangeFiltered ? from : undefined, isRangeFiltered ? to : undefined),
+    getForeignFlowLeaderboard(15, from, to),
     getVolumeAnomalies(25),
     getFlowScoreLeaderboard(15),
   ])
@@ -73,30 +72,12 @@ export default async function MoneyFlowPage({ searchParams }: PageProps) {
         <DateRangePicker from={from} to={to} ticker={ticker} />
       </div>
 
-      {/* Flow Score Leaderboard — always shows current signals */}
-      <div>
-        <p className="text-xs text-gray-400 mb-2 flex items-center gap-1.5">
-          <span className="w-1.5 h-1.5 rounded-full bg-gray-300 inline-block" />
-          Flow Score reflects current market signals (not affected by date range filter)
-        </p>
-        <FlowScoreSection bullish={bullish} bearish={bearish} />
-      </div>
-
-      {/* Volume Anomaly — always shows current trading day */}
-      <div>
-        <p className="text-xs text-gray-400 mb-2 flex items-center gap-1.5">
-          <span className="w-1.5 h-1.5 rounded-full bg-gray-300 inline-block" />
-          Volume anomaly always shows the most recent trading day
-        </p>
-        <VolumeAnomalyTable rows={anomalies} />
-      </div>
-
-      {/* Foreign Flow — respects date range */}
+      {/* 1. Foreign Flow — respects date range */}
       {hasForeignData ? (
         <ForeignFlowChart
           buyers={buyers}
           sellers={sellers}
-          rangeLabel={isRangeMode ? rangeLabel : undefined}
+          rangeLabel={rangeLabel}
         />
       ) : (
         <div className="bg-white rounded-xl border border-gray-200 p-10 text-center text-gray-400">
@@ -108,6 +89,12 @@ export default async function MoneyFlowPage({ searchParams }: PageProps) {
           </p>
         </div>
       )}
+
+      {/* 2. Flow Score Leaderboard */}
+      <FlowScoreSection bullish={bullish} bearish={bearish} />
+
+      {/* 3. Volume Anomaly */}
+      <VolumeAnomalyTable rows={anomalies} />
 
       {/* Broker Activity — independent date range filter (broker_from / broker_to params) */}
       <Suspense fallback={<ChartSkeleton height={300} />}>

@@ -60,6 +60,7 @@ async function triggerGithubWorkflow(
   ticker: string,
   jobId: number,
   scrapers: string[] = [],
+  stockbitToken?: string,
 ): Promise<{ ok: boolean; status: number; error?: string }> {
   const token = process.env.GITHUB_ACTIONS_TOKEN
   const repo  = process.env.GITHUB_REPO
@@ -75,6 +76,9 @@ async function triggerGithubWorkflow(
   }
   if (scrapers.length > 0) {
     inputs.scrapers = scrapers.join(',')
+  }
+  if (stockbitToken) {
+    inputs.stockbit_token = stockbitToken
   }
   const res = await fetch(url, {
     method: 'POST',
@@ -102,7 +106,7 @@ async function triggerGithubWorkflow(
 export async function POST(req: NextRequest, { params }: RouteParams) {
   const { ticker } = await params
   const upperTicker = ticker.toUpperCase()
-  const body = await req.json().catch(() => ({})) as { scrapers?: string[] }
+  const body = await req.json().catch(() => ({})) as { scrapers?: string[]; bearer_token?: string }
 
   // Use provided scrapers (validated against known list) or default to all
   const scrapersToRun = body.scrapers?.length
@@ -134,7 +138,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
 
   if (existing) {
     // Re-trigger dispatch in case the previous attempt failed (e.g. bad token)
-    const dispatch = await triggerGithubWorkflow(upperTicker, existing.id)
+    const dispatch = await triggerGithubWorkflow(upperTicker, existing.id, [], body.bearer_token)
     return NextResponse.json({
       job_id: existing.id,
       dispatch: { ok: dispatch.ok, status: dispatch.status, error: dispatch.error ?? null },
@@ -171,7 +175,7 @@ export async function POST(req: NextRequest, { params }: RouteParams) {
   await supabase.from('refresh_scraper_progress').insert(progressRows)
 
   // Dispatch to GitHub Actions — works on both local and Vercel
-  const dispatch = await triggerGithubWorkflow(upperTicker, job.id, scrapersToRun)
+  const dispatch = await triggerGithubWorkflow(upperTicker, job.id, scrapersToRun, body.bearer_token)
 
   return NextResponse.json({
     job_id: job.id,

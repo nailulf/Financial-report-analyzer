@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { isTickerInActiveWatchlist, toggleTickerInActive } from '@/lib/watchlists'
+import { track } from '@/lib/analytics'
 
 export function WatchlistStar({ ticker }: { ticker: string }) {
   const [starred, setStarred] = useState(false)
@@ -19,6 +20,7 @@ export function WatchlistStar({ ticker }: { ticker: string }) {
     e.stopPropagation()
     const nowStarred = toggleTickerInActive(ticker)
     setStarred(nowStarred)
+    track.watchlistToggle(ticker, nowStarred)
   }
 
   return (

@@ -3,6 +3,7 @@
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import { useState } from 'react'
 import type { SearchResult } from '@/lib/types/api'
+import { track } from '@/lib/analytics'
 
 export function TickerSelector({ selected }: { selected: string[] }) {
   const router = useRouter()
@@ -26,6 +27,7 @@ export function TickerSelector({ selected }: { selected: string[] }) {
     const next = [...selected, ticker]
     setQuery('')
     setOpen(false)
+    track.compareTickerAdded(ticker, next.length)
     const params = new URLSearchParams(searchParams.toString())
     params.set('tickers', next.join(','))
     router.push(`${pathname}?${params.toString()}`)

@@ -1,5 +1,7 @@
 'use client'
 
+import { useEffect } from 'react'
+import { track } from '@/lib/analytics'
 import type {
   StockHeader,
   StockMetrics,
@@ -96,6 +98,10 @@ export function StockPageClient({
   const latestPrice   = priceHistory.at(-1)?.close ?? metrics?.price ?? null
   const defaultGrowth = cagr.find((c) => c.metric === 'revenue')?.cagr_3yr ?? 10
   const displayedShareholders = majorShareholders.length > 0 ? majorShareholders : shareholders
+
+  useEffect(() => {
+    track.stockViewed(header.ticker)
+  }, [header.ticker])
 
   return (
     <div className="bg-[#F8F8FA] min-h-screen max-w-[1400px] mx-auto">

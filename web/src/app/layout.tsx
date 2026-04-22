@@ -1,9 +1,13 @@
 import type { Metadata } from 'next'
 import localFont from 'next/font/local'
 import { JetBrains_Mono, Space_Grotesk } from 'next/font/google'
+import { GoogleAnalytics } from '@next/third-parties/google'
 import './globals.css'
 import { Navbar } from '@/components/nav/navbar'
 import { ToastProvider } from '@/components/ui/toast'
+import { PageviewTracker } from '@/components/analytics/pageview-tracker'
+
+const GA_ID = process.env.NEXT_PUBLIC_GA_ID
 
 const geistSans = localFont({
   src: './fonts/GeistVF.woff',
@@ -42,8 +46,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ToastProvider>
           <Navbar />
           {children}
+          <PageviewTracker />
         </ToastProvider>
       </body>
+      {GA_ID && <GoogleAnalytics gaId={GA_ID} />}
     </html>
   )
 }

@@ -2,6 +2,7 @@
 
 import { useState, useTransition, useEffect, useRef, useCallback } from 'react'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
+import { track } from '@/lib/analytics'
 
 const BOARDS = ['Main', 'Development', 'Acceleration'] as const
 
@@ -174,6 +175,7 @@ export function ScreenerFilters() {
         body: JSON.stringify({ name, filters: filterObj }),
       })
       if (res.ok) {
+        track.strategySaved(name, Object.keys(filterObj).length)
         setSavingStrategy(false)
         setStrategyName('')
         // Notify strategy bar to refresh
@@ -193,6 +195,7 @@ export function ScreenerFilters() {
       else params.delete(key)
     }
     params.delete('page')
+    track.screenerFilterApplied(filters)
     startTransition(() => router.push(`${pathname}?${params.toString()}`))
   }
 
@@ -201,6 +204,7 @@ export function ScreenerFilters() {
     for (const key of FILTER_KEYS) params.delete(key)
     params.delete('page')
     setFilters({ ...EMPTY_FILTERS })
+    track.screenerFilterCleared()
     startTransition(() => router.push(`${pathname}?${params.toString()}`))
   }
 

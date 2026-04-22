@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import type { DataQuality, QualityCategory, StockbitPreviewRow, RefreshJob, RefreshScraperProgress, CategoryFreshness } from '@/lib/types/api'
 import { AlternativeSources } from '@/components/stock/alternative-sources'
 import { useToast } from '@/components/ui/toast'
+import { track } from '@/lib/analytics'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -336,6 +337,7 @@ function StockbitRefreshModal({
 
       // 2. Create refresh job + dispatch to GitHub Actions
       const scraperList = Array.from(selectedScrapers)
+      track.refreshData(ticker, scraperList)
       const refreshRes = await fetch(`/api/stocks/${ticker}/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -857,7 +859,15 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
   const [modalOpen,     setModalOpen]     = useState(false)
   const [modalMounted,  setModalMounted]  = useState(false) // stays true once opened, so polling survives close
   const [isMounted,     setIsMounted]     = useState(false)
-  useEffect(() => setIsMounted(true), [])
+  // Stockbit tokens are session/IP-bound — they only work when Python runs on the user's
+  // own machine. Hide the refresh entry point on any deployed host (Vercel, etc.) so users
+  // aren't led into a flow that will 401 on the GitHub Actions runner.
+  const [isLocalHost,   setIsLocalHost]   = useState(false)
+  useEffect(() => {
+    setIsMounted(true)
+    const host = window.location.hostname
+    setIsLocalHost(host === 'localhost' || host === '127.0.0.1')
+  }, [])
 
   const openModal = useCallback(() => {
     setModalMounted(true)
@@ -906,16 +916,18 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
                   {missing_categories.length} categor{missing_categories.length === 1 ? 'y' : 'ies'} missing
                 </span>
               )}
-              <button
-                onClick={openModal}
-                className={`text-xs px-2.5 py-1 rounded-lg border transition-colors ${
-                  isLowCompleteness
-                    ? 'border-amber-300 text-amber-600 hover:bg-amber-50'
-                    : 'border-[#E5E4E1] text-[#6D6C6A] hover:bg-[#F5F4F1]'
-                }`}
-              >
-                ↺ Refresh Data
-              </button>
+              {isLocalHost && (
+                <button
+                  onClick={openModal}
+                  className={`text-xs px-2.5 py-1 rounded-lg border transition-colors ${
+                    isLowCompleteness
+                      ? 'border-amber-300 text-amber-600 hover:bg-amber-50'
+                      : 'border-[#E5E4E1] text-[#6D6C6A] hover:bg-[#F5F4F1]'
+                  }`}
+                >
+                  ↺ Refresh Data
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -942,9 +954,15 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
             {confidence_score == null && (
               <div className="px-5 pb-4">
                 <p className="text-xs text-[#9C9B99] bg-[#F5F4F1] rounded px-3 py-2 border border-[#E5E4E1]">
-                  Confidence score has not been computed yet. Use{' '}
-                  <span className="font-medium text-[#6D6C6A]">↺ Refresh Data</span>{' '}
-                  to pull data from Stockbit.
+                  {isLocalHost ? (
+                    <>
+                      Confidence score has not been computed yet. Use{' '}
+                      <span className="font-medium text-[#6D6C6A]">↺ Refresh Data</span>{' '}
+                      to pull data from Stockbit.
+                    </>
+                  ) : (
+                    <>Confidence score has not been computed yet. Run a refresh from your local dev environment to pull data from Stockbit.</>
+                  )}
                 </p>
               </div>
             )}

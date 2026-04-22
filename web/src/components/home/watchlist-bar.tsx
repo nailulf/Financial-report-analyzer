@@ -12,6 +12,7 @@ import {
   removeTicker,
   type Watchlist,
 } from '@/lib/watchlists'
+import { track } from '@/lib/analytics'
 
 // ---------------------------------------------------------------------------
 // WatchlistBar — inline multi-watchlist manager
@@ -83,6 +84,7 @@ export function WatchlistBar() {
     const name = newName.trim()
     if (!name) return
     createWatchlist(name)
+    track.watchlistCreated()
     setNewName('')
     setCreatingNew(false)
   }

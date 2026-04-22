@@ -106,19 +106,6 @@ jobs:
             echo "extra_args=$EXTRA" >> $GITHUB_OUTPUT
           fi
 
-      - name: Debug Stockbit token source
-        env:
-          INPUT_TOKEN: ${{ inputs.stockbit_token }}
-          SECRET_TOKEN: ${{ secrets.STOCKBIT_BEARER_TOKEN }}
-        run: |
-          if [ -n "$INPUT_TOKEN" ]; then
-            echo "Stockbit token source: workflow_dispatch input (len=${#INPUT_TOKEN})"
-          elif [ -n "$SECRET_TOKEN" ]; then
-            echo "Stockbit token source: repository secret fallback (len=${#SECRET_TOKEN})"
-          else
-            echo "Stockbit token source: NONE — both input and secret are empty"
-          fi
-
       - name: Run scraper
         env:
           SUPABASE_URL:             ${{ secrets.SUPABASE_URL }}

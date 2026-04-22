@@ -37,7 +37,8 @@ _CURRENT_YEAR: int = datetime.date.today().year
 # BIGINT columns — store raw IDR integer amounts
 INT_COLS: set[str] = {
     "revenue", "gross_profit", "operating_income", "net_income",
-    "total_assets", "total_liabilities", "total_equity",
+    "total_assets", "current_assets",
+    "total_liabilities", "current_liabilities", "total_equity",
     "cash_and_equivalents", "short_term_debt", "long_term_debt",
     "total_debt", "net_debt", "working_capital",
     "operating_cash_flow", "investing_cash_flow", "financing_cash_flow",
@@ -84,8 +85,10 @@ IS_MAP: dict[str, str] = {
 BS_MAP: dict[str, str] = {
     # Balance sheet totals (header/summary rows)
     "Assets":                                   "total_assets",
+    "Current Assets":                           "current_assets",
     "Liabilities":                              "total_liabilities",
-    "Total Equity":                             "total_equity",
+    "Current Liabilities":                      "current_liabilities",
+    "Equity":                                   "total_equity",
     # Balance sheet line items
     "Cash And Cash Equivalents":                "cash_and_equivalents",
     # Computed metrics (Quarter)

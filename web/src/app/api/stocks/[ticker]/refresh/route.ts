@@ -80,6 +80,10 @@ async function triggerGithubWorkflow(
   if (stockbitToken) {
     inputs.stockbit_token = stockbitToken
   }
+  console.log(
+    `[refresh] dispatch ticker=${ticker} job=${jobId} scrapers=${scrapers.length} ` +
+    `wizard_token_len=${stockbitToken?.length ?? 0}`,
+  )
   const res = await fetch(url, {
     method: 'POST',
     headers: {

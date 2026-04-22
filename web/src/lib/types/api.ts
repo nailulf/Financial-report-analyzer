@@ -30,6 +30,8 @@ export interface ScreenerRow {
   revenue_cagr_5yr: number | null
   price_cagr_3yr: number | null
   price_cagr_5yr: number | null
+  ocf_cagr_3yr: number | null
+  ocf_cagr_5yr: number | null
   div_yield_avg_3yr: number | null
   div_yield_avg_5yr: number | null
   completeness_score: number | null

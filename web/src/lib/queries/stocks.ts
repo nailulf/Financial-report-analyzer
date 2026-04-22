@@ -21,6 +21,8 @@ export interface ScreenerFilters {
   minRevCagr5yr?: number
   minPriceCagr3yr?: number
   minPriceCagr5yr?: number
+  minOcfCagr3yr?: number
+  minOcfCagr5yr?: number
   minMktCap?: number
   minCompleteness?: number
   minConfidence?: number
@@ -43,6 +45,55 @@ function resolveSortCol(raw?: string): SortCol {
   return 'market_cap'
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function applyScreenerFilters<Q extends { eq: any; gte: any; lte: any; or: any }>(
+  query: Q,
+  filters: ScreenerFilters,
+): Q {
+  if (filters.sector) query = query.eq('sector', filters.sector)
+  if (filters.board) query = query.eq('board', filters.board)
+  if (filters.phase) {
+    const phases = String(filters.phase).split(',').filter(Boolean)
+    if (phases.length === 1) {
+      query = query.eq('current_phase', phases[0])
+    } else if (phases.length > 1) {
+      const orClause = phases.map((p: string) => `current_phase.eq.${p}`).join(',')
+      query = query.or(orClause)
+    }
+  }
+  if (filters.minRoe != null) query = query.gte('roe', filters.minRoe)
+  if (filters.maxPe != null) query = query.lte('pe_ratio', filters.maxPe)
+  if (filters.maxPbv != null) query = query.lte('pbv_ratio', filters.maxPbv)
+  if (filters.minNetMargin != null) query = query.gte('net_margin', filters.minNetMargin)
+  if (filters.minDivYield != null) query = query.gte('dividend_yield', filters.minDivYield)
+  if (filters.minDivAvg3yr != null) query = query.gte('div_yield_avg_3yr', filters.minDivAvg3yr)
+  if (filters.minDivAvg5yr != null) query = query.gte('div_yield_avg_5yr', filters.minDivAvg5yr)
+  if (filters.minRevCagr3yr != null) query = query.gte('revenue_cagr_3yr', filters.minRevCagr3yr)
+  if (filters.minRevCagr5yr != null) query = query.gte('revenue_cagr_5yr', filters.minRevCagr5yr)
+  if (filters.minPriceCagr3yr != null) query = query.gte('price_cagr_3yr', filters.minPriceCagr3yr)
+  if (filters.minPriceCagr5yr != null) query = query.gte('price_cagr_5yr', filters.minPriceCagr5yr)
+  if (filters.minOcfCagr3yr != null) query = query.gte('ocf_cagr_3yr', filters.minOcfCagr3yr)
+  if (filters.minOcfCagr5yr != null) query = query.gte('ocf_cagr_5yr', filters.minOcfCagr5yr)
+  if (filters.minMktCap != null) {
+    query = query.gte('market_cap', filters.minMktCap * 1_000_000_000_000)
+  }
+  if (filters.minCompleteness != null) query = query.gte('completeness_score', filters.minCompleteness)
+  if (filters.minConfidence != null) query = query.gte('confidence_score', filters.minConfidence)
+  if (filters.maxPhaseDays != null) {
+    const days = Number(filters.maxPhaseDays)
+    if (!isNaN(days)) query = query.lte('current_phase_days', days)
+  }
+  if (filters.minRsi != null) query = query.gte('rsi_14', filters.minRsi)
+  if (filters.maxRsi != null) query = query.lte('rsi_14', filters.maxRsi)
+  if (filters.macdCross) query = query.eq('macd_cross_signal', filters.macdCross)
+  if (filters.maxMacdCrossDays != null) query = query.lte('macd_cross_days_ago', filters.maxMacdCrossDays)
+  if (filters.minVolChangePct != null) query = query.gte('volume_change_pct', filters.minVolChangePct)
+  if (filters.minVolAvg != null) {
+    query = query.gte('volume_avg_20d', filters.minVolAvg * 1_000_000)
+  }
+  return query
+}
+
 export async function getScreenerRows(
   filters: ScreenerFilters = {},
   page = 1,
@@ -57,7 +108,7 @@ export async function getScreenerRows(
   // All screener metrics are denormalized onto stocks (see schema-v10).
   // No views, no joins — just a simple indexed table scan.
 
-  const SCREENER_COLS = 'ticker, name, sector, subsector, board, is_lq45, is_idx30, listing_date, listed_shares, market_cap, current_price, pe_ratio, pbv_ratio, roe, net_margin, dividend_yield, current_phase, current_phase_clarity, current_phase_days, revenue_cagr_3yr, revenue_cagr_5yr, price_cagr_3yr, price_cagr_5yr, div_yield_avg_3yr, div_yield_avg_5yr, completeness_score, confidence_score, rsi_14, macd_histogram, macd_cross_signal, macd_cross_days_ago, volume_change_pct, volume_avg_20d'
+  const SCREENER_COLS = 'ticker, name, sector, subsector, board, is_lq45, is_idx30, listing_date, listed_shares, market_cap, current_price, pe_ratio, pbv_ratio, roe, net_margin, dividend_yield, current_phase, current_phase_clarity, current_phase_days, revenue_cagr_3yr, revenue_cagr_5yr, price_cagr_3yr, price_cagr_5yr, ocf_cagr_3yr, ocf_cagr_5yr, div_yield_avg_3yr, div_yield_avg_5yr, completeness_score, confidence_score, rsi_14, macd_histogram, macd_cross_signal, macd_cross_days_ago, volume_change_pct, volume_avg_20d'
 
   let dataQuery = supabase
     .from('stocks')
@@ -72,116 +123,8 @@ export async function getScreenerRows(
     .eq('status', 'Active')
 
   // Apply filters to both queries
-  if (filters.sector) {
-    dataQuery = dataQuery.eq('sector', filters.sector)
-    countQuery = countQuery.eq('sector', filters.sector)
-  }
-  if (filters.board) {
-    dataQuery = dataQuery.eq('board', filters.board)
-    countQuery = countQuery.eq('board', filters.board)
-  }
-  if (filters.phase) {
-    const phases = String(filters.phase).split(',').filter(Boolean)
-    if (phases.length === 1) {
-      dataQuery = dataQuery.eq('current_phase', phases[0])
-      countQuery = countQuery.eq('current_phase', phases[0])
-    } else if (phases.length > 1) {
-      // OR filter: stock's single current_phase matches any of the selected values
-      const orClause = phases.map((p) => `current_phase.eq.${p}`).join(',')
-      dataQuery = dataQuery.or(orClause)
-      countQuery = countQuery.or(orClause)
-    }
-  }
-  if (filters.minRoe != null) {
-    dataQuery = dataQuery.gte('roe', filters.minRoe)
-    countQuery = countQuery.gte('roe', filters.minRoe)
-  }
-  if (filters.maxPe != null) {
-    dataQuery = dataQuery.lte('pe_ratio', filters.maxPe)
-    countQuery = countQuery.lte('pe_ratio', filters.maxPe)
-  }
-  if (filters.maxPbv != null) {
-    dataQuery = dataQuery.lte('pbv_ratio', filters.maxPbv)
-    countQuery = countQuery.lte('pbv_ratio', filters.maxPbv)
-  }
-  if (filters.minNetMargin != null) {
-    dataQuery = dataQuery.gte('net_margin', filters.minNetMargin)
-    countQuery = countQuery.gte('net_margin', filters.minNetMargin)
-  }
-  if (filters.minDivYield != null) {
-    dataQuery = dataQuery.gte('dividend_yield', filters.minDivYield)
-    countQuery = countQuery.gte('dividend_yield', filters.minDivYield)
-  }
-  if (filters.minDivAvg3yr != null) {
-    dataQuery = dataQuery.gte('div_yield_avg_3yr', filters.minDivAvg3yr)
-    countQuery = countQuery.gte('div_yield_avg_3yr', filters.minDivAvg3yr)
-  }
-  if (filters.minDivAvg5yr != null) {
-    dataQuery = dataQuery.gte('div_yield_avg_5yr', filters.minDivAvg5yr)
-    countQuery = countQuery.gte('div_yield_avg_5yr', filters.minDivAvg5yr)
-  }
-  if (filters.minRevCagr3yr != null) {
-    dataQuery = dataQuery.gte('revenue_cagr_3yr', filters.minRevCagr3yr)
-    countQuery = countQuery.gte('revenue_cagr_3yr', filters.minRevCagr3yr)
-  }
-  if (filters.minRevCagr5yr != null) {
-    dataQuery = dataQuery.gte('revenue_cagr_5yr', filters.minRevCagr5yr)
-    countQuery = countQuery.gte('revenue_cagr_5yr', filters.minRevCagr5yr)
-  }
-  if (filters.minPriceCagr3yr != null) {
-    dataQuery = dataQuery.gte('price_cagr_3yr', filters.minPriceCagr3yr)
-    countQuery = countQuery.gte('price_cagr_3yr', filters.minPriceCagr3yr)
-  }
-  if (filters.minPriceCagr5yr != null) {
-    dataQuery = dataQuery.gte('price_cagr_5yr', filters.minPriceCagr5yr)
-    countQuery = countQuery.gte('price_cagr_5yr', filters.minPriceCagr5yr)
-  }
-  if (filters.minMktCap != null) {
-    // Input is in triliun (T), DB stores raw IDR
-    dataQuery = dataQuery.gte('market_cap', filters.minMktCap * 1_000_000_000_000)
-    countQuery = countQuery.gte('market_cap', filters.minMktCap * 1_000_000_000_000)
-  }
-  if (filters.minCompleteness != null) {
-    dataQuery = dataQuery.gte('completeness_score', filters.minCompleteness)
-    countQuery = countQuery.gte('completeness_score', filters.minCompleteness)
-  }
-  if (filters.minConfidence != null) {
-    dataQuery = dataQuery.gte('confidence_score', filters.minConfidence)
-    countQuery = countQuery.gte('confidence_score', filters.minConfidence)
-  }
-  if (filters.maxPhaseDays != null) {
-    const days = Number(filters.maxPhaseDays)
-    if (!isNaN(days)) {
-      dataQuery = dataQuery.lte('current_phase_days', days)
-      countQuery = countQuery.lte('current_phase_days', days)
-    }
-  }
-  // Technical signal filters
-  if (filters.minRsi != null) {
-    dataQuery = dataQuery.gte('rsi_14', filters.minRsi)
-    countQuery = countQuery.gte('rsi_14', filters.minRsi)
-  }
-  if (filters.maxRsi != null) {
-    dataQuery = dataQuery.lte('rsi_14', filters.maxRsi)
-    countQuery = countQuery.lte('rsi_14', filters.maxRsi)
-  }
-  if (filters.macdCross) {
-    dataQuery = dataQuery.eq('macd_cross_signal', filters.macdCross)
-    countQuery = countQuery.eq('macd_cross_signal', filters.macdCross)
-  }
-  if (filters.maxMacdCrossDays != null) {
-    dataQuery = dataQuery.lte('macd_cross_days_ago', filters.maxMacdCrossDays)
-    countQuery = countQuery.lte('macd_cross_days_ago', filters.maxMacdCrossDays)
-  }
-  if (filters.minVolChangePct != null) {
-    dataQuery = dataQuery.gte('volume_change_pct', filters.minVolChangePct)
-    countQuery = countQuery.gte('volume_change_pct', filters.minVolChangePct)
-  }
-  if (filters.minVolAvg != null) {
-    // Input is in millions (Jt), DB stores raw volume
-    dataQuery = dataQuery.gte('volume_avg_20d', filters.minVolAvg * 1_000_000)
-    countQuery = countQuery.gte('volume_avg_20d', filters.minVolAvg * 1_000_000)
-  }
+  dataQuery = applyScreenerFilters(dataQuery, filters)
+  countQuery = applyScreenerFilters(countQuery, filters)
 
   const [{ data, error }, { count, error: countError }] = await Promise.all([dataQuery, countQuery])
 
@@ -217,6 +160,8 @@ export async function getScreenerRows(
     revenue_cagr_5yr: number | null
     price_cagr_3yr: number | null
     price_cagr_5yr: number | null
+    ocf_cagr_3yr: number | null
+    ocf_cagr_5yr: number | null
     div_yield_avg_3yr: number | null
     div_yield_avg_5yr: number | null
     completeness_score: number | null
@@ -253,6 +198,8 @@ export async function getScreenerRows(
     revenue_cagr_5yr: r.revenue_cagr_5yr,
     price_cagr_3yr: r.price_cagr_3yr,
     price_cagr_5yr: r.price_cagr_5yr,
+    ocf_cagr_3yr: r.ocf_cagr_3yr,
+    ocf_cagr_5yr: r.ocf_cagr_5yr,
     div_yield_avg_3yr: r.div_yield_avg_3yr,
     div_yield_avg_5yr: r.div_yield_avg_5yr,
     completeness_score: r.completeness_score ?? null,

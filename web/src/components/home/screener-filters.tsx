@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition, useEffect, useRef } from 'react'
+import { useState, useTransition, useEffect, useRef, useCallback } from 'react'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 
 const BOARDS = ['Main', 'Development', 'Acceleration'] as const
@@ -18,13 +18,27 @@ const MACD_CROSS_OPTIONS = [
   { value: 'death_cross',  label: 'Death Cross' },
 ] as const
 
+const SECTORS = [
+  { value: 'Financials',                label: 'Financials' },
+  { value: 'Energy',                    label: 'Energy' },
+  { value: 'Basic Materials',           label: 'Basic Materials' },
+  { value: 'Barang Konsumen Primer',    label: 'Consumer Staples' },
+  { value: 'Barang Konsumen Non-Primer', label: 'Consumer Discretionary' },
+  { value: 'Industrials',              label: 'Industrials' },
+  { value: 'Property & Real Estate',   label: 'Property & Real Estate' },
+  { value: 'Technology',               label: 'Technology' },
+  { value: 'Infrastructure',           label: 'Infrastructure' },
+  { value: 'Transportation & Logistics', label: 'Transportation & Logistics' },
+  { value: 'Healthcare',               label: 'Healthcare' },
+] as const
+
 const FILTER_KEYS = [
   'minRoe', 'maxPe', 'maxPbv', 'minNetMargin', 'minDivYield',
   'minDivAvg3yr', 'minDivAvg5yr',
-  'minRevCagr3yr', 'minRevCagr5yr', 'minPriceCagr3yr', 'minPriceCagr5yr',
+  'minRevCagr3yr', 'minRevCagr5yr', 'minPriceCagr3yr', 'minPriceCagr5yr', 'minOcfCagr3yr', 'minOcfCagr5yr',
   'minMktCap', 'minCompleteness', 'minConfidence',
   'maxPhaseDays',
-  'board', 'phase',
+  'sector', 'board', 'phase',
   'minRsi', 'maxRsi', 'macdCross', 'maxMacdCrossDays', 'minVolChangePct', 'minVolAvg',
 ] as const
 
@@ -123,8 +137,9 @@ export function ScreenerFilters() {
   const router = useRouter()
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const [open, setOpen] = useState(() => hasActiveFilters(readFilters(searchParams)))
-  const [filters, setFilters] = useState<FilterState>(() => readFilters(searchParams))
+  // Start closed on SSR; open after mount if URL has active filters (avoids hydration mismatch)
+  const [open, setOpen] = useState(false)
+  const [filters, setFilters] = useState<FilterState>(EMPTY_FILTERS)
   const [, startTransition] = useTransition()
 
   useEffect(() => {
@@ -132,6 +147,42 @@ export function ScreenerFilters() {
     setFilters(fromUrl)
     if (hasActiveFilters(fromUrl)) setOpen(true)
   }, [searchParams])
+
+  // Strategy save state
+  const [savingStrategy, setSavingStrategy] = useState(false)
+  const [strategyName, setStrategyName] = useState('')
+  const strategyInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (savingStrategy) strategyInputRef.current?.focus()
+  }, [savingStrategy])
+
+  const saveStrategy = useCallback(async () => {
+    const name = strategyName.trim()
+    if (!name) return
+    // Collect active filters from URL
+    const filterObj: Record<string, string> = {}
+    for (const key of FILTER_KEYS) {
+      const v = searchParams.get(key)
+      if (v) filterObj[key] = v
+    }
+
+    try {
+      const res = await fetch('/api/strategies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, filters: filterObj }),
+      })
+      if (res.ok) {
+        setSavingStrategy(false)
+        setStrategyName('')
+        // Notify strategy bar to refresh
+        window.dispatchEvent(new Event('strategy-change'))
+      }
+    } catch {
+      // silent
+    }
+  }, [strategyName, searchParams])
 
   const set = (key: FilterKey) => (v: string) => setFilters((f) => ({ ...f, [key]: v }))
 
@@ -153,7 +204,7 @@ export function ScreenerFilters() {
     startTransition(() => router.push(`${pathname}?${params.toString()}`))
   }
 
-  const active = hasActiveFilters(readFilters(searchParams))
+  const active = hasActiveFilters(filters)
 
   return (
     <div className="mb-4">
@@ -177,12 +228,19 @@ export function ScreenerFilters() {
           {/* Row 1: Fundamentals + Dropdowns */}
           <div>
             <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Fundamentals & Classification</div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
               <NumInput label="ROE ≥ (%)" placeholder="15" value={filters.minRoe} onChange={set('minRoe')} />
               <NumInput label="P/E ≤" placeholder="20" value={filters.maxPe} onChange={set('maxPe')} />
               <NumInput label="P/BV ≤" placeholder="3" value={filters.maxPbv} onChange={set('maxPbv')} />
               <NumInput label="Net Margin ≥ (%)" placeholder="10" value={filters.minNetMargin} onChange={set('minNetMargin')} />
               <NumInput label="Mkt Cap ≥ (T)" placeholder="1" value={filters.minMktCap} onChange={set('minMktCap')} />
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Sector</label>
+                <select value={filters.sector} onChange={(e) => set('sector')(e.target.value)} className={selectCls}>
+                  <option value="">All</option>
+                  {SECTORS.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+                </select>
+              </div>
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Board</label>
                 <select value={filters.board} onChange={(e) => set('board')(e.target.value)} className={selectCls}>
@@ -190,8 +248,6 @@ export function ScreenerFilters() {
                   {BOARDS.map((b) => <option key={b} value={b}>{b}</option>)}
                 </select>
               </div>
-              <MultiSelect label="Phase" options={PHASES} value={filters.phase} onChange={set('phase')} />
-              <NumInput label="Phase Days ≤" placeholder="20" value={filters.maxPhaseDays} onChange={set('maxPhaseDays')} />
             </div>
           </div>
 
@@ -213,13 +269,17 @@ export function ScreenerFilters() {
               <NumInput label="Rev CAGR 5Y ≥ (%)" placeholder="10" value={filters.minRevCagr5yr} onChange={set('minRevCagr5yr')} />
               <NumInput label="Price CAGR 3Y ≥ (%)" placeholder="5" value={filters.minPriceCagr3yr} onChange={set('minPriceCagr3yr')} />
               <NumInput label="Price CAGR 5Y ≥ (%)" placeholder="5" value={filters.minPriceCagr5yr} onChange={set('minPriceCagr5yr')} />
+              <NumInput label="OCF CAGR 3Y ≥ (%)" placeholder="10" value={filters.minOcfCagr3yr} onChange={set('minOcfCagr3yr')} />
+              <NumInput label="OCF CAGR 5Y ≥ (%)" placeholder="10" value={filters.minOcfCagr5yr} onChange={set('minOcfCagr5yr')} />
             </div>
           </div>
 
           {/* Row 4: Technical Signals */}
           <div>
             <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Technical Signals</div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+            <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+              <MultiSelect label="Phase" options={PHASES} value={filters.phase} onChange={set('phase')} />
+              <NumInput label="Phase Days ≤" placeholder="20" value={filters.maxPhaseDays} onChange={set('maxPhaseDays')} />
               <NumInput label="RSI ≥" placeholder="35" value={filters.minRsi} onChange={set('minRsi')} />
               <NumInput label="RSI ≤" placeholder="60" value={filters.maxRsi} onChange={set('maxRsi')} />
               <div>
@@ -235,16 +295,7 @@ export function ScreenerFilters() {
             </div>
           </div>
 
-          {/* Row 5: Data Quality */}
-          <div>
-            <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2">Data Quality</div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-              <NumInput label="Completeness ≥" placeholder="80" value={filters.minCompleteness} onChange={set('minCompleteness')} />
-              <NumInput label="Confidence ≥" placeholder="70" value={filters.minConfidence} onChange={set('minConfidence')} />
-            </div>
-          </div>
-
-          <div className="flex gap-2">
+          <div className="flex gap-2 items-center">
             <button
               onClick={applyFilters}
               className="px-4 py-1.5 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 transition-colors"
@@ -258,6 +309,46 @@ export function ScreenerFilters() {
               >
                 Clear filters
               </button>
+            )}
+            {active && (
+              <>
+                <span className="w-px h-5 bg-gray-200" />
+                {savingStrategy ? (
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      ref={strategyInputRef}
+                      type="text"
+                      value={strategyName}
+                      onChange={(e) => setStrategyName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') saveStrategy()
+                        if (e.key === 'Escape') { setSavingStrategy(false); setStrategyName('') }
+                      }}
+                      placeholder="Strategy name..."
+                      className="px-2 py-1 text-xs border border-indigo-300 rounded-lg outline-none focus:ring-1 focus:ring-indigo-400 w-36"
+                    />
+                    <button
+                      onClick={saveStrategy}
+                      className="px-2 py-1 text-xs font-medium text-white bg-indigo-500 hover:bg-indigo-600 rounded-lg transition-colors"
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={() => { setSavingStrategy(false); setStrategyName('') }}
+                      className="text-xs text-gray-400 hover:text-gray-600"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setSavingStrategy(true)}
+                    className="px-3 py-1.5 text-sm text-indigo-600 border border-indigo-200 rounded-lg hover:bg-indigo-50 transition-colors"
+                  >
+                    Save as Strategy
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>

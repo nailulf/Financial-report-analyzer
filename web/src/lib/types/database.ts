@@ -225,3 +225,11 @@ export interface VScreenerRow {
   completeness_score: number | null
   confidence_score: number | null
 }
+
+export interface Strategy {
+  id: string
+  name: string
+  filters: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}

@@ -1,16 +1,17 @@
 import { Suspense } from 'react'
 import { getScreenerRows } from '@/lib/queries/stocks'
 import { StockTable } from '@/components/home/stock-table'
-import { SectorFilter } from '@/components/home/sector-filter'
+
 import { ScreenerFilters } from '@/components/home/screener-filters'
 import { WatchlistBar } from '@/components/home/watchlist-bar'
+import { StrategyBar } from '@/components/home/strategy-bar'
 import { PAGE_SIZE } from '@/lib/constants'
 
-// All filter param keys (excluding sort/dir/page/sector which are handled separately)
+// All filter param keys (excluding sort/dir/page which are handled separately)
 const NUMERIC_PARAMS = [
   'minRoe', 'maxPe', 'maxPbv', 'minNetMargin', 'minDivYield',
   'minDivAvg3yr', 'minDivAvg5yr',
-  'minRevCagr3yr', 'minRevCagr5yr', 'minPriceCagr3yr', 'minPriceCagr5yr',
+  'minRevCagr3yr', 'minRevCagr5yr', 'minPriceCagr3yr', 'minPriceCagr5yr', 'minOcfCagr3yr', 'minOcfCagr5yr',
   'minMktCap', 'minCompleteness', 'minConfidence', 'maxPhaseDays',
   'minRsi', 'maxRsi', 'maxMacdCrossDays', 'minVolChangePct', 'minVolAvg',
 ] as const
@@ -58,11 +59,9 @@ export default async function HomePage({ searchParams }: PageProps) {
         <WatchlistBar />
       </Suspense>
 
-      <div className="mb-4">
-        <Suspense>
-          <SectorFilter current={sp.sector} />
-        </Suspense>
-      </div>
+      <Suspense>
+        <StrategyBar />
+      </Suspense>
 
       <Suspense>
         <ScreenerFilters />

@@ -43,8 +43,11 @@ const PERIODS = [
 // ---------------------------------------------------------------------------
 
 function formatDateMed(dateStr: string) {
-  const d = new Date(dateStr)
-  return d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
+  const d = new Date(dateStr + 'T00:00:00+07:00')
+  return d.toLocaleDateString('id-ID', {
+    day: 'numeric', month: 'short', year: 'numeric',
+    timeZone: 'Asia/Jakarta',
+  })
 }
 
 function formatPriceCompact(value: number) {
@@ -83,7 +86,7 @@ function alignmentBadge(alignment: string | null) {
 }
 
 function dateToUnix(dateStr: string): number {
-  return Math.floor(new Date(dateStr + 'T00:00:00').getTime() / 1000)
+  return Math.floor(new Date(dateStr + 'T00:00:00Z').getTime() / 1000)
 }
 
 function hexToRgba(hex: string, alpha: number): string {

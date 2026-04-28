@@ -173,6 +173,26 @@ def _build_row(
     capex = g(cashflow, "Capital Expenditure", "Capital Expenditures", "CapitalExpenditure")
     dividends_paid = g(cashflow, "Common Stock Dividend Paid", "Dividends Paid", "DividendsPaid")
     fcf = safe_int((ocf or 0) - abs(capex or 0)) if ocf is not None else None
+    share_buybacks = g(
+        cashflow,
+        "Repurchase Of Capital Stock", "Repurchase Of Common Stock",
+        "Common Stock Repurchased", "RepurchaseOfCapitalStock",
+    )
+    debt_issuance = g(
+        cashflow,
+        "Issuance Of Debt", "Long Term Debt Issuance",
+        "Net Issuance Payments Of Debt", "IssuanceOfDebt",
+    )
+    debt_repayment = g(
+        cashflow,
+        "Repayment Of Debt", "Long Term Debt Payments",
+        "Net Long Term Debt Issuance", "RepaymentOfDebt",
+    )
+    net_change_in_cash = g(
+        cashflow,
+        "Changes In Cash", "Change In Cash", "Change In Cash And Cash Equivalents",
+        "Net Change In Cash", "ChangesInCash",
+    )
 
     # Skip rows with no useful data at all
     if all(v is None for v in [revenue, total_assets, net_income]):
@@ -219,6 +239,10 @@ def _build_row(
         "capex": capex,
         "free_cash_flow": fcf,
         "dividends_paid": dividends_paid,
+        "share_buybacks": share_buybacks,
+        "debt_issuance": debt_issuance,
+        "debt_repayment": debt_repayment,
+        "net_change_in_cash": net_change_in_cash,
         # Ratios
         "gross_margin": gross_margin,
         "operating_margin": operating_margin,
@@ -299,6 +323,7 @@ _FILLABLE_FIELDS = {
     "total_assets", "current_assets", "total_liabilities", "current_liabilities",
     "total_equity", "total_debt", "cash_and_equivalents", "book_value_per_share",
     "operating_cash_flow", "capex", "free_cash_flow", "dividends_paid",
+    "share_buybacks", "debt_issuance", "debt_repayment", "net_change_in_cash",
     "gross_margin", "operating_margin", "net_margin",
     "roe", "roa", "current_ratio", "debt_to_equity",
     "pe_ratio", "pbv_ratio", "dividend_yield", "payout_ratio",

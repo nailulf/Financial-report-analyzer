@@ -63,6 +63,10 @@ export interface Financials {
   capex: string | null
   free_cash_flow: string | null
   dividends_paid: string | null
+  share_buybacks: string | null
+  debt_issuance: string | null
+  debt_repayment: string | null
+  net_change_in_cash: string | null
   // Ratios (stored as plain numbers, e.g. 15.5 means 15.5%)
   gross_margin: number | null
   operating_margin: number | null

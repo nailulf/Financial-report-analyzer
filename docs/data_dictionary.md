@@ -92,6 +92,10 @@ Annual and quarterly financial statements with computed ratios. Refreshed quarte
 | capex | BIGINT | Capital expenditures — usually negative (IDR) |
 | free_cash_flow | BIGINT | `operating_cash_flow - abs(capex)` (IDR) |
 | dividends_paid | BIGINT | Cash dividends paid — usually negative (IDR) |
+| share_buybacks | BIGINT | Treasury stock repurchases — usually negative (IDR) |
+| debt_issuance | BIGINT | Proceeds from new borrowings — usually positive (IDR) |
+| debt_repayment | BIGINT | Payments to retire debt — usually negative (IDR) |
+| net_change_in_cash | BIGINT | Net period change in cash and equivalents (IDR) |
 
 ### Computed Ratios
 

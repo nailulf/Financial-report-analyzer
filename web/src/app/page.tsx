@@ -14,9 +14,10 @@ const NUMERIC_PARAMS = [
   'minRevCagr3yr', 'minRevCagr5yr', 'minPriceCagr3yr', 'minPriceCagr5yr', 'minOcfCagr3yr', 'minOcfCagr5yr',
   'minMktCap', 'minCompleteness', 'minConfidence', 'maxPhaseDays',
   'minRsi', 'maxRsi', 'maxMacdCrossDays', 'minVolChangePct', 'minVolAvg',
+  'maxWyckoffDays', 'minWyckoffConf',
 ] as const
 
-const STRING_PARAMS = ['sector', 'board', 'phase', 'macdCross'] as const
+const STRING_PARAMS = ['sector', 'board', 'phase', 'macdCross', 'wyckoffEvent', 'wyckoffPhase'] as const
 
 interface PageProps {
   searchParams: Promise<Record<string, string | undefined>>

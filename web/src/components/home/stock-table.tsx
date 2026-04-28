@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react'
 import Link from 'next/link'
-import type { ScreenerRow, MarketPhaseType } from '@/lib/types/api'
+import type { ScreenerRow, MarketPhaseType, WyckoffEventType, WyckoffPhase } from '@/lib/types/api'
 import { Badge } from '@/components/ui/badge'
 import { fmtNumID, formatIDRCompact, formatPercent, formatMultiple } from '@/lib/calculations/formatters'
 import { WatchlistStar } from '@/components/home/watchlist-star'
@@ -18,6 +18,32 @@ const PHASE_BADGE: Record<MarketPhaseType, { label: string; variant: 'blue' | 'r
   sideways_bearish: { label: 'Sideways ↓', variant: 'amber' },
 }
 
+// Wyckoff event badge — short code + polarity-based color.
+// Bullish events green, bearish red, neutral/context amber.
+const WYCKOFF_BADGE: Record<WyckoffEventType, 'green' | 'red' | 'amber'> = {
+  // Bullish
+  SC: 'green', AR_up: 'green', Spring: 'green', SOS: 'green', LPS: 'green',
+  no_supply: 'green', passive_markup: 'green',
+  // Bearish
+  BC: 'red', AR_down: 'red', UTAD: 'red', SOW: 'red', LPSY: 'red',
+  no_demand: 'red', passive_markdown: 'red',
+  // Neutral / context
+  PS: 'amber', PSY: 'amber', ST_low: 'amber', ST_high: 'amber', absorption: 'amber',
+}
+
+const WYCKOFF_PHASE_BADGE: Record<WyckoffPhase, { label: string; variant: 'green' | 'blue' | 'red' | 'amber' }> = {
+  accumulation: { label: 'Accum',    variant: 'green' },
+  markup:       { label: 'Markup',   variant: 'blue'  },
+  distribution: { label: 'Distrib',  variant: 'amber' },
+  markdown:     { label: 'Markdown', variant: 'red'   },
+}
+
+function daysAgo(dateStr: string | null): number | null {
+  if (!dateStr) return null
+  const d = new Date(dateStr + 'T00:00:00Z').getTime()
+  return Math.max(0, Math.floor((Date.now() - d) / 86_400_000))
+}
+
 // ---------------------------------------------------------------------------
 // Column definitions
 // ---------------------------------------------------------------------------
@@ -31,6 +57,7 @@ type ColumnKey =
   | 'div_yield_avg_3yr' | 'div_yield_avg_5yr'
   | 'market_cap' | 'completeness' | 'confidence'
   | 'rsi_14' | 'macd_cross' | 'volume_change' | 'volume_avg'
+  | 'wyckoff_event' | 'wyckoff_phase' | 'wyckoff_confidence'
 
 interface ColumnDef {
   key: ColumnKey
@@ -43,7 +70,7 @@ interface ColumnDef {
 }
 
 const DEFAULT_VISIBLE: ColumnKey[] = [
-  'sector', 'phase', 'price', 'pe_ratio', 'pbv_ratio', 'market_cap',
+  'sector', 'phase', 'wyckoff_event', 'price', 'pe_ratio', 'pbv_ratio', 'market_cap',
 ]
 
 const STORAGE_KEY = 'screener-visible-cols'
@@ -96,6 +123,43 @@ const COLUMNS: ColumnDef[] = [
       const v = r.current_phase_clarity
       if (v == null) return <span className="text-gray-400">—</span>
       const c = v >= 70 ? 'text-green-600' : v >= 45 ? 'text-amber-600' : 'text-red-500'
+      return <span className={`font-medium ${c}`}>{v}</span>
+    },
+  },
+  // ── Wyckoff ──
+  {
+    key: 'wyckoff_event', label: 'Wyckoff Event', shortLabel: 'WY Evt', align: 'left',
+    render: (r) => {
+      if (!r.current_wyckoff_event) return <span className="text-gray-400">—</span>
+      const days = daysAgo(r.current_wyckoff_event_date)
+      return (
+        <div className="flex items-center gap-1.5">
+          <Badge variant={WYCKOFF_BADGE[r.current_wyckoff_event]} size="xs">
+            {r.current_wyckoff_event}
+          </Badge>
+          {days != null && (
+            <span className="text-[10px] font-mono text-gray-400">{days}d ago</span>
+          )}
+        </div>
+      )
+    },
+  },
+  {
+    key: 'wyckoff_phase', label: 'Wyckoff Phase', shortLabel: 'WY Phase', align: 'left',
+    render: (r) => r.current_wyckoff_phase
+      ? (
+        <Badge variant={WYCKOFF_PHASE_BADGE[r.current_wyckoff_phase].variant} size="xs">
+          {WYCKOFF_PHASE_BADGE[r.current_wyckoff_phase].label}
+        </Badge>
+      )
+      : <span className="text-gray-400">—</span>,
+  },
+  {
+    key: 'wyckoff_confidence', label: 'WY Confidence', shortLabel: 'WY Conf', align: 'right',
+    render: (r) => {
+      const v = r.current_wyckoff_confidence
+      if (v == null) return <span className="text-gray-400">—</span>
+      const c = v >= 75 ? 'text-green-600' : v >= 55 ? 'text-amber-600' : 'text-red-500'
       return <span className={`font-medium ${c}`}>{v}</span>
     },
   },
@@ -282,7 +346,8 @@ function ColumnPicker({
         <div className="absolute right-0 top-full mt-1 z-20 w-56 bg-white border border-gray-200 rounded-xl shadow-lg max-h-[70vh] overflow-y-auto">
           {[
             { group: 'Identity', keys: ['company', 'sector', 'subsector', 'board', 'listing_date'] },
-            { group: 'Phase', keys: ['phase', 'phase_clarity'] },
+            { group: 'Phase (SMA)', keys: ['phase', 'phase_clarity'] },
+            { group: 'Wyckoff', keys: ['wyckoff_event', 'wyckoff_phase', 'wyckoff_confidence'] },
             { group: 'Valuation', keys: ['price', 'pe_ratio', 'pbv_ratio', 'market_cap', 'listed_shares'] },
             { group: 'Fundamentals', keys: ['roe', 'net_margin'] },
             { group: 'Dividends', keys: ['dividend_yield', 'div_yield_avg_3yr', 'div_yield_avg_5yr'] },

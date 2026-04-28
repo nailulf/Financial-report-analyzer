@@ -19,6 +19,32 @@ const MACD_CROSS_OPTIONS = [
   { value: 'death_cross',  label: 'Death Cross' },
 ] as const
 
+// Wyckoff filter options — only the most actionable events for screening.
+// Excludes intermediate context events (PS, PSY, ST_*, AR_*) that rarely
+// drive a trade decision on their own.
+const WYCKOFF_EVENTS = [
+  { value: 'Spring',           label: 'Spring (bullish reversal)' },
+  { value: 'SC',               label: 'Selling Climax' },
+  { value: 'SOS',              label: 'Sign of Strength' },
+  { value: 'LPS',              label: 'Last Point of Support' },
+  { value: 'no_supply',        label: 'No Supply' },
+  { value: 'passive_markup',   label: 'Passive Markup (drift up)' },
+  { value: 'UTAD',             label: 'UTAD (bearish reversal)' },
+  { value: 'BC',               label: 'Buying Climax' },
+  { value: 'SOW',              label: 'Sign of Weakness' },
+  { value: 'LPSY',             label: 'Last Point of Supply' },
+  { value: 'no_demand',        label: 'No Demand' },
+  { value: 'passive_markdown', label: 'Passive Markdown (drift down)' },
+  { value: 'absorption',       label: 'Absorption' },
+] as const
+
+const WYCKOFF_PHASES = [
+  { value: 'accumulation', label: 'Accumulation' },
+  { value: 'markup',       label: 'Markup' },
+  { value: 'distribution', label: 'Distribution' },
+  { value: 'markdown',     label: 'Markdown' },
+] as const
+
 const SECTORS = [
   { value: 'Financials',                label: 'Financials' },
   { value: 'Energy',                    label: 'Energy' },
@@ -41,6 +67,8 @@ const FILTER_KEYS = [
   'maxPhaseDays',
   'sector', 'board', 'phase',
   'minRsi', 'maxRsi', 'macdCross', 'maxMacdCrossDays', 'minVolChangePct', 'minVolAvg',
+  // Wyckoff filters (denormalized via schema-v24)
+  'wyckoffEvent', 'wyckoffPhase', 'maxWyckoffDays', 'minWyckoffConf',
 ] as const
 
 type FilterKey = typeof FILTER_KEYS[number]
@@ -296,6 +324,43 @@ export function ScreenerFilters() {
               <NumInput label="Cross ≤ N days" placeholder="5" value={filters.maxMacdCrossDays} onChange={set('maxMacdCrossDays')} />
               <NumInput label="Vol Change ≥ (%)" placeholder="150" value={filters.minVolChangePct} onChange={set('minVolChangePct')} />
               <NumInput label="Avg Vol ≥ (Jt)" placeholder="1" value={filters.minVolAvg} onChange={set('minVolAvg')} />
+            </div>
+          </div>
+
+          {/* Row 5: Wyckoff Signals */}
+          <div>
+            <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-2">
+              Wyckoff Signals
+              <span className="text-[9px] font-normal text-gray-400 normal-case tracking-normal">
+                (latest event per ticker)
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <MultiSelect
+                label="Wyckoff Event"
+                options={WYCKOFF_EVENTS}
+                value={filters.wyckoffEvent}
+                onChange={set('wyckoffEvent')}
+              />
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Wyckoff Phase</label>
+                <select value={filters.wyckoffPhase} onChange={(e) => set('wyckoffPhase')(e.target.value)} className={selectCls}>
+                  <option value="">Any</option>
+                  {WYCKOFF_PHASES.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+                </select>
+              </div>
+              <NumInput
+                label="Event ≤ N days ago"
+                placeholder="14"
+                value={filters.maxWyckoffDays}
+                onChange={set('maxWyckoffDays')}
+              />
+              <NumInput
+                label="Min Confidence ≥"
+                placeholder="70"
+                value={filters.minWyckoffConf}
+                onChange={set('minWyckoffConf')}
+              />
             </div>
           </div>
 

@@ -34,6 +34,11 @@ export interface ScreenerFilters {
   maxMacdCrossDays?: number
   minVolChangePct?: number
   minVolAvg?: number             // 20-day avg volume (in millions)
+  // Wyckoff signals
+  wyckoffEvent?: string          // comma-separated event types (e.g. 'Spring,LPS,SOS')
+  wyckoffPhase?: string          // 'accumulation' | 'markup' | 'distribution' | 'markdown'
+  maxWyckoffDays?: number        // latest event within N calendar days
+  minWyckoffConf?: number        // minimum confidence on the latest event
   sortBy?: string
   sortDir?: 'asc' | 'desc'
 }
@@ -91,6 +96,28 @@ export function applyScreenerFilters<Q extends { eq: any; gte: any; lte: any; or
   if (filters.minVolAvg != null) {
     query = query.gte('volume_avg_20d', filters.minVolAvg * 1_000_000)
   }
+  // ── Wyckoff filters (denormalized on stocks via schema-v24) ─────────
+  if (filters.wyckoffEvent) {
+    const evts = String(filters.wyckoffEvent).split(',').filter(Boolean)
+    if (evts.length === 1) {
+      query = query.eq('current_wyckoff_event', evts[0])
+    } else if (evts.length > 1) {
+      const orClause = evts.map((e: string) => `current_wyckoff_event.eq.${e}`).join(',')
+      query = query.or(orClause)
+    }
+  }
+  if (filters.wyckoffPhase) query = query.eq('current_wyckoff_phase', filters.wyckoffPhase)
+  if (filters.maxWyckoffDays != null) {
+    const days = Number(filters.maxWyckoffDays)
+    if (!isNaN(days)) {
+      const cutoff = new Date()
+      cutoff.setDate(cutoff.getDate() - days)
+      query = query.gte('current_wyckoff_event_date', cutoff.toISOString().slice(0, 10))
+    }
+  }
+  if (filters.minWyckoffConf != null) {
+    query = query.gte('current_wyckoff_confidence', filters.minWyckoffConf)
+  }
   return query
 }
 
@@ -108,7 +135,7 @@ export async function getScreenerRows(
   // All screener metrics are denormalized onto stocks (see schema-v10).
   // No views, no joins — just a simple indexed table scan.
 
-  const SCREENER_COLS = 'ticker, name, sector, subsector, board, is_lq45, is_idx30, listing_date, listed_shares, market_cap, current_price, pe_ratio, pbv_ratio, roe, net_margin, dividend_yield, current_phase, current_phase_clarity, current_phase_days, revenue_cagr_3yr, revenue_cagr_5yr, price_cagr_3yr, price_cagr_5yr, ocf_cagr_3yr, ocf_cagr_5yr, div_yield_avg_3yr, div_yield_avg_5yr, completeness_score, confidence_score, rsi_14, macd_histogram, macd_cross_signal, macd_cross_days_ago, volume_change_pct, volume_avg_20d'
+  const SCREENER_COLS = 'ticker, name, sector, subsector, board, is_lq45, is_idx30, listing_date, listed_shares, market_cap, current_price, pe_ratio, pbv_ratio, roe, net_margin, dividend_yield, current_phase, current_phase_clarity, current_phase_days, revenue_cagr_3yr, revenue_cagr_5yr, price_cagr_3yr, price_cagr_5yr, ocf_cagr_3yr, ocf_cagr_5yr, div_yield_avg_3yr, div_yield_avg_5yr, completeness_score, confidence_score, rsi_14, macd_histogram, macd_cross_signal, macd_cross_days_ago, volume_change_pct, volume_avg_20d, current_wyckoff_event, current_wyckoff_event_date, current_wyckoff_phase, current_wyckoff_confidence'
 
   let dataQuery = supabase
     .from('stocks')
@@ -172,6 +199,10 @@ export async function getScreenerRows(
     macd_cross_days_ago: number | null
     volume_change_pct: number | null
     volume_avg_20d: string | null   // BIGINT → string
+    current_wyckoff_event: string | null
+    current_wyckoff_event_date: string | null
+    current_wyckoff_phase: string | null
+    current_wyckoff_confidence: number | null
   }
 
   const rows: ScreenerRow[] = ((data ?? []) as StocksRow[]).map((r) => ({
@@ -210,6 +241,10 @@ export async function getScreenerRows(
     macd_cross_days_ago: r.macd_cross_days_ago ?? null,
     volume_change_pct: r.volume_change_pct ?? null,
     volume_avg_20d: parseBigInt(r.volume_avg_20d),
+    current_wyckoff_event: r.current_wyckoff_event as ScreenerRow['current_wyckoff_event'],
+    current_wyckoff_event_date: r.current_wyckoff_event_date,
+    current_wyckoff_phase: r.current_wyckoff_phase as ScreenerRow['current_wyckoff_phase'],
+    current_wyckoff_confidence: r.current_wyckoff_confidence ?? null,
   }))
 
   return { rows, total: count ?? rows.length }

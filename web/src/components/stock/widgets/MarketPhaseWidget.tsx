@@ -1,9 +1,54 @@
 'use client'
 
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
-import type { PricePoint, MarketPhase, MarketPhaseType, MarketPhaseResponse, TechnicalSignalPoint } from '@/lib/types/api'
+import type {
+  PricePoint, MarketPhase, MarketPhaseType, MarketPhaseResponse,
+  TechnicalSignalPoint,
+  WyckoffEvent, WyckoffEventType, WyckoffPhase, WyckoffResponse,
+} from '@/lib/types/api'
 import { ChartSkeleton } from '@/components/ui/loading-skeleton'
 import { fmtNumID } from '@/lib/calculations/formatters'
+
+// ---------------------------------------------------------------------------
+// Detection methods — user can switch between these views
+// ---------------------------------------------------------------------------
+
+type DetectionMethod = 'sma' | 'wyckoff' | 'both'
+
+interface MethodInfo {
+  label: string
+  short: string
+  description: string
+  detail: string
+  reference: string
+}
+
+const METHOD_INFO: Record<DetectionMethod, MethodInfo> = {
+  sma: {
+    label: 'SMA / Trend Following',
+    short: 'SMA',
+    description: 'Klasifikasi tren berbasis crossover SMA20 vs SMA50 + ATR + volume.',
+    detail:
+      'Mengelompokkan setiap hari menjadi uptrend / downtrend / sideways berdasarkan posisi SMA20 vs SMA50 dan spread > 1.5%. Cepat, jelas, tapi LAMBAT — moving average tertinggal saat tren berbalik (lihat case studi BBRI Apr 2026 yang masih disebut Downtrend padahal harga rally +16.7%).',
+    reference: 'Pendekatan klasik trend-following (Donchian, Murphy).',
+  },
+  wyckoff: {
+    label: 'Wyckoff Structural Events',
+    short: 'WY',
+    description: 'Deteksi event institusional: Selling/Buying Climax, Spring, UTAD, Absorption.',
+    detail:
+      'Tidak menghasilkan band fase kontinu — menghasilkan SINYAL diskrit pada hari-hari tertentu yang menunjukkan jejak smart money. Spring (false breakdown) dan UTAD (false breakout) adalah event paling kuat. Lebih responsif terhadap perubahan struktur pasar dibanding SMA.',
+    reference: 'Pruden — "Three Skills of Top Trading"; Weis — "Trades About to Happen".',
+  },
+  both: {
+    label: 'Combined View',
+    short: 'BOTH',
+    description: 'Tampilkan band SMA dan marker Wyckoff bersamaan.',
+    detail:
+      'Gunakan band SMA sebagai konteks tren keseluruhan, dan marker Wyckoff untuk mendeteksi titik balik institusional yang mungkin BELUM tertangkap oleh SMA. Strategi terbaik: SMA = "regime", Wyckoff = "trigger".',
+    reference: 'Multi-method confirmation (Minervini, O\'Neil).',
+  },
+}
 
 // ---------------------------------------------------------------------------
 // Phase colors & labels
@@ -37,6 +82,89 @@ const PERIODS = [
   { label: '2Y', days: 504 },
   { label: 'All', days: 9999 },
 ] as const
+
+// ---------------------------------------------------------------------------
+// Wyckoff event styling
+// ---------------------------------------------------------------------------
+
+type WyckoffPolarity = 'bullish' | 'bearish' | 'neutral'
+
+const WYCKOFF_POLARITY: Record<WyckoffEventType, WyckoffPolarity> = {
+  // Bullish — accumulation / strength
+  SC: 'bullish', AR_up: 'bullish', Spring: 'bullish', SOS: 'bullish', LPS: 'bullish',
+  no_supply: 'bullish', passive_markup: 'bullish',
+  // Bearish — distribution / weakness
+  BC: 'bearish', AR_down: 'bearish', UTAD: 'bearish', SOW: 'bearish', LPSY: 'bearish',
+  no_demand: 'bearish', passive_markdown: 'bearish',
+  // Neutral — context events
+  PS: 'neutral', PSY: 'neutral', ST_low: 'neutral', ST_high: 'neutral',
+  absorption: 'neutral',
+}
+
+const WYCKOFF_LABELS: Record<WyckoffEventType, string> = {
+  PS: 'Preliminary Support',
+  SC: 'Selling Climax',
+  AR_up: 'Automatic Rally',
+  ST_low: 'Secondary Test (low)',
+  Spring: 'Spring',
+  SOS: 'Sign of Strength',
+  LPS: 'Last Point of Support',
+  PSY: 'Preliminary Supply',
+  BC: 'Buying Climax',
+  AR_down: 'Automatic Reaction',
+  ST_high: 'Secondary Test (high)',
+  UTAD: 'Upthrust After Distribution',
+  SOW: 'Sign of Weakness',
+  LPSY: 'Last Point of Supply',
+  absorption: 'Absorption',
+  no_demand: 'No Demand',
+  no_supply: 'No Supply',
+  passive_markup: 'Passive Markup',
+  passive_markdown: 'Passive Markdown',
+}
+
+const WYCKOFF_EXPLANATIONS: Record<WyckoffEventType, string> = {
+  PS: 'Pembeli pertama muncul setelah downtrend panjang. Belum konfirmasi balik arah.',
+  SC: 'Selling Climax — kapitulasi panic-selling pada volume ekstrem. Sering menandai dasar.',
+  AR_up: 'Automatic Rally setelah SC — rebound refleksif yang mendefinisikan batas atas trading range akumulasi.',
+  ST_low: 'Re-test SC low pada volume RENDAH. Konfirmasi supply sudah terserap.',
+  Spring: 'False breakdown — menembus support, langsung balik ke dalam range. Sinyal akumulasi PALING KUAT.',
+  SOS: 'Wide-range up bar pada volume tinggi — institutional buying mulai dominan.',
+  LPS: 'Higher low setelah SOS. Titik entry markup dengan risk-reward terbaik.',
+  PSY: 'Penjual pertama muncul setelah uptrend panjang. Distribusi awal.',
+  BC: 'Buying Climax — euforia pada volume ekstrem. Sering menandai puncak.',
+  AR_down: 'Reaksi otomatis setelah BC — pullback refleksif yang mendefinisikan batas bawah range distribusi.',
+  ST_high: 'Re-test BC high pada volume RENDAH. Konfirmasi demand habis.',
+  UTAD: 'False breakout — menembus resistance lalu langsung ditolak. Sinyal distribusi PALING KUAT.',
+  SOW: 'Wide-range down bar pada volume tinggi — supply institusional mulai dominan.',
+  LPSY: 'Lower high setelah SOW. Titik entry short / exit dengan risk-reward terbaik.',
+  absorption: 'Volume tinggi tapi range sempit — institusi menyerap supply/demand tanpa menggerakkan harga.',
+  no_demand: 'Up bar pada volume rendah — rally tanpa partisipasi. Bearish.',
+  no_supply: 'Down bar pada volume rendah — koreksi tanpa tekanan jual. Bullish.',
+  passive_markup: 'Drift naik pelan-pelan pada volume di bawah rata-rata. Markup berjalan tanpa event climactic.',
+  passive_markdown: 'Drift turun pelan-pelan pada volume di bawah rata-rata. Markdown terkontrol — supply pelan-pelan menekan harga.',
+}
+
+const WYCKOFF_PHASE_LABELS: Record<WyckoffPhase, string> = {
+  accumulation: 'Akumulasi',
+  markup: 'Markup',
+  distribution: 'Distribusi',
+  markdown: 'Markdown',
+}
+
+const WYCKOFF_PHASE_COLORS: Record<WyckoffPhase, string> = {
+  accumulation: '#1D9E75',
+  markup: '#378ADD',
+  distribution: '#D85A30',
+  markdown: '#E24B4A',
+}
+
+function wyckoffMarkerColor(t: WyckoffEventType): string {
+  const p = WYCKOFF_POLARITY[t]
+  if (p === 'bullish') return '#1D9E75'
+  if (p === 'bearish') return '#E24B4A'
+  return '#D4A843'
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -110,6 +238,17 @@ interface OverlayRect {
   phaseType: MarketPhaseType
 }
 
+interface WyckoffMarker {
+  id: number
+  left: number
+  color: string
+  type: WyckoffEventType
+  date: string
+  confidence: number
+  price: number
+  notes: string | null
+}
+
 type LCModule = typeof import('lightweight-charts')
 
 // ---------------------------------------------------------------------------
@@ -126,11 +265,16 @@ export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] 
   const [mounted, setMounted] = useState(false)
   const [period, setPeriod] = useState<number>(252)
   const [showPhases, setShowPhases] = useState(true)
+  const [method, setMethod] = useState<DetectionMethod>('sma')
+  const [showMethodInfo, setShowMethodInfo] = useState(false)
   const [selectedPhaseId, setSelectedPhaseId] = useState<number | null>(null)
+  const [selectedEventId, setSelectedEventId] = useState<number | null>(null)
   const [phaseData, setPhaseData] = useState<MarketPhaseResponse | null>(null)
+  const [wyckoffData, setWyckoffData] = useState<WyckoffResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [lcModule, setLcModule] = useState<LCModule | null>(null)
   const [overlayRects, setOverlayRects] = useState<OverlayRect[]>([])
+  const [wyckoffMarkers, setWyckoffMarkers] = useState<WyckoffMarker[]>([])
 
   const chartWrapperRef = useRef<HTMLDivElement>(null)
   const chartContainerRef = useRef<HTMLDivElement>(null)
@@ -143,17 +287,25 @@ export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] 
     import('lightweight-charts').then(setLcModule)
   }, [])
 
-  // Fetch phase data
+  // Fetch phase + wyckoff data in parallel
   useEffect(() => {
     let cancelled = false
     async function load() {
       try {
-        const res = await fetch(`/api/stocks/${ticker}/phases`)
-        if (!res.ok) throw new Error(`${res.status}`)
-        const data: MarketPhaseResponse = await res.json()
-        if (!cancelled) setPhaseData(data)
+        const [phasesRes, wyckoffRes] = await Promise.all([
+          fetch(`/api/stocks/${ticker}/phases`),
+          fetch(`/api/stocks/${ticker}/wyckoff`),
+        ])
+        if (phasesRes.ok) {
+          const data: MarketPhaseResponse = await phasesRes.json()
+          if (!cancelled) setPhaseData(data)
+        }
+        if (wyckoffRes.ok) {
+          const data: WyckoffResponse = await wyckoffRes.json()
+          if (!cancelled) setWyckoffData(data)
+        }
       } catch {
-        // Phase data not available
+        // data not available
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -193,41 +345,77 @@ export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] 
     )
   }, [phaseData, sliced])
 
+  const visibleWyckoff = useMemo(() => {
+    if (!wyckoffData?.events.length || !sliced.length) return []
+    const firstDate = sliced[0].date
+    const lastDate = sliced[sliced.length - 1].date
+    return wyckoffData.events.filter(
+      (e) => e.event_date >= firstDate && e.event_date <= lastDate,
+    )
+  }, [wyckoffData, sliced])
+
   const currentPhase = phaseData?.currentPhase ?? null
+  const showSmaBands = (method === 'sma' || method === 'both') && showPhases
+  const showWyckoffMarkers = method === 'wyckoff' || method === 'both'
 
   // ── Calculate overlay positions from chart timeScale ──────────
   const recalcOverlays = useCallback(() => {
     const chart = chartRef.current
-    if (!chart || !showPhases || !visiblePhases.length) {
+    if (!chart) {
       setOverlayRects([])
+      setWyckoffMarkers([])
       return
     }
 
     const timeScale = chart.timeScale()
-    const rects: OverlayRect[] = []
 
-    for (const phase of visiblePhases) {
-      const x1 = timeScale.timeToCoordinate(dateToUnix(phase.start_date) as any)
-      const x2 = timeScale.timeToCoordinate(dateToUnix(phase.end_date) as any)
-
-      if (x1 == null || x2 == null) continue
-      const left = Math.min(x1, x2)
-      const width = Math.abs(x2 - x1)
-      if (width < 2) continue
-
-      rects.push({
-        id: phase.id,
-        left,
-        width,
-        color: PHASE_COLORS[phase.phase_type],
-        label: PHASE_SHORT[phase.phase_type],
-        clarity: phase.phase_clarity,
-        phaseType: phase.phase_type,
-      })
+    // SMA-based phase bands
+    if (showSmaBands && visiblePhases.length) {
+      const rects: OverlayRect[] = []
+      for (const phase of visiblePhases) {
+        const x1 = timeScale.timeToCoordinate(dateToUnix(phase.start_date) as any)
+        const x2 = timeScale.timeToCoordinate(dateToUnix(phase.end_date) as any)
+        if (x1 == null || x2 == null) continue
+        const left = Math.min(x1, x2)
+        const width = Math.abs(x2 - x1)
+        if (width < 2) continue
+        rects.push({
+          id: phase.id,
+          left,
+          width,
+          color: PHASE_COLORS[phase.phase_type],
+          label: PHASE_SHORT[phase.phase_type],
+          clarity: phase.phase_clarity,
+          phaseType: phase.phase_type,
+        })
+      }
+      setOverlayRects(rects)
+    } else {
+      setOverlayRects([])
     }
 
-    setOverlayRects(rects)
-  }, [showPhases, visiblePhases])
+    // Wyckoff event markers
+    if (showWyckoffMarkers && visibleWyckoff.length) {
+      const markers: WyckoffMarker[] = []
+      for (const evt of visibleWyckoff) {
+        const x = timeScale.timeToCoordinate(dateToUnix(evt.event_date) as any)
+        if (x == null) continue
+        markers.push({
+          id: evt.id,
+          left: x,
+          color: wyckoffMarkerColor(evt.event_type),
+          type: evt.event_type,
+          date: evt.event_date,
+          confidence: evt.confidence,
+          price: evt.price,
+          notes: evt.notes,
+        })
+      }
+      setWyckoffMarkers(markers)
+    } else {
+      setWyckoffMarkers([])
+    }
+  }, [showSmaBands, showWyckoffMarkers, visiblePhases, visibleWyckoff])
 
   const hasSignals = slicedSignals.some((s) => s != null)
 
@@ -378,10 +566,10 @@ export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] 
     return () => { chart.remove(); chartRef.current = null }
   }, [mounted, lcModule, sliced, slicedSignals, hasSignals, recalcOverlays])
 
-  // Recalc overlays when phase visibility or selection changes
+  // Recalc overlays when phase visibility, method, or selection changes
   useEffect(() => {
     recalcOverlays()
-  }, [recalcOverlays, selectedPhaseId])
+  }, [recalcOverlays, selectedPhaseId, selectedEventId, method])
 
   // ── Resize handler ────────────────────────────────────────────
   useEffect(() => {
@@ -415,20 +603,50 @@ export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] 
             FASE PASAR
           </span>
           <span className="font-mono text-[10px] text-[#888888] tracking-[0.3px]">
-            Indikator berbasis moving average
+            {METHOD_INFO[method].description}
           </span>
         </div>
         <div className="flex items-center gap-2">
+          {/* Method switcher */}
+          <div className="flex gap-0.5 border border-[#E0E0E5] rounded-md p-0.5 bg-white">
+            {(['sma', 'wyckoff', 'both'] as DetectionMethod[]).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMethod(m)}
+                title={METHOD_INFO[m].label}
+                className={`px-2.5 py-1 text-[11px] font-medium rounded transition-colors ${
+                  method === m
+                    ? 'bg-[#1A1A1A] text-white'
+                    : 'bg-transparent text-[#6D6C6A] hover:bg-[#EDECEA]'
+                }`}
+              >
+                {METHOD_INFO[m].short}
+              </button>
+            ))}
+          </div>
           <button
-            onClick={() => setShowPhases(!showPhases)}
-            className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${
-              showPhases
-                ? 'bg-[#1A1A1A] text-white'
+            onClick={() => setShowMethodInfo(!showMethodInfo)}
+            title="Penjelasan metode"
+            className={`w-6 h-6 flex items-center justify-center text-[11px] font-bold rounded-md transition-colors ${
+              showMethodInfo
+                ? 'bg-[#3B82F6] text-white'
                 : 'bg-[#EDECEA] text-[#6D6C6A] hover:bg-[#E5E4E1]'
             }`}
           >
-            Fase {showPhases ? 'ON' : 'OFF'}
+            ?
           </button>
+          {method !== 'wyckoff' && (
+            <button
+              onClick={() => setShowPhases(!showPhases)}
+              className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${
+                showPhases
+                  ? 'bg-[#1A1A1A] text-white'
+                  : 'bg-[#EDECEA] text-[#6D6C6A] hover:bg-[#E5E4E1]'
+              }`}
+            >
+              Fase {showPhases ? 'ON' : 'OFF'}
+            </button>
+          )}
           <div className="flex gap-0.5">
             {PERIODS.map(({ label, days }) => (
               <button
@@ -446,17 +664,50 @@ export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] 
           </div>
         </div>
       </div>
+
+      {/* ── Method explanation panel (toggleable) ─────────────────── */}
+      {showMethodInfo && (
+        <div className="px-5 py-3 bg-[#F8F7F4] border-b border-[#E0E0E5]">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {(['sma', 'wyckoff', 'both'] as DetectionMethod[]).map((m) => (
+              <div
+                key={m}
+                onClick={() => setMethod(m)}
+                className={`cursor-pointer p-3 rounded border transition-colors ${
+                  method === m
+                    ? 'border-[#1A1A1A] bg-white'
+                    : 'border-[#E0E0E5] bg-white/60 hover:bg-white'
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span className="font-mono text-[10px] font-bold tracking-[0.5px] px-1.5 py-0.5 rounded bg-[#1A1A1A] text-white">
+                    {METHOD_INFO[m].short}
+                  </span>
+                  <span className="font-mono text-[12px] font-bold text-[#1A1A1A]">
+                    {METHOD_INFO[m].label}
+                  </span>
+                </div>
+                <p className="font-mono text-[11px] text-[#3A3A3A] leading-relaxed mb-1.5">
+                  {METHOD_INFO[m].detail}
+                </p>
+                <p className="font-mono text-[10px] text-[#888888] italic">
+                  Ref: {METHOD_INFO[m].reference}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {/* ── Chart with HTML overlay divs ───────────────────────────── */}
       <div className="px-4 pt-3 pb-1">
         <div ref={chartWrapperRef} className="relative overflow-hidden" style={{ height: hasSignals ? 620 : 380 }}>
           {/* Lightweight-charts canvas */}
           <div ref={chartContainerRef} style={{ height: hasSignals ? 620 : 380, width: '100%' }} />
 
-          {/* Phase overlay divs — positioned absolutely on top of chart */}
-          {showPhases && overlayRects.map((rect) => (
+          {/* SMA-based phase overlay divs */}
+          {showSmaBands && overlayRects.map((rect) => (
             <div
-              key={rect.id}
-              onClick={() => setSelectedPhaseId(selectedPhaseId === rect.id ? null : rect.id)}
+              key={`phase-${rect.id}`}
               style={{
                 position: 'absolute',
                 top: 0,
@@ -488,17 +739,86 @@ export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] 
               )}
             </div>
           ))}
+
+          {/* Wyckoff event markers — vertical lines + label badges */}
+          {showWyckoffMarkers && wyckoffMarkers.map((mk) => {
+            const isSelected = selectedEventId === mk.id
+            return (
+              <div key={`wy-${mk.id}`}>
+                {/* Vertical event line */}
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: mk.left,
+                    width: 0,
+                    height: hasSignals ? '55%' : '100%',
+                    borderLeft: `1px ${isSelected ? 'solid' : 'dashed'} ${mk.color}`,
+                    opacity: isSelected ? 0.9 : 0.45,
+                    pointerEvents: 'none',
+                    zIndex: 2,
+                  }}
+                />
+                {/* Marker badge */}
+                <button
+                  onClick={() => setSelectedEventId(isSelected ? null : mk.id)}
+                  style={{
+                    position: 'absolute',
+                    top: 6,
+                    left: mk.left - 14,
+                    width: 28,
+                    minHeight: 16,
+                    fontSize: 9,
+                    fontFamily: 'monospace',
+                    fontWeight: 700,
+                    color: '#FFFFFF',
+                    backgroundColor: mk.color,
+                    border: 'none',
+                    borderRadius: 3,
+                    padding: '1px 2px',
+                    opacity: isSelected ? 1 : 0.85,
+                    cursor: 'pointer',
+                    zIndex: 3,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                  title={`${WYCKOFF_LABELS[mk.type]} — ${mk.date} (conf ${mk.confidence}%)`}
+                >
+                  {mk.type}
+                </button>
+              </div>
+            )
+          })}
         </div>
 
-        {/* Phase legend */}
-        {showPhases && (
-          <div className="flex items-center gap-4 mt-1 px-1">
+        {/* Phase legend (SMA mode) */}
+        {showSmaBands && (
+          <div className="flex items-center gap-4 mt-1 px-1 flex-wrap">
             {(Object.keys(PHASE_COLORS) as MarketPhaseType[]).map((type) => (
               <div key={type} className="flex items-center gap-1">
                 <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: PHASE_COLORS[type], opacity: 0.7 }} />
                 <span className="text-[10px] text-[#888888] font-mono">{PHASE_LABELS[type]}</span>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Wyckoff event legend */}
+        {showWyckoffMarkers && (
+          <div className="flex items-center gap-4 mt-1 px-1 flex-wrap">
+            <div className="flex items-center gap-1">
+              <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#1D9E75' }} />
+              <span className="text-[10px] text-[#888888] font-mono">Bullish (SC, Spring, SOS, LPS, no_supply, passive_markup)</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#E24B4A' }} />
+              <span className="text-[10px] text-[#888888] font-mono">Bearish (BC, UTAD, SOW, LPSY, no_demand, passive_markdown)</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <div className="w-2.5 h-2.5 rounded-sm" style={{ backgroundColor: '#D4A843' }} />
+              <span className="text-[10px] text-[#888888] font-mono">Context (PS, ST, absorption)</span>
+            </div>
           </div>
         )}
       </div>
@@ -519,8 +839,70 @@ export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] 
         </div>
       )}
 
+      {/* ── Wyckoff current posture banner ─────────────────────────── */}
+      {(method === 'wyckoff' || method === 'both') && wyckoffData && (
+        <div className="border-t border-[#E0E0E5]">
+          <div className="px-5 py-2.5 border-b border-[#E0E0E5] bg-[#FAFAFA] flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <div
+                className="w-3 h-3 rounded-full"
+                style={{
+                  backgroundColor: wyckoffData.currentPhase
+                    ? WYCKOFF_PHASE_COLORS[wyckoffData.currentPhase]
+                    : '#888888',
+                }}
+              />
+              <span
+                className="font-mono text-[13px] font-bold"
+                style={{
+                  color: wyckoffData.currentPhase
+                    ? WYCKOFF_PHASE_COLORS[wyckoffData.currentPhase]
+                    : '#888888',
+                }}
+              >
+                Wyckoff: {wyckoffData.currentPhase
+                  ? WYCKOFF_PHASE_LABELS[wyckoffData.currentPhase]
+                  : 'No structural events detected'}
+              </span>
+            </div>
+            <span className="font-mono text-[11px] text-[#6D6C6A]">
+              {wyckoffData.stats.totalEvents} events / avg conf {wyckoffData.stats.avgConfidence}%
+            </span>
+          </div>
+
+          {wyckoffData.latestEvent && (
+            <div className="px-5 py-3 grid grid-cols-1 md:grid-cols-3 gap-px bg-[#E0E0E5]">
+              <div className="bg-white px-4 py-2.5">
+                <div className="font-mono text-[10px] text-[#888888] tracking-[0.3px] mb-1">LATEST EVENT</div>
+                <div className="font-mono text-[12px] text-[#1A1A1A] font-medium">
+                  {WYCKOFF_LABELS[wyckoffData.latestEvent.event_type]}
+                </div>
+                <div className="font-mono text-[11px] text-[#6D6C6A] mt-0.5">
+                  {formatDateMed(wyckoffData.latestEvent.event_date)}
+                </div>
+              </div>
+              <div className="bg-white px-4 py-2.5">
+                <div className="font-mono text-[10px] text-[#888888] tracking-[0.3px] mb-1">CONFIDENCE</div>
+                <div className="font-mono text-[12px] font-medium" style={{ color: clarityColor(wyckoffData.latestEvent.confidence) }}>
+                  {wyckoffData.latestEvent.confidence}%
+                </div>
+                <div className="font-mono text-[11px] text-[#6D6C6A] mt-0.5">
+                  vol z={wyckoffData.latestEvent.volume_z?.toFixed(1) ?? '—'} · range z={wyckoffData.latestEvent.range_z?.toFixed(1) ?? '—'}
+                </div>
+              </div>
+              <div className="bg-white px-4 py-2.5">
+                <div className="font-mono text-[10px] text-[#888888] tracking-[0.3px] mb-1">INTERPRETATION</div>
+                <p className="font-mono text-[11px] text-[#3A3A3A] leading-snug">
+                  {WYCKOFF_EXPLANATIONS[wyckoffData.latestEvent.event_type]}
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Current phase detail banner ────────────────────────────── */}
-      {currentPhase && (
+      {(method === 'sma' || method === 'both') && currentPhase && (
         <div className="border-t border-[#E0E0E5]">
           <div className="px-5 py-2.5 border-b border-[#E0E0E5] bg-[#FAFAFA] flex items-center justify-between">
             <div className="flex items-center gap-2">
@@ -604,8 +986,79 @@ export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] 
         </div>
       )}
 
+      {/* ── Wyckoff events table ────────────────────────────────────── */}
+      {(method === 'wyckoff' || method === 'both') && !loading && visibleWyckoff.length > 0 && (
+        <div className="border-t border-[#E0E0E5]">
+          <div className="px-5 py-2.5 border-b border-[#E0E0E5]">
+            <span className="font-mono text-[11px] font-bold tracking-[0.3px] text-[#1A1A1A]">
+              WYCKOFF EVENTS ({visibleWyckoff.length})
+            </span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="border-b border-[#E0E0E5] bg-[#FAFAFA]">
+                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px]">EVENT</th>
+                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px]">TANGGAL</th>
+                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px] text-right">PRICE</th>
+                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px] text-right">VOL Z</th>
+                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px] text-right">RANGE Z</th>
+                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px] text-right">CONF.</th>
+                  <th className="px-4 py-2 font-mono text-[10px] font-bold text-[#888888] tracking-[0.3px]">INTERPRETASI</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...visibleWyckoff].reverse().map((evt) => (
+                  <tr
+                    key={evt.id}
+                    onClick={() => setSelectedEventId(selectedEventId === evt.id ? null : evt.id)}
+                    className={`border-b border-[#F0F0F2] cursor-pointer transition-colors ${
+                      selectedEventId === evt.id ? 'bg-[#F0F3FF]' : 'hover:bg-[#FAFAFA]'
+                    }`}
+                  >
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className="text-[10px] font-bold font-mono text-white px-1.5 py-0.5 rounded"
+                          style={{ backgroundColor: wyckoffMarkerColor(evt.event_type) }}
+                        >
+                          {evt.event_type}
+                        </span>
+                        <span className="font-mono text-[11px] text-[#1A1A1A]">
+                          {WYCKOFF_LABELS[evt.event_type]}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-[11px] text-[#6D6C6A] whitespace-nowrap">
+                      {formatDateMed(evt.event_date)}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-[11px] text-[#1A1A1A] text-right">
+                      {fmtNumID(evt.price)}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-[11px] text-[#6D6C6A] text-right">
+                      {evt.volume_z != null ? evt.volume_z.toFixed(1) : '—'}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-[11px] text-[#6D6C6A] text-right">
+                      {evt.range_z != null ? evt.range_z.toFixed(1) : '—'}
+                    </td>
+                    <td className="px-4 py-2.5 text-right">
+                      <span className="font-mono text-[11px] font-medium" style={{ color: clarityColor(evt.confidence) }}>
+                        {evt.confidence}%
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-[11px] text-[#3A3A3A] leading-snug">
+                      {WYCKOFF_EXPLANATIONS[evt.event_type]}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* ── Phase history table ────────────────────────────────────── */}
-      {!loading && visiblePhases.length > 0 && (
+      {(method === 'sma' || method === 'both') && !loading && visiblePhases.length > 0 && (
         <div className="border-t border-[#E0E0E5]">
           <div className="px-5 py-2.5 border-b border-[#E0E0E5]">
             <span className="font-mono text-[11px] font-bold tracking-[0.3px] text-[#1A1A1A]">
@@ -698,8 +1151,13 @@ export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] 
       {/* ── Disclaimer ─────────────────────────────────────────────── */}
       <div className="px-5 py-2 border-t border-[#E0E0E5] bg-[#FAFAFA]">
         <p className="font-mono text-[9px] text-[#AAAAAA] leading-relaxed">
-          Indikator berbasis SMA(20/50) crossover + ATR. Bukan analisis Wyckoff struktural.
-          Bukan sinyal beli/jual. Gunakan sebagai konteks tambahan, bukan dasar keputusan.
+          {method === 'sma' &&
+            'SMA: indikator berbasis SMA(20/50) crossover + ATR. Lambat, tertinggal saat tren berbalik.'}
+          {method === 'wyckoff' &&
+            'Wyckoff: deteksi event struktural (climax, spring, UTAD, absorption). Sinyal diskrit, bukan label tren kontinu.'}
+          {method === 'both' &&
+            'Combined: band SMA = konteks tren; marker Wyckoff = trigger institusional. Klik tombol "?" di header untuk penjelasan tiap metode.'}
+          {' '}Bukan sinyal beli/jual. Gunakan sebagai konteks tambahan, bukan dasar keputusan.
         </p>
       </div>
     </div>

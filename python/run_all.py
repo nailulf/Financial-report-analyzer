@@ -426,6 +426,31 @@ def _run_market_phase_detection(
     )
 
 
+def _run_wyckoff_detection(
+    tickers: list[str] | None,
+    dry_run: bool = False,
+) -> None:
+    """
+    Phase 7b: Detect Wyckoff structural events from price/volume bars.
+    Writes to: wyckoff_events table.
+    """
+    from scripts.analysis.wyckoff_detector import WyckoffDetector
+
+    console.rule("[bold cyan]PHASE 7b: Wyckoff Structural Events[/bold cyan]")
+
+    detector = WyckoffDetector()
+    results = detector.detect_batch(tickers, dry_run=dry_run)
+
+    ok = sum(1 for v in results.values() if v >= 0)
+    failed = sum(1 for v in results.values() if v < 0)
+    total_events = sum(v for v in results.values() if v > 0)
+
+    console.print(
+        f"[green]Wyckoff detection complete:[/green] "
+        f"{ok} tickers processed, {total_events} events detected, {failed} failed"
+    )
+
+
 def _run_technical_signals(
     tickers: list[str] | None,
     dry_run: bool = False,
@@ -828,6 +853,10 @@ Examples:
     mode.add_argument("--detect-phases", action="store_true",
                       help="Phase 7: detect market cycle phases from price/volume patterns")
 
+    # Phase 7b: Wyckoff structural events (climaxes, springs, UTAD, absorption)
+    mode.add_argument("--detect-wyckoff", action="store_true",
+                      help="Phase 7b: detect Wyckoff structural events (SC/BC, Spring/UTAD, etc.)")
+
     # Phase 8: Technical signals
     mode.add_argument("--compute-signals", action="store_true",
                       help="Phase 8: compute MACD, RSI, volume change from daily prices")
@@ -975,7 +1004,7 @@ Examples:
                  args.enrich_ratios, args.dividends, args.fill_gaps, args.fallback_financials,
                  args.broker_backfill, args.insider,
                  args.build_ai_context, args.run_ai_analysis, args.ai_full,
-                 args.detect_phases, args.compute_signals]
+                 args.detect_phases, args.detect_wyckoff, args.compute_signals]
     if not any(all_modes):
         parser.print_help()
         console.print("\n[red]Error: specify at least one run mode.[/red]")
@@ -1089,6 +1118,10 @@ Examples:
         # ── Phase 7: Market phase detection ──────────────────────────
         if args.detect_phases:
             _run_market_phase_detection(tickers, dry_run=args.dry_run)
+
+        # ── Phase 7b: Wyckoff structural events ──────────────────────
+        if args.detect_wyckoff:
+            _run_wyckoff_detection(tickers, dry_run=args.dry_run)
 
         # ── Phase 8: Technical signals ───────────────────────────────
         if args.compute_signals:

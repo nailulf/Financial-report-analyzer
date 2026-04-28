@@ -26,6 +26,10 @@ export interface ScreenerRow {
   current_phase: MarketPhaseType | null
   current_phase_clarity: number | null
   current_phase_days: number | null
+  current_wyckoff_event: WyckoffEventType | null
+  current_wyckoff_event_date: string | null
+  current_wyckoff_phase: WyckoffPhase | null
+  current_wyckoff_confidence: number | null
   revenue_cagr_3yr: number | null
   revenue_cagr_5yr: number | null
   price_cagr_3yr: number | null
@@ -567,5 +571,49 @@ export interface MarketPhaseResponse {
     avgClarity: number
     phaseCounts: Record<MarketPhaseType, number>
     coverageDays: number
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Wyckoff Structural Event Detection (Phase 7b)
+// ---------------------------------------------------------------------------
+
+export type WyckoffEventType =
+  // Accumulation
+  | 'PS' | 'SC' | 'AR_up' | 'ST_low' | 'Spring' | 'SOS' | 'LPS'
+  // Distribution
+  | 'PSY' | 'BC' | 'AR_down' | 'ST_high' | 'UTAD' | 'SOW' | 'LPSY'
+  // Effort/Result
+  | 'absorption' | 'no_demand' | 'no_supply'
+  // Passive drift (v23)
+  | 'passive_markup' | 'passive_markdown'
+
+export type WyckoffPhase = 'accumulation' | 'markup' | 'distribution' | 'markdown'
+
+export interface WyckoffEvent {
+  id: number
+  ticker: string
+  event_type: WyckoffEventType
+  event_date: string
+  price: number
+  volume: number | null
+  volume_z: number | null
+  range_z: number | null
+  confidence: number              // 0-100
+  inferred_phase: WyckoffPhase | null
+  notes: string | null
+  detected_at: string
+}
+
+export interface WyckoffResponse {
+  ticker: string
+  events: WyckoffEvent[]
+  currentPhase: WyckoffPhase | null
+  latestEvent: WyckoffEvent | null
+  detectedAt: string | null
+  stats: {
+    totalEvents: number
+    eventCounts: Record<string, number>
+    avgConfidence: number
   }
 }

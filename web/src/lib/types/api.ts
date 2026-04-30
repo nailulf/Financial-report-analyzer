@@ -30,6 +30,11 @@ export interface ScreenerRow {
   current_wyckoff_event_date: string | null
   current_wyckoff_phase: WyckoffPhase | null
   current_wyckoff_confidence: number | null
+  current_wyckoff_event_v2: WyckoffEventType | null
+  current_wyckoff_event_date_v2: string | null
+  current_wyckoff_phase_v2: WyckoffPhase | null
+  current_wyckoff_confidence_v2: number | null
+  current_wyckoff_fsm_phase_v2: string | null    // fine-grained FSM (accumulation_a/b/c/d, markup, etc.)
   revenue_cagr_3yr: number | null
   revenue_cagr_5yr: number | null
   price_cagr_3yr: number | null
@@ -587,6 +592,12 @@ export type WyckoffEventType =
   | 'absorption' | 'no_demand' | 'no_supply'
   // Passive drift (v23)
   | 'passive_markup' | 'passive_markdown'
+  // Structural failures (v26 — emitted by FSM v2)
+  | 'distr_failed' | 'accum_failed'
+  // v2.1 spec additions (v27)
+  | 'markup_exhaustion' | 'markdown_exhaustion'
+  | 'basis_building' | 'topping_action'
+  | 'range_breakout_up' | 'range_breakout_down'
 
 export type WyckoffPhase = 'accumulation' | 'markup' | 'distribution' | 'markdown'
 

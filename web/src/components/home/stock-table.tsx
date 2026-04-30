@@ -23,10 +23,12 @@ const PHASE_BADGE: Record<MarketPhaseType, { label: string; variant: 'blue' | 'r
 const WYCKOFF_BADGE: Record<WyckoffEventType, 'green' | 'red' | 'amber'> = {
   // Bullish
   SC: 'green', AR_up: 'green', Spring: 'green', SOS: 'green', LPS: 'green',
-  no_supply: 'green', passive_markup: 'green',
+  no_supply: 'green', passive_markup: 'green', distr_failed: 'green',
+  markdown_exhaustion: 'green', basis_building: 'green', range_breakout_up: 'green',
   // Bearish
   BC: 'red', AR_down: 'red', UTAD: 'red', SOW: 'red', LPSY: 'red',
-  no_demand: 'red', passive_markdown: 'red',
+  no_demand: 'red', passive_markdown: 'red', accum_failed: 'red',
+  markup_exhaustion: 'red', topping_action: 'red', range_breakout_down: 'red',
   // Neutral / context
   PS: 'amber', PSY: 'amber', ST_low: 'amber', ST_high: 'amber', absorption: 'amber',
 }
@@ -58,6 +60,7 @@ type ColumnKey =
   | 'market_cap' | 'completeness' | 'confidence'
   | 'rsi_14' | 'macd_cross' | 'volume_change' | 'volume_avg'
   | 'wyckoff_event' | 'wyckoff_phase' | 'wyckoff_confidence'
+  | 'wyckoff_event_v2' | 'wyckoff_phase_v2' | 'wyckoff_fsm_phase_v2' | 'wyckoff_confidence_v2'
 
 interface ColumnDef {
   key: ColumnKey
@@ -70,7 +73,7 @@ interface ColumnDef {
 }
 
 const DEFAULT_VISIBLE: ColumnKey[] = [
-  'sector', 'phase', 'wyckoff_event', 'price', 'pe_ratio', 'pbv_ratio', 'market_cap',
+  'sector', 'phase', 'wyckoff_event_v2', 'price', 'pe_ratio', 'pbv_ratio', 'market_cap',
 ]
 
 const STORAGE_KEY = 'screener-visible-cols'
@@ -158,6 +161,49 @@ const COLUMNS: ColumnDef[] = [
     key: 'wyckoff_confidence', label: 'WY Confidence', shortLabel: 'WY Conf', align: 'right',
     render: (r) => {
       const v = r.current_wyckoff_confidence
+      if (v == null) return <span className="text-gray-400">—</span>
+      const c = v >= 75 ? 'text-green-600' : v >= 55 ? 'text-amber-600' : 'text-red-500'
+      return <span className={`font-medium ${c}`}>{v}</span>
+    },
+  },
+  // ── Wyckoff v2 (FSM detector) ──
+  {
+    key: 'wyckoff_event_v2', label: 'Wyckoff Event (v2)', shortLabel: 'WY v2 Evt', align: 'left',
+    render: (r) => {
+      if (!r.current_wyckoff_event_v2) return <span className="text-gray-400">—</span>
+      const days = daysAgo(r.current_wyckoff_event_date_v2)
+      return (
+        <div className="flex items-center gap-1.5">
+          <Badge variant={WYCKOFF_BADGE[r.current_wyckoff_event_v2]} size="xs">
+            {r.current_wyckoff_event_v2}
+          </Badge>
+          {days != null && (
+            <span className="text-[10px] font-mono text-gray-400">{days}d ago</span>
+          )}
+        </div>
+      )
+    },
+  },
+  {
+    key: 'wyckoff_phase_v2', label: 'Wyckoff Phase (v2)', shortLabel: 'WY v2 Phase', align: 'left',
+    render: (r) => r.current_wyckoff_phase_v2
+      ? (
+        <Badge variant={WYCKOFF_PHASE_BADGE[r.current_wyckoff_phase_v2].variant} size="xs">
+          {WYCKOFF_PHASE_BADGE[r.current_wyckoff_phase_v2].label}
+        </Badge>
+      )
+      : <span className="text-gray-400">—</span>,
+  },
+  {
+    key: 'wyckoff_fsm_phase_v2', label: 'FSM Phase (v2)', shortLabel: 'WY v2 FSM', align: 'left',
+    render: (r) => r.current_wyckoff_fsm_phase_v2
+      ? <span className="text-gray-700 text-xs font-mono">{r.current_wyckoff_fsm_phase_v2}</span>
+      : <span className="text-gray-400">—</span>,
+  },
+  {
+    key: 'wyckoff_confidence_v2', label: 'WY Confidence (v2)', shortLabel: 'WY v2 Conf', align: 'right',
+    render: (r) => {
+      const v = r.current_wyckoff_confidence_v2
       if (v == null) return <span className="text-gray-400">—</span>
       const c = v >= 75 ? 'text-green-600' : v >= 55 ? 'text-amber-600' : 'text-red-500'
       return <span className={`font-medium ${c}`}>{v}</span>
@@ -347,7 +393,8 @@ function ColumnPicker({
           {[
             { group: 'Identity', keys: ['company', 'sector', 'subsector', 'board', 'listing_date'] },
             { group: 'Phase (SMA)', keys: ['phase', 'phase_clarity'] },
-            { group: 'Wyckoff', keys: ['wyckoff_event', 'wyckoff_phase', 'wyckoff_confidence'] },
+            { group: 'Wyckoff v1 (flat)', keys: ['wyckoff_event', 'wyckoff_phase', 'wyckoff_confidence'] },
+            { group: 'Wyckoff v2 (FSM)', keys: ['wyckoff_event_v2', 'wyckoff_phase_v2', 'wyckoff_fsm_phase_v2', 'wyckoff_confidence_v2'] },
             { group: 'Valuation', keys: ['price', 'pe_ratio', 'pbv_ratio', 'market_cap', 'listed_shares'] },
             { group: 'Fundamentals', keys: ['roe', 'net_margin'] },
             { group: 'Dividends', keys: ['dividend_yield', 'div_yield_avg_3yr', 'div_yield_avg_5yr'] },

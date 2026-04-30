@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from utils.supabase_client import get_client, bulk_upsert, delete_where
+from utils.supabase_client import get_client, bulk_upsert
 
 logger = logging.getLogger(__name__)
 
@@ -1261,9 +1261,10 @@ class WyckoffDetector:
     def _dedupe_events(events: List[WyckoffEvent]) -> List[WyckoffEvent]:
         """
         Collapse events sharing the same (event_date, event_type) into a single
-        record by keeping the one with highest confidence. The unique constraint
-        in the database is (ticker, event_date, event_type), so duplicates
-        within a single ticker's batch are illegal.
+        record by keeping the one with highest confidence. Since this batch is
+        all v1 (detection_version='1.0'), duplicates on (event_date, event_type)
+        would collide on the (ticker, event_date, event_type, detection_version)
+        unique constraint introduced in schema-v25.
         """
         best: Dict[Tuple[str, str], WyckoffEvent] = {}
         for e in events:
@@ -1274,8 +1275,16 @@ class WyckoffDetector:
         return list(best.values())
 
     def _upsert_events(self, ticker: str, events: List[WyckoffEvent]) -> None:
-        """DELETE + INSERT all events for a ticker, then denorm latest onto stocks."""
-        delete_where("wyckoff_events", "ticker", ticker)
+        """DELETE + INSERT v1 events for a ticker, then denorm latest onto stocks."""
+        # Delete only v1 rows; leave v2 rows untouched (schema-v25 coexistence).
+        try:
+            (get_client().table("wyckoff_events")
+                .delete()
+                .eq("ticker", ticker)
+                .eq("detection_version", "1.0")
+                .execute())
+        except Exception:
+            logger.debug("%s: delete-by-version failed (likely empty)", ticker)
 
         if events:
             rows = [{
@@ -1292,7 +1301,10 @@ class WyckoffDetector:
                 "detection_version": "1.0",
                 "detected_at": datetime.now(timezone.utc).isoformat(),
             } for e in events]
-            bulk_upsert("wyckoff_events", rows, on_conflict="ticker,event_date,event_type")
+            bulk_upsert(
+                "wyckoff_events", rows,
+                on_conflict="ticker,event_date,event_type,detection_version",
+            )
 
         # Denormalize the latest event onto the stocks table for fast screener
         # filtering. Schema-v24 introduced these columns; the update is a no-op

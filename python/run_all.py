@@ -431,12 +431,12 @@ def _run_wyckoff_detection(
     dry_run: bool = False,
 ) -> None:
     """
-    Phase 7b: Detect Wyckoff structural events from price/volume bars.
-    Writes to: wyckoff_events table.
+    Phase 7b v1: Detect Wyckoff structural events from price/volume bars (flat-pass).
+    Writes to: wyckoff_events table with detection_version='1.0'.
     """
     from scripts.analysis.wyckoff_detector import WyckoffDetector
 
-    console.rule("[bold cyan]PHASE 7b: Wyckoff Structural Events[/bold cyan]")
+    console.rule("[bold cyan]PHASE 7b v1: Wyckoff Structural Events (flat-pass)[/bold cyan]")
 
     detector = WyckoffDetector()
     results = detector.detect_batch(tickers, dry_run=dry_run)
@@ -446,7 +446,33 @@ def _run_wyckoff_detection(
     total_events = sum(v for v in results.values() if v > 0)
 
     console.print(
-        f"[green]Wyckoff detection complete:[/green] "
+        f"[green]Wyckoff v1 detection complete:[/green] "
+        f"{ok} tickers processed, {total_events} events detected, {failed} failed"
+    )
+
+
+def _run_wyckoff_v2_detection(
+    tickers: list[str] | None,
+    dry_run: bool = False,
+) -> None:
+    """
+    Phase 7b v2: FSM-based Wyckoff detector (sequence-enforced).
+    Writes to: wyckoff_events table with detection_version='2.0' and
+    denormalizes latest event + final FSM phase onto stocks.* v2 columns.
+    """
+    from scripts.analysis.wyckoff_detector_v2 import WyckoffDetectorV2
+
+    console.rule("[bold cyan]PHASE 7b v2: Wyckoff FSM Detection[/bold cyan]")
+
+    detector = WyckoffDetectorV2()
+    results = detector.detect_batch(tickers, dry_run=dry_run)
+
+    ok = sum(1 for v in results.values() if v >= 0)
+    failed = sum(1 for v in results.values() if v < 0)
+    total_events = sum(v for v in results.values() if v > 0)
+
+    console.print(
+        f"[green]Wyckoff v2 detection complete:[/green] "
         f"{ok} tickers processed, {total_events} events detected, {failed} failed"
     )
 
@@ -855,7 +881,9 @@ Examples:
 
     # Phase 7b: Wyckoff structural events (climaxes, springs, UTAD, absorption)
     mode.add_argument("--detect-wyckoff", action="store_true",
-                      help="Phase 7b: detect Wyckoff structural events (SC/BC, Spring/UTAD, etc.)")
+                      help="Phase 7b v1: flat-pass Wyckoff detector (SC/BC, Spring/UTAD, passive drifts)")
+    mode.add_argument("--detect-wyckoff-v2", action="store_true",
+                      help="Phase 7b v2: FSM-based Wyckoff detector (sequence-enforced, fine-grained phases)")
 
     # Phase 8: Technical signals
     mode.add_argument("--compute-signals", action="store_true",
@@ -1004,7 +1032,8 @@ Examples:
                  args.enrich_ratios, args.dividends, args.fill_gaps, args.fallback_financials,
                  args.broker_backfill, args.insider,
                  args.build_ai_context, args.run_ai_analysis, args.ai_full,
-                 args.detect_phases, args.detect_wyckoff, args.compute_signals]
+                 args.detect_phases, args.detect_wyckoff, args.detect_wyckoff_v2,
+                 args.compute_signals]
     if not any(all_modes):
         parser.print_help()
         console.print("\n[red]Error: specify at least one run mode.[/red]")
@@ -1122,6 +1151,10 @@ Examples:
         # ── Phase 7b: Wyckoff structural events ──────────────────────
         if args.detect_wyckoff:
             _run_wyckoff_detection(tickers, dry_run=args.dry_run)
+
+        # ── Phase 7b v2: FSM-based Wyckoff ───────────────────────────
+        if args.detect_wyckoff_v2:
+            _run_wyckoff_v2_detection(tickers, dry_run=args.dry_run)
 
         # ── Phase 8: Technical signals ───────────────────────────────
         if args.compute_signals:

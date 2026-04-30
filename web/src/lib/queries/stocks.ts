@@ -34,11 +34,17 @@ export interface ScreenerFilters {
   maxMacdCrossDays?: number
   minVolChangePct?: number
   minVolAvg?: number             // 20-day avg volume (in millions)
-  // Wyckoff signals
-  wyckoffEvent?: string          // comma-separated event types (e.g. 'Spring,LPS,SOS')
-  wyckoffPhase?: string          // 'accumulation' | 'markup' | 'distribution' | 'markdown'
-  maxWyckoffDays?: number        // latest event within N calendar days
-  minWyckoffConf?: number        // minimum confidence on the latest event
+  // Wyckoff signals (v1 — flat-pass detector denorm columns)
+  wyckoffEvent?: string          // comma-separated event types
+  wyckoffPhase?: string
+  maxWyckoffDays?: number
+  minWyckoffConf?: number
+  // Wyckoff signals (v2 — FSM detector denorm columns)
+  wyckoffEventV2?: string        // comma-separated event types
+  wyckoffPhaseV2?: string        // accumulation|markup|distribution|markdown
+  wyckoffFsmPhaseV2?: string     // fine-grained FSM phase (accumulation_a/b/c/d, etc.)
+  maxWyckoffDaysV2?: number
+  minWyckoffConfV2?: number
   sortBy?: string
   sortDir?: 'asc' | 'desc'
 }
@@ -118,6 +124,29 @@ export function applyScreenerFilters<Q extends { eq: any; gte: any; lte: any; or
   if (filters.minWyckoffConf != null) {
     query = query.gte('current_wyckoff_confidence', filters.minWyckoffConf)
   }
+  // ── Wyckoff v2 filters (denormalized via schema-v25 *_v2 columns) ───
+  if (filters.wyckoffEventV2) {
+    const evts = String(filters.wyckoffEventV2).split(',').filter(Boolean)
+    if (evts.length === 1) {
+      query = query.eq('current_wyckoff_event_v2', evts[0])
+    } else if (evts.length > 1) {
+      const orClause = evts.map((e: string) => `current_wyckoff_event_v2.eq.${e}`).join(',')
+      query = query.or(orClause)
+    }
+  }
+  if (filters.wyckoffPhaseV2) query = query.eq('current_wyckoff_phase_v2', filters.wyckoffPhaseV2)
+  if (filters.wyckoffFsmPhaseV2) query = query.eq('current_wyckoff_fsm_phase_v2', filters.wyckoffFsmPhaseV2)
+  if (filters.maxWyckoffDaysV2 != null) {
+    const days = Number(filters.maxWyckoffDaysV2)
+    if (!isNaN(days)) {
+      const cutoff = new Date()
+      cutoff.setDate(cutoff.getDate() - days)
+      query = query.gte('current_wyckoff_event_date_v2', cutoff.toISOString().slice(0, 10))
+    }
+  }
+  if (filters.minWyckoffConfV2 != null) {
+    query = query.gte('current_wyckoff_confidence_v2', filters.minWyckoffConfV2)
+  }
   return query
 }
 
@@ -135,7 +164,7 @@ export async function getScreenerRows(
   // All screener metrics are denormalized onto stocks (see schema-v10).
   // No views, no joins — just a simple indexed table scan.
 
-  const SCREENER_COLS = 'ticker, name, sector, subsector, board, is_lq45, is_idx30, listing_date, listed_shares, market_cap, current_price, pe_ratio, pbv_ratio, roe, net_margin, dividend_yield, current_phase, current_phase_clarity, current_phase_days, revenue_cagr_3yr, revenue_cagr_5yr, price_cagr_3yr, price_cagr_5yr, ocf_cagr_3yr, ocf_cagr_5yr, div_yield_avg_3yr, div_yield_avg_5yr, completeness_score, confidence_score, rsi_14, macd_histogram, macd_cross_signal, macd_cross_days_ago, volume_change_pct, volume_avg_20d, current_wyckoff_event, current_wyckoff_event_date, current_wyckoff_phase, current_wyckoff_confidence'
+  const SCREENER_COLS = 'ticker, name, sector, subsector, board, is_lq45, is_idx30, listing_date, listed_shares, market_cap, current_price, pe_ratio, pbv_ratio, roe, net_margin, dividend_yield, current_phase, current_phase_clarity, current_phase_days, revenue_cagr_3yr, revenue_cagr_5yr, price_cagr_3yr, price_cagr_5yr, ocf_cagr_3yr, ocf_cagr_5yr, div_yield_avg_3yr, div_yield_avg_5yr, completeness_score, confidence_score, rsi_14, macd_histogram, macd_cross_signal, macd_cross_days_ago, volume_change_pct, volume_avg_20d, current_wyckoff_event, current_wyckoff_event_date, current_wyckoff_phase, current_wyckoff_confidence, current_wyckoff_event_v2, current_wyckoff_event_date_v2, current_wyckoff_phase_v2, current_wyckoff_confidence_v2, current_wyckoff_fsm_phase_v2'
 
   let dataQuery = supabase
     .from('stocks')
@@ -203,6 +232,11 @@ export async function getScreenerRows(
     current_wyckoff_event_date: string | null
     current_wyckoff_phase: string | null
     current_wyckoff_confidence: number | null
+    current_wyckoff_event_v2: string | null
+    current_wyckoff_event_date_v2: string | null
+    current_wyckoff_phase_v2: string | null
+    current_wyckoff_confidence_v2: number | null
+    current_wyckoff_fsm_phase_v2: string | null
   }
 
   const rows: ScreenerRow[] = ((data ?? []) as StocksRow[]).map((r) => ({
@@ -245,6 +279,11 @@ export async function getScreenerRows(
     current_wyckoff_event_date: r.current_wyckoff_event_date,
     current_wyckoff_phase: r.current_wyckoff_phase as ScreenerRow['current_wyckoff_phase'],
     current_wyckoff_confidence: r.current_wyckoff_confidence ?? null,
+    current_wyckoff_event_v2: r.current_wyckoff_event_v2 as ScreenerRow['current_wyckoff_event_v2'],
+    current_wyckoff_event_date_v2: r.current_wyckoff_event_date_v2,
+    current_wyckoff_phase_v2: r.current_wyckoff_phase_v2 as ScreenerRow['current_wyckoff_phase_v2'],
+    current_wyckoff_confidence_v2: r.current_wyckoff_confidence_v2 ?? null,
+    current_wyckoff_fsm_phase_v2: r.current_wyckoff_fsm_phase_v2 ?? null,
   }))
 
   return { rows, total: count ?? rows.length }

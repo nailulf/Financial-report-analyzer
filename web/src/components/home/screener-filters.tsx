@@ -19,10 +19,10 @@ const MACD_CROSS_OPTIONS = [
   { value: 'death_cross',  label: 'Death Cross' },
 ] as const
 
-// Wyckoff filter options — only the most actionable events for screening.
+// Wyckoff filter options — v1 detector emits these (flat-pass).
 // Excludes intermediate context events (PS, PSY, ST_*, AR_*) that rarely
 // drive a trade decision on their own.
-const WYCKOFF_EVENTS = [
+const WYCKOFF_EVENTS_V1 = [
   { value: 'Spring',           label: 'Spring (bullish reversal)' },
   { value: 'SC',               label: 'Selling Climax' },
   { value: 'SOS',              label: 'Sign of Strength' },
@@ -38,11 +38,54 @@ const WYCKOFF_EVENTS = [
   { value: 'absorption',       label: 'Absorption' },
 ] as const
 
+// Wyckoff v2 (FSM) actionable events — includes structural failures + soft
+// entries that v1 doesn't have, excludes drift / effort-result anomalies.
+const WYCKOFF_EVENTS_V2 = [
+  // Hard climactic
+  { value: 'SC',                  label: 'Selling Climax' },
+  { value: 'BC',                  label: 'Buying Climax' },
+  { value: 'Spring',              label: 'Spring' },
+  { value: 'UTAD',                label: 'UTAD' },
+  { value: 'SOS',                 label: 'Sign of Strength' },
+  { value: 'LPS',                 label: 'Last Point of Support' },
+  { value: 'SOW',                 label: 'Sign of Weakness' },
+  { value: 'LPSY',                label: 'Last Point of Supply' },
+  // Failures (re-accumulation / re-distribution)
+  { value: 'distr_failed',        label: 'Distribution Failed (re-accum)' },
+  { value: 'accum_failed',        label: 'Accumulation Failed (re-distr)' },
+  // Soft entries
+  { value: 'basis_building',      label: 'Basis Building (soft accum)' },
+  { value: 'topping_action',      label: 'Topping Action (soft distr)' },
+  // Range breakouts
+  { value: 'range_breakout_up',   label: 'Range Breakout Up' },
+  { value: 'range_breakout_down', label: 'Range Breakout Down' },
+  // Trend exhaustion
+  { value: 'markup_exhaustion',   label: 'Markup Exhaustion' },
+  { value: 'markdown_exhaustion', label: 'Markdown Exhaustion' },
+] as const
+
 const WYCKOFF_PHASES = [
   { value: 'accumulation', label: 'Accumulation' },
   { value: 'markup',       label: 'Markup' },
   { value: 'distribution', label: 'Distribution' },
   { value: 'markdown',     label: 'Markdown' },
+] as const
+
+// v2 fine-grained FSM phases (Accum_A/B/C/D etc.)
+const WYCKOFF_FSM_PHASES_V2 = [
+  { value: 'unknown',          label: 'Unknown' },
+  { value: 'downtrend',        label: 'Downtrend' },
+  { value: 'accumulation_a',   label: 'Accum A (SC/AR/ST)' },
+  { value: 'accumulation_b',   label: 'Accum B (range)' },
+  { value: 'accumulation_c',   label: 'Accum C (Spring)' },
+  { value: 'accumulation_d',   label: 'Accum D (SOS/LPS)' },
+  { value: 'markup',           label: 'Markup' },
+  { value: 'uptrend',          label: 'Uptrend' },
+  { value: 'distribution_a',   label: 'Distr A (BC/AR/ST)' },
+  { value: 'distribution_b',   label: 'Distr B (range)' },
+  { value: 'distribution_c',   label: 'Distr C (UTAD)' },
+  { value: 'distribution_d',   label: 'Distr D (SOW/LPSY)' },
+  { value: 'markdown',         label: 'Markdown' },
 ] as const
 
 const SECTORS = [
@@ -67,8 +110,11 @@ const FILTER_KEYS = [
   'maxPhaseDays',
   'sector', 'board', 'phase',
   'minRsi', 'maxRsi', 'macdCross', 'maxMacdCrossDays', 'minVolChangePct', 'minVolAvg',
-  // Wyckoff filters (denormalized via schema-v24)
+  // Wyckoff v1 filters (denormalized via schema-v24)
   'wyckoffEvent', 'wyckoffPhase', 'maxWyckoffDays', 'minWyckoffConf',
+  // Wyckoff v2 filters (denormalized via schema-v25)
+  'wyckoffEventV2', 'wyckoffPhaseV2', 'wyckoffFsmPhaseV2',
+  'maxWyckoffDaysV2', 'minWyckoffConfV2',
 ] as const
 
 type FilterKey = typeof FILTER_KEYS[number]
@@ -175,6 +221,17 @@ export function ScreenerFilters() {
     const fromUrl = readFilters(searchParams)
     setFilters(fromUrl)
     if (hasActiveFilters(fromUrl)) setOpen(true)
+  }, [searchParams])
+
+  // Wyckoff section sub-toggle (v1 flat-pass detector vs v2 FSM detector)
+  const [wyckoffVersion, setWyckoffVersion] = useState<'v1' | 'v2'>('v2')
+  // If the URL already has v1-only filters set, default to v1 view
+  useEffect(() => {
+    const sp = searchParams
+    if (sp.get('wyckoffEvent') || sp.get('wyckoffPhase')
+        || sp.get('maxWyckoffDays') || sp.get('minWyckoffConf')) {
+      setWyckoffVersion('v1')
+    }
   }, [searchParams])
 
   // Strategy save state
@@ -327,41 +384,99 @@ export function ScreenerFilters() {
             </div>
           </div>
 
-          {/* Row 5: Wyckoff Signals */}
+          {/* Row 5: Wyckoff Signals — v1 / v2 toggle controls which detector
+              the filters target. v1 = flat-pass detector (more events,
+              more false positives). v2 = FSM detector (fewer, structurally
+              valid). The two detectors write to separate denorm columns;
+              filters never apply to both at once. */}
           <div>
             <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-2">
-              Wyckoff Signals
+              <span>Wyckoff Signals</span>
+              <div className="flex gap-0.5 border border-gray-200 rounded p-0.5 bg-white">
+                {(['v1', 'v2'] as const).map((v) => (
+                  <button
+                    key={v}
+                    type="button"
+                    onClick={() => setWyckoffVersion(v)}
+                    title={v === 'v1' ? 'Flat-pass detector' : 'FSM detector (recommended)'}
+                    className={`px-2 py-0.5 text-[10px] font-mono rounded transition-colors ${
+                      wyckoffVersion === v
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-transparent text-gray-500 hover:bg-gray-100'
+                    }`}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
               <span className="text-[9px] font-normal text-gray-400 normal-case tracking-normal">
-                (latest event per ticker)
+                (latest event per ticker, denormalized on stocks table)
               </span>
             </div>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <MultiSelect
-                label="Wyckoff Event"
-                options={WYCKOFF_EVENTS}
-                value={filters.wyckoffEvent}
-                onChange={set('wyckoffEvent')}
-              />
-              <div>
-                <label className="block text-xs text-gray-500 mb-1">Wyckoff Phase</label>
-                <select value={filters.wyckoffPhase} onChange={(e) => set('wyckoffPhase')(e.target.value)} className={selectCls}>
-                  <option value="">Any</option>
-                  {WYCKOFF_PHASES.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
-                </select>
+            {wyckoffVersion === 'v1' ? (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <MultiSelect
+                  label="Wyckoff Event (v1)"
+                  options={WYCKOFF_EVENTS_V1}
+                  value={filters.wyckoffEvent}
+                  onChange={set('wyckoffEvent')}
+                />
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Wyckoff Phase</label>
+                  <select value={filters.wyckoffPhase} onChange={(e) => set('wyckoffPhase')(e.target.value)} className={selectCls}>
+                    <option value="">Any</option>
+                    {WYCKOFF_PHASES.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+                  </select>
+                </div>
+                <NumInput
+                  label="Event ≤ N days ago"
+                  placeholder="14"
+                  value={filters.maxWyckoffDays}
+                  onChange={set('maxWyckoffDays')}
+                />
+                <NumInput
+                  label="Min Confidence ≥"
+                  placeholder="70"
+                  value={filters.minWyckoffConf}
+                  onChange={set('minWyckoffConf')}
+                />
               </div>
-              <NumInput
-                label="Event ≤ N days ago"
-                placeholder="14"
-                value={filters.maxWyckoffDays}
-                onChange={set('maxWyckoffDays')}
-              />
-              <NumInput
-                label="Min Confidence ≥"
-                placeholder="70"
-                value={filters.minWyckoffConf}
-                onChange={set('minWyckoffConf')}
-              />
-            </div>
+            ) : (
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                <MultiSelect
+                  label="Wyckoff Event (v2)"
+                  options={WYCKOFF_EVENTS_V2}
+                  value={filters.wyckoffEventV2}
+                  onChange={set('wyckoffEventV2')}
+                />
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Wyckoff Phase</label>
+                  <select value={filters.wyckoffPhaseV2} onChange={(e) => set('wyckoffPhaseV2')(e.target.value)} className={selectCls}>
+                    <option value="">Any</option>
+                    {WYCKOFF_PHASES.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">FSM Phase (fine)</label>
+                  <select value={filters.wyckoffFsmPhaseV2} onChange={(e) => set('wyckoffFsmPhaseV2')(e.target.value)} className={selectCls}>
+                    <option value="">Any</option>
+                    {WYCKOFF_FSM_PHASES_V2.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+                  </select>
+                </div>
+                <NumInput
+                  label="Event ≤ N days ago"
+                  placeholder="14"
+                  value={filters.maxWyckoffDaysV2}
+                  onChange={set('maxWyckoffDaysV2')}
+                />
+                <NumInput
+                  label="Min Confidence ≥"
+                  placeholder="60"
+                  value={filters.minWyckoffConfV2}
+                  onChange={set('minWyckoffConfV2')}
+                />
+              </div>
+            )}
           </div>
 
           <div className="flex gap-2 items-center">

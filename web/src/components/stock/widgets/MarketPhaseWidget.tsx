@@ -35,9 +35,9 @@ const METHOD_INFO: Record<DetectionMethod, MethodInfo> = {
   wyckoff: {
     label: 'Wyckoff Structural Events',
     short: 'WY',
-    description: 'Deteksi event institusional: Selling/Buying Climax, Spring, UTAD, Absorption.',
+    description: 'Deteksi event institusional: Selling/Buying Climax, Spring, UTAD, Absorption. Toggle v1/v2 untuk membandingkan dua pendekatan deteksi.',
     detail:
-      'Tidak menghasilkan band fase kontinu — menghasilkan SINYAL diskrit pada hari-hari tertentu yang menunjukkan jejak smart money. Spring (false breakdown) dan UTAD (false breakout) adalah event paling kuat. Lebih responsif terhadap perubahan struktur pasar dibanding SMA.',
+      'v1 (flat-pass): mendeteksi tiap event independen lalu dedup — lebih banyak event, beberapa false positive (Spring di tengah uptrend, dll).\nv2 (FSM): finite state machine yang menegakkan urutan Wyckoff (SC→AR→ST→Range→Spring→Test→SOS→LPS). Spring HANYA fire setelah Phase B terbentuk ≥15 bars. Lebih sedikit event, lebih akurat secara struktural.',
     reference: 'Pruden — "Three Skills of Top Trading"; Weis — "Trades About to Happen".',
   },
   both: {
@@ -93,9 +93,17 @@ const WYCKOFF_POLARITY: Record<WyckoffEventType, WyckoffPolarity> = {
   // Bullish — accumulation / strength
   SC: 'bullish', AR_up: 'bullish', Spring: 'bullish', SOS: 'bullish', LPS: 'bullish',
   no_supply: 'bullish', passive_markup: 'bullish',
+  distr_failed: 'bullish',
+  markdown_exhaustion: 'bullish',  // markdown ended via slope reversal
+  basis_building: 'bullish',       // soft accum entry
+  range_breakout_up: 'bullish',
   // Bearish — distribution / weakness
   BC: 'bearish', AR_down: 'bearish', UTAD: 'bearish', SOW: 'bearish', LPSY: 'bearish',
   no_demand: 'bearish', passive_markdown: 'bearish',
+  accum_failed: 'bearish',
+  markup_exhaustion: 'bearish',    // markup ended via slope reversal
+  topping_action: 'bearish',       // soft distr entry
+  range_breakout_down: 'bearish',
   // Neutral — context events
   PS: 'neutral', PSY: 'neutral', ST_low: 'neutral', ST_high: 'neutral',
   absorption: 'neutral',
@@ -121,6 +129,14 @@ const WYCKOFF_LABELS: Record<WyckoffEventType, string> = {
   no_supply: 'No Supply',
   passive_markup: 'Passive Markup',
   passive_markdown: 'Passive Markdown',
+  distr_failed: 'Distribution Failed',
+  accum_failed: 'Accumulation Failed',
+  markup_exhaustion: 'Markup Exhaustion',
+  markdown_exhaustion: 'Markdown Exhaustion',
+  basis_building: 'Basis Building',
+  topping_action: 'Topping Action',
+  range_breakout_up: 'Range Breakout Up',
+  range_breakout_down: 'Range Breakout Down',
 }
 
 const WYCKOFF_EXPLANATIONS: Record<WyckoffEventType, string> = {
@@ -143,6 +159,14 @@ const WYCKOFF_EXPLANATIONS: Record<WyckoffEventType, string> = {
   no_supply: 'Down bar pada volume rendah — koreksi tanpa tekanan jual. Bullish.',
   passive_markup: 'Drift naik pelan-pelan pada volume di bawah rata-rata. Markup berjalan tanpa event climactic.',
   passive_markdown: 'Drift turun pelan-pelan pada volume di bawah rata-rata. Markdown terkontrol — supply pelan-pelan menekan harga.',
+  distr_failed: 'Range distribusi tembus ke atas dengan volume kuat — ternyata re-akumulasi, bukan top. Bullish: lanjut markup.',
+  accum_failed: 'Range akumulasi tembus ke bawah dengan volume kuat — ternyata re-distribusi, bukan dasar. Bearish: lanjut markdown.',
+  markup_exhaustion: 'Markup berakhir lewat slope reversal pelan-pelan — tanpa BC climactic. Top miring tanpa panic distribution.',
+  markdown_exhaustion: 'Markdown berakhir lewat slope reversal pelan-pelan — tanpa SC climactic. Dasar terbentuk lewat exhaustion, bukan capitulation.',
+  basis_building: 'Tren turun berhenti tanpa SC — basis terbentuk lewat sideways grind. Soft entry ke akumulasi (confidence rendah).',
+  topping_action: 'Tren naik berhenti tanpa BC — topping terbentuk lewat sideways grind. Soft entry ke distribusi (confidence rendah).',
+  range_breakout_up: 'Range akumulasi tembus ke atas tanpa Spring/SOS klasik — terobosan langsung ke markup.',
+  range_breakout_down: 'Range distribusi tembus ke bawah tanpa UTAD/SOW klasik — breakdown langsung ke markdown.',
 }
 
 const WYCKOFF_PHASE_LABELS: Record<WyckoffPhase, string> = {
@@ -261,11 +285,14 @@ interface Props {
   technicalSignals?: TechnicalSignalPoint[]
 }
 
+type WyckoffVersion = '1.0' | '2.0'
+
 export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] }: Props) {
   const [mounted, setMounted] = useState(false)
   const [period, setPeriod] = useState<number>(252)
   const [showPhases, setShowPhases] = useState(true)
   const [method, setMethod] = useState<DetectionMethod>('sma')
+  const [wyckoffVersion, setWyckoffVersion] = useState<WyckoffVersion>('1.0')
   const [showMethodInfo, setShowMethodInfo] = useState(false)
   const [selectedPhaseId, setSelectedPhaseId] = useState<number | null>(null)
   const [selectedEventId, setSelectedEventId] = useState<number | null>(null)
@@ -287,14 +314,14 @@ export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] 
     import('lightweight-charts').then(setLcModule)
   }, [])
 
-  // Fetch phase + wyckoff data in parallel
+  // Fetch phase + wyckoff data in parallel; refetch wyckoff when version toggles
   useEffect(() => {
     let cancelled = false
     async function load() {
       try {
         const [phasesRes, wyckoffRes] = await Promise.all([
           fetch(`/api/stocks/${ticker}/phases`),
-          fetch(`/api/stocks/${ticker}/wyckoff`),
+          fetch(`/api/stocks/${ticker}/wyckoff?version=${wyckoffVersion}`),
         ])
         if (phasesRes.ok) {
           const data: MarketPhaseResponse = await phasesRes.json()
@@ -312,7 +339,7 @@ export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] 
     }
     load()
     return () => { cancelled = true }
-  }, [ticker])
+  }, [ticker, wyckoffVersion])
 
   const sliced = useMemo(() => priceHistory.slice(-period), [priceHistory, period])
 
@@ -624,6 +651,25 @@ export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] 
               </button>
             ))}
           </div>
+          {/* v1/v2 sub-toggle — only shown when Wyckoff data is on screen */}
+          {(method === 'wyckoff' || method === 'both') && (
+            <div className="flex gap-0.5 border border-[#E0E0E5] rounded-md p-0.5 bg-white">
+              {(['1.0', '2.0'] as WyckoffVersion[]).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => setWyckoffVersion(v)}
+                  title={v === '1.0' ? 'Flat-pass detector (v1)' : 'FSM-based detector (v2)'}
+                  className={`px-2 py-1 text-[10px] font-mono font-medium rounded transition-colors ${
+                    wyckoffVersion === v
+                      ? 'bg-[#3B82F6] text-white'
+                      : 'bg-transparent text-[#6D6C6A] hover:bg-[#EDECEA]'
+                  }`}
+                >
+                  v{v.replace('.0', '')}
+                </button>
+              ))}
+            </div>
+          )}
           <button
             onClick={() => setShowMethodInfo(!showMethodInfo)}
             title="Penjelasan metode"
@@ -1154,9 +1200,9 @@ export function MarketPhaseWidget({ ticker, priceHistory, technicalSignals = [] 
           {method === 'sma' &&
             'SMA: indikator berbasis SMA(20/50) crossover + ATR. Lambat, tertinggal saat tren berbalik.'}
           {method === 'wyckoff' &&
-            'Wyckoff: deteksi event struktural (climax, spring, UTAD, absorption). Sinyal diskrit, bukan label tren kontinu.'}
+            `Wyckoff v${wyckoffVersion.replace('.0', '')}: ${wyckoffVersion === '1.0' ? 'flat-pass detector — banyak event, beberapa false positive.' : 'FSM detector — sequence-enforced, lebih sedikit & akurat.'} Klik tombol "?" untuk perbandingan.`}
           {method === 'both' &&
-            'Combined: band SMA = konteks tren; marker Wyckoff = trigger institusional. Klik tombol "?" di header untuk penjelasan tiap metode.'}
+            `Combined: SMA bands + Wyckoff v${wyckoffVersion.replace('.0', '')} markers. Toggle v1/v2 untuk membandingkan dua pendekatan deteksi.`}
           {' '}Bukan sinyal beli/jual. Gunakan sebagai konteks tambahan, bukan dasar keputusan.
         </p>
       </div>

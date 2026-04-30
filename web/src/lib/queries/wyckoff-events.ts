@@ -12,10 +12,15 @@ import type {
  * Wyckoff events are discrete single-day signals (Selling Climax, Spring,
  * Buying Climax, UTAD, etc.) — not contiguous bands like market_phases.
  * The frontend overlays these as markers on the price chart.
+ *
+ * `version` selects which detector's output to read:
+ *   '1.0' — flat-pass detector (v1)
+ *   '2.0' — FSM-based detector (v2)
  */
 export async function getWyckoffEvents(
   ticker: string,
   minConfidence: number = 0,
+  version: '1.0' | '2.0' = '1.0',
 ): Promise<WyckoffResponse> {
   const sb = await createClient()
 
@@ -23,6 +28,7 @@ export async function getWyckoffEvents(
     .from('wyckoff_events')
     .select('*')
     .eq('ticker', ticker)
+    .eq('detection_version', version)
     .gte('confidence', minConfidence)
     .order('event_date', { ascending: true })
 

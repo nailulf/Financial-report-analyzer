@@ -11,33 +11,69 @@ This is a personal-use tool. There is no auth system, no multi-tenancy, no publi
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                     DATA ACQUISITION LAYER                      │
-│                   (Python scripts, run locally)                  │
+│                   (Python scripts, run locally)                 │
 │                                                                 │
-│  stock_universe.py ─── Company profiles, tickers, sectors       │
-│  daily_prices.py ───── OHLCV + volume via yfinance              │
-│  financials.py ─────── Income, balance sheet, cash flow         │
-│  money_flow.py ─────── Foreign flow, broker summary (IDX)       │
-│  company_profiles.py ─ Directors, commissioners, shareholders   │
+│  stock_universe.py ──── Tickers, sectors, listing metadata     │
+│  daily_prices.py ────── OHLCV via yfinance                     │
+│  financials.py ──────── Income, balance sheet, cash flow       │
+│  financials_fallback.py  Stockbit fallback for missing periods  │
+│  ratio_enricher.py ──── Computed ratios + CAGR rollups          │
+│  money_flow.py ──────── Foreign flow, broker summary (IDX)      │
+│  company_profiles.py ── Officers, shareholders                  │
+│  shareholders_pdf.py ── Major shareholders from IDX PDFs        │
+│  dividend_scraper.py ── Dividend history                        │
+│  corporate_events.py ── Splits, rights issues, etc.             │
+│  document_links.py ──── Filing URLs                             │
+│  gap_filler.py ──────── Backfill missing rows across tables     │
 └──────────────────────────────┬──────────────────────────────────┘
-                               │ Push via Supabase client
+                               │ UPSERT via Supabase client
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                     DATA STORAGE LAYER                          │
-│                        (Supabase)                               │
+│                       DATA STORAGE LAYER                        │
+│                          (Supabase)                             │
 │                                                                 │
-│  PostgreSQL tables: stocks, daily_prices, financials_annual,    │
-│  financials_quarterly, money_flow, broker_summary,              │
-│  company_officers, shareholders, news, valuations_cache         │
+│  Tables (~30, see docs/schema-v*.sql for migrations):           │
+│  stocks, daily_prices, financials_annual, financials_quarterly, │
+│  money_flow, broker_summary, company_officers, shareholders,    │
+│  dividends, corporate_events, market_phases, technical_signals, │
+│  wyckoff_events, strategies, screener_*, valuations_cache,      │
+│  ai_analysis, sector_templates, macro_context, …                │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │ Read by analysis + scoring
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                  ANALYSIS & SCORING LAYER                       │
+│                  (Python, run on schedule)                      │
+│                                                                 │
+│  scripts/analysis/                                              │
+│    ├── market_phase_detector.py    Macro regime detection       │
+│    ├── technical_signal_detector.py Price/volume signals        │
+│    ├── wyckoff_detector.py         Wyckoff phases (v1)          │
+│    └── wyckoff_detector_v2.py      FSM-based Wyckoff (v2)       │
+│                                                                 │
+│  scripts/scoring/                                               │
+│    ├── context_builder.py    Assemble per-stock context bundle  │
+│    ├── data_normalizer.py    Cross-source field reconciliation  │
+│    ├── scoring_engine.py     Deterministic numeric scoring      │
+│    └── ai_analyst.py         LLM-based qualitative analysis     │
+│                                                                 │
+│  Outputs written back to Supabase (wyckoff_events,              │
+│  technical_signals, market_phases, ai_analysis, …)              │
 └──────────────────────────────┬──────────────────────────────────┘
                                │ Read via Supabase JS client
                                ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                    APPLICATION LAYER                             │
-│                  (NextJS on Vercel)                              │
+│                    APPLICATION LAYER                            │
+│                  (NextJS 16 on Vercel)                          │
 │                                                                 │
-│  API Routes: /api/stocks, /api/calculate/*, /api/search         │
-│  Pages: /dashboard, /stock/[ticker], /compare, /screener        │
-│  Charts: Recharts (line, bar, pie, area)                        │
+│  Pages: /, /stock/[ticker], /compare, /investors,               │
+│         /money-flow                                             │
+│  API:   /api/stocks/[ticker]/{ai-analysis, wyckoff, phases,     │
+│         broker, freshness, refresh, stockbit/{fetch,upsert}, …},│
+│         /api/strategies, /api/investors/network, /api/search,   │
+│         /api/admin/{macro-context, sector-template/[subsector]} │
+│  Charts: lightweight-charts (price), Recharts (fundamentals),   │
+│          react-force-graph-2d (investor network), mermaid       │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -46,21 +82,25 @@ This is a personal-use tool. There is no auth system, no multi-tenancy, no publi
 | Layer | Technology | Notes |
 |-------|-----------|-------|
 | Data scraping | Python 3.10+ | yfinance, curl_cffi, requests, pandas |
-| Database | Supabase (PostgreSQL) | Free tier, hosted |
-| Frontend + Backend | NextJS (App Router) | Full-stack, deployed on Vercel |
-| Charts | Recharts | Already used in prior dividend dashboard project |
+| Analysis & scoring | Python 3.10+ | numpy, pandas, custom FSM, LLM client |
+| Database | Supabase (PostgreSQL) | Free tier, hosted; migrations in `docs/schema-v*.sql` |
+| Frontend + Backend | NextJS 16 (App Router) + React 19 | Full-stack, deployed on Vercel |
+| Supabase client (web) | `@supabase/ssr` + `@supabase/supabase-js` | SSR-aware client/server split |
+| Charts | `lightweight-charts` (price), `recharts` (fundamentals), `react-force-graph-2d` (graphs), `mermaid` (diagrams) | Mixed depending on use case |
 | Styling | Tailwind CSS | Utility-first |
 
 ## Data Sources
 
 | Source | What It Provides | Access Method |
 |--------|-----------------|---------------|
-| Yahoo Finance (yfinance) | Price history, basic financials, dividends, holders | Python `yfinance` library, `.JK` suffix for IDX tickers |
-| IDX Official API (idx.co.id) | Stock list, company profiles, financial reports, broker summary, trading info | HTTP requests with browser impersonation via `curl_cffi` |
+| Yahoo Finance (yfinance) | Price history, basic financials, dividends, holders, analyst targets | Python `yfinance` library, `.JK` suffix for IDX tickers |
+| IDX Official API (idx.co.id) | Stock list, company profiles, financial reports, broker summary, trading info | HTTP via `curl_cffi` with browser impersonation |
+| IDX shareholder PDFs | Major shareholders (>5%) | PDF parsing via `shareholders_pdf.py` |
+| Stockbit | Fallback financials, ratios, analyst data | `stockbit_client.py` — **must run from owner's machine** (token is session/IP-bound; 401 from datacenter IPs) |
 | Twelve Data | Complete IDX ticker/symbol list | Free API (8 calls/min, 800/day) |
-| GitHub: nichsedge/idx-bei | Reference scraper for IDX endpoints, company profiles, financial ratios | MIT licensed, Python, uses curl_cffi |
-| GitHub: noczero/idx-fundamental-analysis | Stockbit + yfinance fundamental data | Reference for Stockbit API patterns |
-| GitHub: Rachdyan/idx_financial_report | Raw financial statements from IDX | Reference for quarterly report scraping |
+| GitHub: nichsedge/idx-bei | Reference scraper for IDX endpoints | MIT, Python, curl_cffi |
+| GitHub: noczero/idx-fundamental-analysis | Reference for Stockbit API patterns | — |
+| GitHub: Rachdyan/idx_financial_report | Reference for quarterly report scraping | — |
 
 ### IDX API Endpoints (discovered from open-source scrapers)
 
@@ -82,52 +122,121 @@ All IDX endpoints require:
 
 ```
 idx-stock-analysis/
-├── CLAUDE.md                          # This file
-├── PRD.md                             # Product requirements document
+├── CLAUDE.md
+├── Indonesian Stock Analysis Tool PRD.md
+├── Smart Money Signal analysis.md
+├── IDX_AI_Pipeline_FRD.docx
 │
-├── python/                            # Data acquisition scripts (run locally)
+├── shared/                              # Cross-stack JSON config
+│   ├── macro-context.json               # Macro regime context for AI analyst
+│   └── scoring-config.json              # Scoring weights + thresholds
+│
+├── python/
 │   ├── requirements.txt
-│   ├── config.py                      # Supabase credentials, API keys
-│   ├── scrapers/
-│   │   ├── stock_universe.py          # Fetch all IDX tickers + metadata
-│   │   ├── daily_prices.py            # Daily OHLCV via yfinance
-│   │   ├── financials.py              # Annual + quarterly financial statements
-│   │   ├── money_flow.py              # Foreign flow + broker summary
-│   │   └── company_profiles.py        # Officers, shareholders, company info
+│   ├── config.py
+│   ├── run_all.py                       # Orchestrator
+│   ├── test_feasibility.py
+│   ├── simulate_phase6.py
+│   ├── scrapers/                        # Data acquisition
+│   │   ├── stock_universe.py
+│   │   ├── daily_prices.py
+│   │   ├── financials.py
+│   │   ├── financials_fallback.py       # Stockbit fallback
+│   │   ├── ratio_enricher.py
+│   │   ├── money_flow.py
+│   │   ├── company_profiles.py
+│   │   ├── shareholders_pdf.py
+│   │   ├── dividend_scraper.py
+│   │   ├── corporate_events.py
+│   │   ├── document_links.py
+│   │   └── gap_filler.py
+│   ├── scripts/
+│   │   ├── analysis/                    # Detection layer
+│   │   │   ├── market_phase_detector.py
+│   │   │   ├── technical_signal_detector.py
+│   │   │   ├── wyckoff_detector.py      # v1
+│   │   │   ├── wyckoff_detector_v2.py   # v2 FSM (current)
+│   │   │   └── wyckoff_*_diagnostic.py
+│   │   └── scoring/                     # AI analyst pipeline
+│   │       ├── config.py
+│   │       ├── schema.py
+│   │       ├── data_cleaner.py
+│   │       ├── data_normalizer.py
+│   │       ├── context_builder.py
+│   │       ├── scoring_engine.py
+│   │       └── ai_analyst.py
 │   ├── utils/
-│   │   ├── idx_client.py              # IDX API client with curl_cffi
-│   │   ├── supabase_client.py         # Supabase insert/upsert helpers
-│   │   └── helpers.py                 # Formatting, retry logic, logging
-│   └── run_all.py                     # Orchestrator to run all scrapers
+│   │   ├── idx_client.py
+│   │   ├── stockbit_client.py
+│   │   ├── stockbit_fetch_cli.py
+│   │   ├── token_manager.py
+│   │   ├── yfinance_analyst_cli.py
+│   │   ├── score_calculator.py
+│   │   ├── supabase_client.py
+│   │   └── helpers.py
+│   ├── tests/                           # pytest, see python/pytest.ini
+│   └── data/                            # Local artifacts (PDFs, etc.)
 │
-├── web/                               # NextJS application
+├── web/                                 # NextJS 16 application
 │   ├── package.json
-│   ├── next.config.js
-│   ├── tailwind.config.js
 │   ├── src/
 │   │   ├── app/
 │   │   │   ├── layout.tsx
-│   │   │   ├── page.tsx               # Dashboard home / watchlist
+│   │   │   ├── page.tsx                 # Home / watchlist
 │   │   │   ├── stock/[ticker]/
-│   │   │   │   └── page.tsx           # Single stock analysis
 │   │   │   ├── compare/
-│   │   │   │   └── page.tsx           # Peer comparison
+│   │   │   ├── investors/
+│   │   │   ├── money-flow/
 │   │   │   └── api/
-│   │   │       ├── stocks/route.ts    # Stock list + search
-│   │   │       └── calculate/
-│   │   │           └── valuation/route.ts
+│   │   │       ├── search/
+│   │   │       ├── strategies/{,[id]/{,count}}/
+│   │   │       ├── investors/network/
+│   │   │       ├── admin/{macro-context,sector-template/[subsector]}/
+│   │   │       └── stocks/[ticker]/
+│   │   │           ├── ai-analysis/
+│   │   │           ├── trigger-ai-analysis/
+│   │   │           ├── wyckoff/
+│   │   │           ├── phases/
+│   │   │           ├── broker/
+│   │   │           ├── analyst/
+│   │   │           ├── freshness/
+│   │   │           ├── context-quality/
+│   │   │           ├── domain-notes/
+│   │   │           ├── pipeline-debug/
+│   │   │           ├── raw-data/[table]/
+│   │   │           ├── refresh/{,local,[job_id]}/
+│   │   │           └── stockbit/{fetch,upsert}/
 │   │   ├── components/
-│   │   │   ├── charts/                # Recharts wrappers
-│   │   │   ├── tables/                # Data tables
-│   │   │   └── ui/                    # Shared UI components
+│   │   │   ├── charts/                  # lightweight-charts + Recharts
+│   │   │   ├── stock/                   # Stock detail page widgets
+│   │   │   ├── analytics/
+│   │   │   ├── compare/
+│   │   │   ├── home/
+│   │   │   ├── investors/
+│   │   │   ├── money-flow/
+│   │   │   ├── nav/
+│   │   │   └── ui/
 │   │   └── lib/
-│   │       ├── supabase.ts            # Supabase client config
-│   │       ├── types.ts               # TypeScript types matching DB schema
-│   │       └── calculations/          # Valuation models, ratio computations
+│   │       ├── supabase/{client,server}.ts
+│   │       ├── queries/                 # Per-domain query helpers
+│   │       ├── calculations/            # cagr, valuation, formatters, …
+│   │       ├── types/{api,database,network}.ts
+│   │       ├── analytics.ts
+│   │       ├── broker-constants.ts
+│   │       ├── watchlists.ts
+│   │       └── constants.ts
 │   └── public/
 │
-└── docs/                              # Documentation
-    └── data_dictionary.md             # Field definitions for every table
+├── supabase/                            # Reserved for Supabase CLI artifacts
+│
+└── docs/
+    ├── data_dictionary.md
+    ├── SCRAPING_PLAYBOOK.md
+    ├── frd-data-completeness-confidence.md
+    ├── wyckoff_detector_v2_spec.md
+    ├── Wyckoff_Phase_Detection_FRD.docx
+    ├── schema.sql                       # Base schema
+    └── schema-v{2..27}-*.sql            # Numbered migrations
 ```
 
 ## Key Conventions
@@ -145,8 +254,17 @@ idx-stock-analysis/
 
 - Python scripts: snake_case, type hints encouraged, logging via Python `logging` module
 - NextJS: TypeScript, App Router, server components by default
-- Supabase queries in NextJS use the `@supabase/supabase-js` client
-- Charts: Recharts with consistent color palette (blue=#3B82F6, green=#10B981, purple=#8B5CF6)
+- Supabase queries in NextJS go through `@/lib/queries/*` (per-domain) using the SSR-safe client from `@/lib/supabase/{client,server}`
+- Charts: pick the right tool — `lightweight-charts` for price/volume time series, Recharts for fundamentals (bar/line/area), `react-force-graph-2d` for investor relationship graphs
+- Color palette: blue=#3B82F6, green=#10B981, purple=#8B5CF6 (consistent across Recharts)
+
+### Schema Migrations
+
+- Schema lives in [docs/](docs/) as numbered SQL files: `schema.sql` (base) + `schema-vN-<name>.sql` for each migration
+- Current head is **v27** ([docs/schema-v27-wyckoff-v2-1.sql](docs/schema-v27-wyckoff-v2-1.sql))
+- Add a new migration as `schema-v{N+1}-<short-name>.sql`; never edit a previously-applied migration
+- Migrations are applied manually via the Supabase SQL editor (no automated tool); keep each one self-contained and idempotent (`IF NOT EXISTS`, `ON CONFLICT`, etc.) where feasible
+- Update [docs/data_dictionary.md](docs/data_dictionary.md) whenever a migration adds/changes columns
 
 ### SSR Hydration Safety (CRITICAL)
 
@@ -208,47 +326,73 @@ Before writing or modifying any component, verify:
 1. **No locale-dependent formatting** — grep for `toLocaleString`, `Intl.NumberFormat`
 2. **No time-dependent render values** — grep for `new Date()`, `Date.now()`, `Math.random()`
 3. **Browser-only inputs guarded** — `<input type="date">`, `<input type="time">` behind `mounted`
-4. **Chart/visualization libraries guarded** — Recharts, Mermaid, D3 behind `mounted`
+4. **Chart/visualization libraries guarded** — Recharts, Mermaid, D3, lightweight-charts, react-force-graph-2d behind `mounted`
 5. **Tooltip/formatter callbacks null-safe** — Recharts passes `null` for missing data points
 
 ### Scraping Etiquette
 
 - Rate limit all scrapers: minimum 0.5s between requests
 - IDX endpoints: maximum 2 requests/second
-- yfinance bulk downloads: batch 50-100 tickers per call
+- yfinance bulk downloads: batch 50–100 tickers per call
 - Always include User-Agent header
 - Cache aggressively — financial data doesn't change intraday
 
-## Current Status
+### Where Things Run
 
-- [x] Data source research and evaluation complete
-- [x] Architecture decisions made (Python local + NextJS + Supabase)
-- [x] Feasibility test script created (pending local execution)
-- [ ] Feasibility test run and results analyzed
-- [ ] Supabase database schema designed
-- [ ] Python scraper scripts built
-- [ ] Data pipeline operational
-- [ ] NextJS dashboard built
+| Job | Where it can run | Why |
+|-----|------------------|-----|
+| yfinance scrapers, IDX scrapers, analysis (Wyckoff, market phase, technical signals), scoring engine | Owner's machine **or** GH Actions / Vercel cron | Public endpoints, no IP binding |
+| Stockbit-dependent scrapers (`financials_fallback.py`, `stockbit_client.py` paths, analyst CLIs) | **Owner's machine only** | Stockbit bearer tokens are session/IP-bound — 401 from datacenter IPs even with valid `exp` |
+| AI analyst (`scripts/scoring/ai_analyst.py`) | Anywhere with API keys | Calls external LLM; no IP binding |
+
+## Analysis & AI Analyst Pipeline
+
+The analysis layer turns raw financial/price data into derived signals. It runs on schedule and writes back to Supabase, which the web app reads.
+
+### Detection (`python/scripts/analysis/`)
+
+- **Market phase detector** — classifies the macro regime per stock/index using `daily_prices` + `financials_*`. Output: `market_phases` table.
+- **Technical signal detector** — price/volume rule-based signals. Output: `technical_signals` table.
+- **Wyckoff detector v1** — original heuristic phase detector.
+- **Wyckoff detector v2** — FSM-based phase detector with structural events; runs side-by-side with v1 (toggle in screener / stock page) until v2 is validated. Spec: [docs/wyckoff_detector_v2_spec.md](docs/wyckoff_detector_v2_spec.md). Output: `wyckoff_events` (per-event) + denormalized current phase on `stocks`.
+
+### Scoring + AI analyst (`python/scripts/scoring/`)
+
+Pipeline order, per ticker:
+
+1. **`data_cleaner` / `data_normalizer`** — reconcile fields across yfinance / IDX / Stockbit (different units, naming, missing periods).
+2. **`context_builder`** — assemble a per-stock context bundle: financials snapshot, ratios, peer comparison, market phase, Wyckoff state, macro context (from [shared/macro-context.json](shared/macro-context.json)), sector template.
+3. **`scoring_engine`** — deterministic numeric scoring driven by [shared/scoring-config.json](shared/scoring-config.json). Produces sub-scores (fundamentals, valuation, momentum, smart money) + composite.
+4. **`ai_analyst`** — passes the bundle to an LLM for qualitative analysis, narrative, risks. Output: `ai_analysis` table; cached and refreshed on demand via `/api/stocks/[ticker]/trigger-ai-analysis`.
+
+The web app surfaces the result on the stock detail page; admins can edit `macro-context` and `sector-template` via `/api/admin/...` to influence future runs.
+
+## Active Workstreams
+
+- **Wyckoff v1 → v2 migration** — both detectors run; v2 FSM is being validated against v1 on real data. Toggle remains until confidence is high enough to retire v1.
+- **AI analyst quality** — refining `context_builder` inputs and `scoring-config` weights based on observed outputs.
+- **Data completeness** — `gap_filler.py` + `financials_fallback.py` (Stockbit) chase missing periods.
+- **Schema is at v27**; new migrations land as `schema-v{N+1}-*.sql` in `docs/`.
 
 ## Related Prior Work
 
-The owner previously built a **Dividend Investment Dashboard** (`Dashboard_Investasi_Dividen_untuk_Pensiun.tsx`) — a React component with:
-- IDR currency formatting
-- Recharts-based visualizations (bar, line charts)
-- Financial simulation logic (compound growth, reinvestment, coverage ratios)
-- Indonesian language interface
-
-This serves as a design reference and proof of capability. The stock analysis tool follows similar patterns but reads from a live database instead of user-inputted parameters.
+The owner previously built a **Dividend Investment Dashboard** (`Dashboard_Investasi_Dividen_untuk_Pensiun.tsx`) — a React component with IDR currency formatting, Recharts visualizations, and Indonesian-language UI. Used as a design reference for the analyzer.
 
 ## Decision Log
 
 | Decision | Choice | Reasoning |
 |----------|--------|-----------|
 | Primary user | Personal use only | No auth, no rate limiting, scraping is viable |
-| Priority features | Fundamental analysis + Money flow | Most actionable for investment decisions |
+| Priority features | Fundamental analysis + Money flow + Wyckoff phase | Most actionable for investment decisions |
 | Data cost | Free sources only (scraping) | Personal project, cost-conscious |
 | Architecture | Monolithic NextJS + local Python | Simple, maintainable, no microservices overhead |
 | Stock coverage | All IDX stocks (800+) | Comprehensive data pool > selective coverage |
-| Data processing split | Python local for heavy scraping, NextJS API for light fetches | Best of both: Python's scraping libraries + NextJS convenience |
+| Data processing split | Heavy scraping + analysis in Python; light fetches in NextJS API routes | Best of both: Python's libraries + NextJS convenience |
 | Database | Supabase (PostgreSQL) | Already familiar, free tier, good JS/Python clients |
+| Schema versioning | Numbered SQL files in `docs/schema-v*.sql`, applied manually | Simple, reviewable in git, no migration tool overhead |
 | Deployment | Vercel (NextJS) | Free tier, seamless NextJS deployment |
+| Stockbit-dependent jobs | Run only on owner's machine | Stockbit tokens are session/IP-bound — 401 from datacenter IPs |
+| Wyckoff detector | Keep v1 + v2 FSM side-by-side via version toggle | Validate v2 on production data before retiring v1 |
+| Price chart library | `lightweight-charts` for price; Recharts for fundamentals | Lightweight-charts is purpose-built for OHLCV; Recharts is better for bar/line fundamentals |
+| AI analyst inputs | Externalized in `shared/macro-context.json` + `shared/scoring-config.json` | Editable without code changes; admin API routes can update them |
+| Supabase client (web) | `@supabase/ssr` with split `client.ts` / `server.ts` | Required for SSR-safe auth & cookies in App Router |

@@ -77,7 +77,9 @@ Or just run any Stockbit scraper — you'll be prompted automatically.
 | Single stock test | `python run_all.py --full --ticker BBRI` |
 | Broker flow for money-flow page | `python run_all.py --broker-backfill` |
 | Insider transactions | `python run_all.py --insider` |
-| Market phase overlays | `python run_all.py --detect-phases` |
+| Market phase overlays (SMA-based) | `python run_all.py --detect-phases` |
+| Wyckoff events — v1 flat-pass detector | `python run_all.py --detect-wyckoff` |
+| Wyckoff events — v2 FSM detector (**recommended**) | `python run_all.py --detect-wyckoff-v2` |
 | Technical signals (MACD/RSI) | `python run_all.py --compute-signals` |
 | AI investment thesis | `python run_all.py --ai-full --ticker BBRI` |
 | Fix data gaps | `python run_all.py --fill-gaps` |
@@ -229,7 +231,123 @@ python run_all.py --detect-phases --dry-run                # detect but don't sa
 
 ---
 
-### Case 7: Technical Signals (MACD, RSI, Volume)
+### Case 7: Wyckoff Structural Event Detection
+
+**Summary:** Detects classical Wyckoff events (Selling/Buying Climax, Spring,
+UTAD, Sign of Strength/Weakness, etc.) on top of price/volume bars. Two
+detectors run side-by-side; the chart and screener can show either via a
+v1/v2 toggle. **v2 is the default and recommended.**
+
+| Detector | Approach | Strengths | Weaknesses |
+|----------|----------|-----------|------------|
+| v1 (`--detect-wyckoff`) | Flat-pass: each detector scans all bars, then dedupes | Wider coverage, includes drift detection (`passive_markup`/`passive_markdown`) and effort-vs-result anomalies (`absorption`/`no_demand`/`no_supply`) | More false positives — can fire BC during a continuation rally |
+| v2 (`--detect-wyckoff-v2`) | Finite state machine: events fire only from valid Wyckoff phase transitions, candidate-then-confirm lifecycle, asymmetric lockout | Structurally honest — every event passed an FSM gauntlet. Includes soft entries (`basis_building`/`topping_action`) and trend exhaustion (`markup_exhaustion`/`markdown_exhaustion`) for stocks without textbook climaxes | Fewer events — produces 0 events on truly choppy charts (which is correct, but UX can feel sparse) |
+
+The two detectors write to **separate denorm columns** on the `stocks`
+table (`current_wyckoff_*` for v1, `current_wyckoff_*_v2` for v2). Filters
+on the screener target one or the other — they never conflict.
+
+#### Run v1 (flat-pass detector)
+
+```bash
+python run_all.py --detect-wyckoff                          # all active tickers
+python run_all.py --detect-wyckoff --ticker BBCA BBRI BMRI  # specific tickers
+python run_all.py --detect-wyckoff --dry-run                # detect but don't save
+```
+
+**What it does:**
+1. Fetches ~2 years of daily price/volume history per ticker
+2. Six independent passes over all bars, each producing candidate events:
+   - **Climax detection** (SC/BC) — single-bar climactic + AR follow-through confirmation
+   - **Spring/UTAD detection** — pierce + reclaim within 3 bars
+   - **Secondary tests** — low-volume retests of climax extremes
+   - **SOS/SOW detection** — wide-range breakout/breakdown with expanding volume
+   - **LPS/LPSY detection** — pullback after SOS/SOW on declining volume
+   - **Effort vs Result** — absorption, no_demand, no_supply
+   - **Passive drift** — `passive_markup` / `passive_markdown` for slow trends without climactic events
+3. Deduplicates `(date, type)` collisions, suppresses near-duplicate climaxes (30-bar window)
+4. Writes events to `wyckoff_events` table with `detection_version='1.0'`
+5. Denormalizes latest event onto `stocks.current_wyckoff_event*` columns
+
+**Output: typically 10-18 events per ticker over a 2-year window.**
+
+#### Run v2 (FSM detector — recommended)
+
+```bash
+python run_all.py --detect-wyckoff-v2                          # all active tickers
+python run_all.py --detect-wyckoff-v2 --ticker BBCA BBRI BMRI  # specific tickers
+python run_all.py --detect-wyckoff-v2 --dry-run                # detect but don't save
+```
+
+**What it does:**
+1. Fetches ~2 years of daily price/volume history per ticker
+2. Streams bars through a 12-state finite state machine:
+   - `UNKNOWN → DOWNTREND → ACCUM_A → ACCUM_B → ACCUM_C → ACCUM_D → MARKUP → UPTREND → DISTR_A → DISTR_B → DISTR_C → DISTR_D → MARKDOWN → ...`
+3. Climax detection paths:
+   - **Single-bar climax** — wide spread + climactic volume + close-position + trend confirmation
+   - **3-bar cluster** (`CLIMACTIC_CLUSTER`) — gradual climax over 3 days
+   - **15-bar absorption regime** (`ABSORPTION_REGIME`) — distributed climax pattern
+4. Soft phase A entry when no textbook climax fires:
+   - `BASIS_BUILDING` — soft accumulation entry from DOWNTREND (confidence 50%)
+   - `TOPPING_ACTION` — soft distribution entry from MARKUP/UPTREND
+5. Trend-driven phase exit when ranges roll over without classical events:
+   - `markup_exhaustion` / `markdown_exhaustion` — slope reversal + 30% retracement
+   - `range_breakout_up` / `range_breakout_down` — Phase B exits without Spring/UTAD
+   - `distr_failed` / `accum_failed` — range failed in opposite direction
+6. **Candidate-then-confirm lifecycle:** climax bars set a *candidate* silently; only emit BC/SC after 5+ bars of distribution/accumulation character. Any close above BC.high (or below SC.low) within 10 bars invalidates without recording an event.
+7. **Asymmetric lockout:** `HARD_LOCKOUT_BARS=80` after CONFIRMED climax (trend presumed over), `SOFT_LOCKOUT_BARS=20` after INVALIDATED candidate (algorithm working correctly, only block re-trigger on the same cluster).
+8. Writes events to `wyckoff_events` table with `detection_version='2.0'`
+9. Denormalizes latest event + final FSM phase onto `stocks.current_wyckoff_*_v2` columns (including the fine-grained FSM phase like `accumulation_c`)
+
+**Output: typically 4-8 events per ticker over a 2-year window — fewer but each is structurally validated.**
+
+#### When to use which
+
+| Use case | Recommended |
+|----------|-------------|
+| Default screener filtering / chart display | v2 |
+| "What kind of structure is this stock in?" | v2 (use FSM phase like `accumulation_c`) |
+| Cast a wider net — find stocks with ANY signal | v1 |
+| Detect slow drift periods (passive markup/markdown) | v1 (v2 doesn't have these) |
+| Bar-level effort/result context (absorption, no_demand) | v1 (v2 doesn't have these) |
+| Trade triggers with low false positive rate | v2 |
+
+Both can be run on the same ticker — they coexist via the `detection_version` column. The frontend chart toggle (`v1` / `v2` badge in the FASE PASAR widget) flips between their outputs. Likewise the screener filter row has a v1/v2 sub-toggle.
+
+#### Schema requirements
+
+Both detectors require the `wyckoff_events` table CHECK constraint to allow all current event types. Apply this once before running:
+
+```bash
+# In Supabase SQL editor — idempotent, safe to re-run
+docs/schema-wyckoff-event-types-current.sql
+```
+
+Plus the v2 FSM detector requires the v2 denorm columns on `stocks`:
+
+```bash
+docs/schema-v25-wyckoff-v2.sql
+```
+
+#### Diagnostic
+
+When a ticker produces unexpected results, trace the FSM bar-by-bar:
+
+```bash
+python -m scripts.analysis.wyckoff_v2_diagnostic DEWA --transitions-only
+python -m scripts.analysis.wyckoff_v2_diagnostic BBRI                 # full trace
+python -m scripts.analysis.wyckoff_v2_diagnostic AVIA --since 2025-09-01
+```
+
+When no events fire at all, the diagnostic surfaces the "best near-miss" climactic bar with its vol_z / spread_atr / close_position values.
+
+**Auto-runs in:** Neither v1 nor v2 is included in `--full`. Run standalone after `--daily` or `--detect-phases`.
+
+**Dependencies:** Requires `daily_prices` with at least 60 trading days per ticker (warm-up window for rolling stats).
+
+---
+
+### Case 8: Technical Signals (MACD, RSI, Volume)
 
 ```bash
 python run_all.py --compute-signals                          # all active tickers
@@ -252,7 +370,7 @@ python run_all.py --compute-signals --dry-run                # compute but don't
 
 ---
 
-### Case 8: AI Analysis Pipeline
+### Case 9: AI Analysis Pipeline
 
 ```bash
 # Build context only (no LLM calls, no cost)
@@ -276,7 +394,7 @@ python run_all.py --ai-full --ticker BBRI --ai-provider anthropic
 
 ---
 
-### Case 9: Enrichment & Gap Filling
+### Case 10: Enrichment & Gap Filling
 
 #### Fill NULL ratio columns (no API calls, safe anytime)
 ```bash
@@ -304,7 +422,7 @@ Gap categories: `prices`, `financials_annual`, `financials_quarterly`, `ratios`,
 
 ---
 
-### Case 10: Full Pipeline (everything from scratch)
+### Case 11: Full Pipeline (everything from scratch)
 
 ```bash
 python run_all.py --full
@@ -331,7 +449,7 @@ python run_all.py --full --ticker BBRI   # single stock test
 
 ---
 
-### Case 11: Scoping by Ticker / Sector
+### Case 12: Scoping by Ticker / Sector
 
 **Single or multiple tickers:**
 ```bash
@@ -352,7 +470,7 @@ Sector matching is case-insensitive and supports partial names (e.g. "finance" �
 
 ---
 
-### Case 12: CLI-Only Scrapers (not in run_all.py)
+### Case 13: CLI-Only Scrapers (not in run_all.py)
 
 #### Shareholders PDF import
 ```bash
@@ -449,7 +567,9 @@ python run_all.py --full --ticker BBRI --job-id 42   # explicit job ID
 | Frequency | Command | What it does |
 |-----------|---------|-------------|
 | Every trading day (after 16:00 WIB) | `--daily` | Prices + value/frequency + technical signals |
-| Every trading day (after --daily) | `--detect-phases` | Market phase overlays |
+| Every trading day (after --daily) | `--detect-phases` | Market phase overlays (SMA-based) |
+| Every trading day (after --daily) | `--detect-wyckoff-v2` | Wyckoff structural events (FSM, recommended) |
+| Weekly (optional) | `--detect-wyckoff` | v1 flat-pass — adds drift / effort-result events |
 | Weekly (Sunday) | `--weekly` | Refresh stock universe from IDX |
 | Weekly or bi-weekly | `--broker-backfill --backfill-days 7` | Keep money flow leaderboard fresh |
 | After each earnings season | `--quarterly` then `--enrich-ratios` | Financials + screener sync |
@@ -488,6 +608,9 @@ python run_all.py --full --ticker BBRI --job-id 42   # explicit job ID
 | Run interrupted | Ctrl+C or crash | Safe to re-run — all scrapers use upsert |
 | Phase detection skips a stock | Avg volume < 100K shares/day | Liquidity filter — by design |
 | Technical signals skips a stock | < 50 trading days of data | Need more price history |
+| `--detect-wyckoff*` fails with `event_type_check` violation | Schema CHECK constraint outdated | Apply [docs/schema-wyckoff-event-types-current.sql](schema-wyckoff-event-types-current.sql) in Supabase SQL editor |
+| Wyckoff v2 produces 0 events on a ticker | Choppy chart with no structural cycle (correct behavior) | Run diagnostic: `python -m scripts.analysis.wyckoff_v2_diagnostic TICKER`; check the "best near-miss" output |
+| Screener Wyckoff column is empty | Detection hasn't run yet, or denorm columns missing | Run `--detect-wyckoff-v2`; ensure schema-v25 migration applied |
 
 ---
 
@@ -505,3 +628,6 @@ python run_all.py --full --ticker BBRI --job-id 42   # explicit job ID
 - `--insider` is **not included** in `--full` — run standalone.
 - `--detect-phases` and `--compute-signals` make no API calls — pure DB computation.
 - `--ai-full` = `--build-ai-context` (free) + `--run-ai-analysis` (costs LLM tokens).
+- **Wyckoff v1 and v2 coexist.** Both write to `wyckoff_events` with their own `detection_version` ('1.0' / '2.0'); they denormalize to separate columns (`current_wyckoff_*` vs `current_wyckoff_*_v2`) and never overwrite each other. v2 is recommended.
+- **Wyckoff schema migrations are required.** Apply [docs/schema-wyckoff-event-types-current.sql](schema-wyckoff-event-types-current.sql) and [docs/schema-v25-wyckoff-v2.sql](schema-v25-wyckoff-v2.sql) before running either detector.
+- **Wyckoff is not in `--full`.** Run `--detect-wyckoff-v2` standalone after the daily pipeline. v1 is also separate.

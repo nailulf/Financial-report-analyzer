@@ -12,13 +12,23 @@ processing the most incomplete stocks first on each run.
 
 Gap categories detected:
   prices              → re-runs daily_prices
-  financials_annual   → re-runs financials (period=annual)
-  financials_quarterly→ re-runs financials (period=quarterly)
+  financials_annual   → re-runs financials (period=annual). Detected when
+                        no annual rows exist OR the latest expected annual
+                        year (year-end + 120 days past today) is missing.
+  financials_quarterly→ re-runs financials (period=quarterly). Detected when
+                        no quarterly rows exist OR the latest expected
+                        quarter (quarter-end + 30 days past today) is missing.
   ratios              → re-runs ratio_enricher (no API calls)
   profile             → re-runs company_profiles
   officers            → re-runs company_profiles (batched with profile)
   shareholders        → re-runs company_profiles (batched with profile)
   dividends           → re-runs dividend_scraper
+
+Latest-period detection uses IDX/OJK regulatory deadlines:
+  - Quarterly (unaudited):  30 days after quarter-end
+  - Annual (audited):       4 months (120 days) after year-end
+This catches stocks that filed historically but stopped reporting recent
+periods — the older binary "any vs none" check missed those.
 
 Run:
     cd python && python -m scrapers.gap_filler
@@ -32,7 +42,7 @@ import argparse
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -66,6 +76,66 @@ ALL_CATEGORIES = [
 
 
 # ---------------------------------------------------------------------------
+# Period expectation helpers — what's the latest financial period that
+# SHOULD be on file given today's date?
+#
+# IDX (OJK/Bapepam-LK) regulatory deadlines:
+#   - Quarterly (unaudited):  30 days after quarter-end
+#   - Annual (audited):       4 months (≈120 days) after year-end
+# These are firm regulatory deadlines, not soft targets. Late filers are
+# subject to OJK sanction.
+# ---------------------------------------------------------------------------
+
+QUARTERLY_DEADLINE_DAYS = 30   # OJK rule: Q1/Q2/Q3 due 30 days after quarter-end
+ANNUAL_DEADLINE_DAYS    = 120  # OJK rule: audited annual due 4 months after year-end
+
+
+def _quarter_end(year: int, q: int) -> date:
+    return {1: date(year, 3, 31), 2: date(year, 6, 30),
+            3: date(year, 9, 30), 4: date(year, 12, 31)}[q]
+
+
+def _expected_recent_annual(today: date | None = None) -> int:
+    """
+    Return the most recent year for which audited annual financials are
+    expected to be on file. If today is past Dec 31 + 120 days for year Y,
+    Y is expected; otherwise Y-1 is the latest expected.
+
+    Example: today=2026-05-06 → 2025-12-31 + 120 days = 2026-04-30, today
+    is past that → expect 2025 annual filed.
+    """
+    today = today or date.today()
+    cutoff_for_prior_year = date(today.year - 1, 12, 31) + timedelta(days=ANNUAL_DEADLINE_DAYS)
+    if today >= cutoff_for_prior_year:
+        return today.year - 1
+    return today.year - 2
+
+
+def _expected_recent_quarter(today: date | None = None) -> tuple[int, int]:
+    """
+    Return the most recent (year, quarter) for which quarterly financials
+    are expected to be on file. Walks backwards through Q1..Q4 of the
+    current and prior year and picks the most recent whose 30-day filing
+    deadline has passed.
+
+    Example: today=2026-05-06 → Q1 2026 ended 2026-03-31, deadline
+    2026-04-30, today is past that → expect Q1 2026 filed.
+    """
+    today = today or date.today()
+    candidates: list[tuple[int, int]] = []
+    for y in (today.year, today.year - 1):
+        for q in (1, 2, 3, 4):
+            candidates.append((y, q))
+    candidates.sort(key=lambda yq: _quarter_end(*yq), reverse=True)
+    for (y, q) in candidates:
+        deadline = _quarter_end(y, q) + timedelta(days=QUARTERLY_DEADLINE_DAYS)
+        if today >= deadline:
+            return (y, q)
+    # Should not reach — fallback
+    return (today.year - 1, 1)
+
+
+# ---------------------------------------------------------------------------
 # Gap detection — check what's missing for a single ticker
 # ---------------------------------------------------------------------------
 
@@ -93,30 +163,52 @@ def _check_gaps(client, ticker: str, categories: list[str]) -> list[str]:
             gaps.append("prices")
 
     # ---- Annual financials ----
+    # Gap fires if EITHER no annual rows exist at all, OR the most recent
+    # year that should have been filed (year-end + 120 days past) is missing.
+    # The latest-year check is what catches "ticker has 2018-2024 but is
+    # missing 2025 annual" — the binary check used to miss this.
     if _want("financials_annual"):
+        expected_year = _expected_recent_annual()
         resp = (
             client.table("financials")
-            .select("ticker")
+            .select("year")
             .eq("ticker", ticker)
             .eq("quarter", 0)
+            .order("year", desc=True)
             .limit(1)
             .execute()
         )
-        if not (resp.data or []):
+        rows = resp.data or []
+        if not rows:
+            gaps.append("financials_annual")
+        elif int(rows[0]["year"]) < expected_year:
             gaps.append("financials_annual")
 
     # ---- Quarterly financials ----
+    # Gap fires if EITHER no quarterly rows exist at all, OR the most recent
+    # quarter that should have been filed (quarter-end + 30 days past) is
+    # missing. This catches "ticker has Q4 2025 but is missing Q1 2026".
     if _want("financials_quarterly"):
+        exp_y, exp_q = _expected_recent_quarter()
+        # Compute a sortable period key for comparison: year * 10 + quarter
+        expected_key = exp_y * 10 + exp_q
         resp = (
             client.table("financials")
-            .select("ticker")
+            .select("year, quarter")
             .eq("ticker", ticker)
             .gt("quarter", 0)
+            .order("year", desc=True)
+            .order("quarter", desc=True)
             .limit(1)
             .execute()
         )
-        if not (resp.data or []):
+        rows = resp.data or []
+        if not rows:
             gaps.append("financials_quarterly")
+        else:
+            latest_key = int(rows[0]["year"]) * 10 + int(rows[0]["quarter"])
+            if latest_key < expected_key:
+                gaps.append("financials_quarterly")
 
     # ---- Ratios — check if core ratios are ALL null in most recent annual row ----
     if _want("ratios"):
@@ -251,14 +343,22 @@ def _run_scraper(scraper_name: str, ticker: str, gaps: list[str]) -> bool:
             else:
                 period = "quarterly"
             financials.run(tickers=[ticker], period=period)
-            # After primary yfinance attempt, run fallback to fill any remaining NULLs
+            # gap_filler has ALREADY proven the latest expected period is
+            # missing for this ticker. Pass only_missing=False so the
+            # fallback doesn't skip the ticker just because existing rows
+            # have no NULL fields (the actual gap is missing PERIODS, not
+            # missing fields).
             run_financials_fallback(
                 tickers=[ticker],
                 source="both",
-                only_missing=True,
+                only_missing=False,
                 annual=has_annual,
                 quarterly=has_quarterly,
             )
+            # Newly-filled periods may have NULL margins/ratios that can
+            # be derived from revenue + net_income (e.g. net_margin).
+            # Auto-run ratio_enricher so the user doesn't have to chain it.
+            run_ratio_enricher(tickers=[ticker])
 
         elif scraper_name == "ratio_enricher":
             run_ratio_enricher(tickers=[ticker])

@@ -201,8 +201,32 @@ def _update_scores(tickers: list[str] | None) -> None:
         update_all_scores()
 
 
-def run_daily(tickers: list[str] | None, days: int, job_id: int | None = None) -> None:
-    """Runs: daily_prices → money_flow → scores → technical signals"""
+def run_daily(
+    tickers: list[str] | None,
+    days: int,
+    job_id: int | None = None,
+    period: str = "both",
+    year_from: int | None = None,
+    year_to: int | None = None,
+) -> None:
+    """
+    Runs the daily refresh chain:
+        quarterly (current year by default) →
+        daily_prices → money_flow → scores → technical_signals
+
+    The quarterly portion (financials, company_profiles, document_links,
+    corporate_events) is folded in so latest filings get picked up the same
+    day they're published. To keep the daily run fast, year_from/year_to
+    default to the current calendar year — pass explicit values to widen.
+    """
+    import datetime as _dt
+    _yr = _dt.date.today().year
+    run_quarterly(
+        tickers, period, job_id=job_id,
+        year_from=year_from if year_from is not None else _yr,
+        year_to=year_to if year_to is not None else _yr,
+    )
+
     _, dp, _, mf = _import_scrapers()
     console.rule("[bold blue]DAILY: daily_prices")
     _run_tracked(dp.run, "daily_prices", job_id, tickers=tickers)
@@ -856,9 +880,12 @@ Examples:
 
     # Mode flags (at least one required)
     mode = parser.add_argument_group("Run modes (pick one or more)")
-    mode.add_argument("--daily", action="store_true", help="Run: daily_prices + money_flow")
+    mode.add_argument("--daily", action="store_true",
+                      help="Run: quarterly (current year) + daily_prices + money_flow + scores + technical_signals")
     mode.add_argument("--weekly", action="store_true", help="Run: stock_universe")
-    mode.add_argument("--quarterly", action="store_true", help="Run: financials + company_profiles")
+    mode.add_argument("--quarterly", action="store_true",
+                      help="Run: financials + company_profiles + docs + events "
+                           "(full history by default; --daily folds this in for current year)")
     mode.add_argument("--full", action="store_true", help="Run everything (weekly + quarterly + daily + broker backfill + AI analysis)")
     mode.add_argument("--enrich-ratios", action="store_true", help="Fill NULL ratio columns from stored raw data (no API calls)")
     mode.add_argument("--dividends", action="store_true", help="Fetch full dividend history from yfinance")
@@ -1083,11 +1110,15 @@ Examples:
         else:
             if args.weekly:
                 run_weekly(tickers, job_id=job_id)
-            if args.quarterly:
+            # --daily already includes quarterly (current year by default), so
+            # only run --quarterly standalone when --daily is NOT also set.
+            if args.quarterly and not args.daily:
                 run_quarterly(tickers, args.period, job_id=job_id,
                               year_from=args.year_from, year_to=args.year_to)
             if args.daily:
-                run_daily(tickers, args.days, job_id=job_id)
+                run_daily(tickers, args.days, job_id=job_id,
+                          period=args.period,
+                          year_from=args.year_from, year_to=args.year_to)
             if args.fallback_financials:
                 run_financials_fallback(
                     tickers=tickers,

@@ -7,13 +7,24 @@ import type { AIAnalysis, ContextQuality, StockScore, PipelineDebugData, SectorT
 
 export async function getAIAnalysis(ticker: string): Promise<AIAnalysis | null> {
   const supabase = await createClient()
-  const { data, error } = await supabase
-    .from('ai_analysis')
-    .select('*')
-    .eq('ticker', ticker)
-    .single()
 
-  if (error || !data) return null
+  // Fetch the analysis row and the ticker's last data-change timestamp in
+  // parallel so we can decide whether the underlying data has moved on
+  // since this analysis was generated.
+  const [analysisRes, stockRes] = await Promise.all([
+    supabase.from('ai_analysis').select('*').eq('ticker', ticker).single(),
+    supabase.from('stocks').select('last_data_change_at').eq('ticker', ticker).single(),
+  ])
+
+  const data = analysisRes.data
+  if (analysisRes.error || !data) return null
+
+  const lastDataChangeAt = stockRes.data?.last_data_change_at ?? null
+  const generatedAt = data.generated_at
+  const isStale =
+    !!lastDataChangeAt &&
+    !!generatedAt &&
+    new Date(lastDataChangeAt).getTime() > new Date(generatedAt).getTime()
 
   return {
     ticker: data.ticker,
@@ -33,7 +44,9 @@ export async function getAIAnalysis(ticker: string): Promise<AIAnalysis | null> 
     dataGapsAcknowledged: data.data_gaps_acknowledged ? JSON.parse(data.data_gaps_acknowledged) : [],
     caveats: data.caveats ? JSON.parse(data.caveats) : [],
     modelUsed: data.model_used,
-    generatedAt: data.generated_at,
+    generatedAt,
+    lastDataChangeAt,
+    isStale,
   }
 }
 

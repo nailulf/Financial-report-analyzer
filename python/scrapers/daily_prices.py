@@ -110,14 +110,18 @@ def _download_batch(
     return df
 
 
-def _parse_batch_df(df: pd.DataFrame, tickers: list[str]) -> list[dict]:
+def _parse_batch_df(df: pd.DataFrame, tickers: list[str]) -> tuple[list[dict], list[str]]:
     """
     Convert the wide yfinance DataFrame into a flat list of row dicts
     suitable for the `daily_prices` table.
+
+    Returns (rows, missing_tickers) where missing_tickers had zero usable
+    rows in this batch and should be retried via the Stockbit fallback.
     """
     rows: list[dict] = []
+    missing: list[str] = []
     if df.empty:
-        return rows
+        return rows, list(tickers)
 
     # yfinance >=1.0 always returns MultiIndex columns (Price, Ticker)
     # even for single-ticker downloads.
@@ -137,9 +141,14 @@ def _parse_batch_df(df: pd.DataFrame, tickers: list[str]) -> list[dict]:
                 ticker_df = df
         except KeyError:
             logger.debug("No data for %s in batch", ticker)
+            missing.append(ticker)
             continue
 
         ticker_df = ticker_df.dropna(subset=["Close"])
+
+        if ticker_df.empty:
+            missing.append(ticker)
+            continue
 
         for idx_date, row in ticker_df.iterrows():
             trade_date = idx_date.date() if hasattr(idx_date, "date") else idx_date
@@ -154,6 +163,50 @@ def _parse_batch_df(df: pd.DataFrame, tickers: list[str]) -> list[dict]:
                 # value / frequency / foreign flow filled by money_flow.py
                 "last_updated": datetime.now(timezone.utc).isoformat(),
             })
+    return rows, missing
+
+
+def _stockbit_price_fallback(tickers: list[str], client) -> list[dict]:
+    """
+    Fallback for tickers where yfinance returned no OHLCV (e.g. yfinance
+    `possibly delisted; no price data found` errors that are actually still
+    trading on IDX). Pulls today's price via Stockbit `get_basic_info`.
+
+    Stockbit's basicinfo only exposes the current `price` — no O/H/L/V — so
+    we synthesize a single row for today with O=H=L=close and volume=NULL.
+    Volume/value/frequency are backfilled separately by money_flow.py from
+    broker_flow data.
+    """
+    rows: list[dict] = []
+    if not tickers or client is None:
+        return rows
+
+    today_iso = date.today().isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    for ticker in tickers:
+        try:
+            info = client.get_basic_info(ticker)
+            raw_price = info.get("price") if info else None
+            if raw_price is None:
+                logger.debug("Stockbit price fallback: no price for %s", ticker)
+                continue
+            close = safe_float(raw_price, 2)
+            if close is None or close <= 0:
+                continue
+            rows.append({
+                "ticker": ticker,
+                "date": today_iso,
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": None,
+                "last_updated": now_iso,
+            })
+        except Exception as e:
+            logger.debug("Stockbit basic_info failed for %s: %s", ticker, e)
+
     return rows
 
 
@@ -161,48 +214,94 @@ def _parse_batch_df(df: pd.DataFrame, tickers: list[str]) -> list[dict]:
 # Market data enrichment (market_cap + listed_shares → stocks table)
 # ------------------------------------------------------------------
 
-def _enrich_market_data(tickers: list[str]) -> tuple[int, int]:
+def _enrich_market_data(tickers: list[str], stockbit_client=None) -> tuple[int, int]:
     """
-    Fetch market_cap and shares_outstanding from yfinance fast_info
-    for each ticker and upsert into the stocks table.
+    Fetch market_cap and shares_outstanding from yfinance fast_info for each
+    ticker and upsert into the stocks table. Falls back to Stockbit
+    `get_basic_info` for any field yfinance couldn't supply (yfinance
+    frequently returns `Yahoo web request for share count failed`).
 
-    Returns (enriched_count, failed_count).
+    Returns (enriched_count, failed_count) where `failed_count` is the
+    number of tickers where neither yfinance nor Stockbit yielded any data.
     """
-    updates: list[dict] = []
-    failed = 0
+    rows_by_ticker: dict[str, dict[str, Any]] = {}
+    yf_incomplete: list[str] = []
 
     for i, ticker in enumerate(tickers):
+        market_cap: int | None = None
+        shares: int | None = None
         try:
             info = yf.Ticker(_yf_ticker(ticker)).fast_info
-            market_cap = getattr(info, "market_cap", None)
-            shares = getattr(info, "shares", None)
-
-            row: dict[str, Any] = {"ticker": ticker}
-            has_data = False
-
-            if market_cap and market_cap > 0:
-                row["market_cap"] = int(market_cap)
-                has_data = True
-            if shares and shares > 0:
-                row["listed_shares"] = int(shares)
-                has_data = True
-
-            if has_data:
-                updates.append(row)
-            else:
-                logger.debug("No market data from yfinance for %s", ticker)
-
+            mc = getattr(info, "market_cap", None)
+            sh = getattr(info, "shares", None)
+            if mc and mc > 0:
+                market_cap = int(mc)
+            if sh and sh > 0:
+                shares = int(sh)
         except Exception as e:
             logger.debug("fast_info failed for %s: %s", ticker, e)
-            failed += 1
+
+        row: dict[str, Any] = {"ticker": ticker}
+        if market_cap is not None:
+            row["market_cap"] = market_cap
+        if shares is not None:
+            row["listed_shares"] = shares
+        if len(row) > 1:
+            rows_by_ticker[ticker] = row
+        if market_cap is None or shares is None:
+            yf_incomplete.append(ticker)
 
         if RATE_LIMIT_YFINANCE_SECONDS > 0 and i < len(tickers) - 1:
             time.sleep(RATE_LIMIT_YFINANCE_SECONDS)
 
+    sb_filled = 0
+    if stockbit_client is not None and yf_incomplete:
+        for ticker in yf_incomplete:
+            try:
+                info = stockbit_client.get_basic_info(ticker) or {}
+            except Exception as e:
+                logger.debug("Stockbit basic_info failed for %s: %s", ticker, e)
+                continue
+
+            row = rows_by_ticker.get(ticker, {"ticker": ticker})
+            filled_here = False
+
+            if "market_cap" not in row:
+                mc = info.get("market_cap")
+                try:
+                    mc_int = int(mc) if mc is not None else 0
+                except (TypeError, ValueError):
+                    mc_int = 0
+                if mc_int > 0:
+                    row["market_cap"] = mc_int
+                    filled_here = True
+
+            if "listed_shares" not in row:
+                sh = info.get("listed_shares")
+                try:
+                    sh_int = int(sh) if sh is not None else 0
+                except (TypeError, ValueError):
+                    sh_int = 0
+                if sh_int > 0:
+                    row["listed_shares"] = sh_int
+                    filled_here = True
+
+            if filled_here:
+                rows_by_ticker[ticker] = row
+                sb_filled += 1
+
+    updates = list(rows_by_ticker.values())
     if updates:
         bulk_upsert("stocks", updates, on_conflict="ticker")
-        logger.info("Enriched market_cap/listed_shares for %d stocks", len(updates))
+        if sb_filled:
+            logger.info(
+                "Enriched market_cap/listed_shares for %d stocks (%d via Stockbit fallback)",
+                len(updates), sb_filled,
+            )
+        else:
+            logger.info("Enriched market_cap/listed_shares for %d stocks", len(updates))
 
+    failed = len(tickers) - len(updates)
     return len(updates), failed
 
 
@@ -316,7 +415,16 @@ def run(
     for t in ticker_list:
         groups[date_ranges[t]].append(t)
 
+    # --- Lazy-init a shared Stockbit client for fallbacks ---
+    stockbit_client = None
+    try:
+        from utils.stockbit_client import StockbitClient
+        stockbit_client = StockbitClient(prompt_for_token=False)
+    except Exception as e:
+        logger.debug("Stockbit client init failed (fallback disabled): %s", e)
+
     # --- Download and upsert in batches ---
+    yf_missing: list[str] = []  # tickers with zero yfinance rows in this run
     for start_date, group_tickers in groups.items():
         if start_date >= today:
             for t in group_tickers:
@@ -332,7 +440,7 @@ def run(
             batch = group_tickers[batch_start : batch_start + YFINANCE_BATCH_SIZE]
             try:
                 df = _download_batch(batch, start_date, today)
-                rows = _parse_batch_df(df, batch)
+                rows, missing = _parse_batch_df(df, batch)
 
                 if rows:
                     bulk_upsert("daily_prices", rows, on_conflict="ticker,date")
@@ -341,14 +449,35 @@ def run(
                 for t in batch:
                     result.ok(t)
 
+                yf_missing.extend(missing)
+
             except Exception as e:
                 logger.error("Batch download failed (start=%s): %s", start_date, e)
                 for t in batch:
                     result.fail(t, str(e))
+                yf_missing.extend(batch)
+
+    # --- Stockbit fallback for tickers yfinance returned nothing for ---
+    if yf_missing and stockbit_client is not None:
+        # Dedupe — a ticker can show up in multiple batches via retries.
+        sb_targets = sorted(set(yf_missing))
+        logger.info(
+            "Stockbit fallback: attempting %d ticker(s) yfinance had no data for",
+            len(sb_targets),
+        )
+        sb_rows = _stockbit_price_fallback(sb_targets, stockbit_client)
+        if sb_rows:
+            bulk_upsert("daily_prices", sb_rows, on_conflict="ticker,date")
+            logger.info(
+                "Stockbit fallback: filled today's close for %d/%d ticker(s)",
+                len(sb_rows), len(sb_targets),
+            )
+        else:
+            logger.info("Stockbit fallback: no rows recovered")
 
     # --- Enrich market_cap + listed_shares in stocks table ---
     logger.info("Enriching market_cap / listed_shares for %d tickers …", len(ticker_list))
-    enriched, enrich_failed = _enrich_market_data(ticker_list)
+    enriched, enrich_failed = _enrich_market_data(ticker_list, stockbit_client=stockbit_client)
     logger.info("Market data enrichment: %d updated, %d failed", enriched, enrich_failed)
 
     # --- Sync latest price into stocks table (for screener) ---

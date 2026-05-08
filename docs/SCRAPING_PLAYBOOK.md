@@ -420,6 +420,16 @@ python run_all.py --fill-gaps --dry-run                    # detect gaps, no wri
 
 Gap categories: `prices`, `financials_annual`, `financials_quarterly`, `ratios`, `profile`, `officers`, `shareholders`, `dividends`
 
+**Financial gap detection is now period-aware.** A ticker is flagged with
+`financials_annual` if it has zero annual rows OR if its latest annual row
+is older than the most recent year past its OJK filing deadline (year-end +
+120 days). Same for `financials_quarterly` (quarter-end + 30 days). This
+catches stocks that filed historically but stopped reporting recent
+periods — e.g., on 2026-05-06 a ticker with annual data through 2024 will
+be flagged because 2025 annual was due 2026-04-30.
+
+Helper logic in [gap_filler.py:_expected_recent_annual / _expected_recent_quarter](../python/scrapers/gap_filler.py).
+
 ---
 
 ### Case 11: Full Pipeline (everything from scratch)

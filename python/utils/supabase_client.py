@@ -81,6 +81,25 @@ def delete_where(table: str, column: str, value: Any) -> None:
     get_client().table(table).delete().eq(column, value).execute()
 
 
+def bump_data_change(tickers: list[str]) -> int:
+    """
+    Set `stocks.last_data_change_at = NOW()` for the given tickers.
+
+    Called by scrapers when material upstream data changed (new financial
+    period landed, NULL fills filled, etc.). The AI analysis widget compares
+    this against `ai_analysis.generated_at` to decide whether to surface the
+    Re-analyze button.
+
+    Returns the number of tickers updated. Idempotent.
+    """
+    if not tickers:
+        return 0
+    from datetime import datetime, timezone
+    now_iso = datetime.now(timezone.utc).isoformat()
+    rows = [{"ticker": t, "last_data_change_at": now_iso} for t in sorted(set(tickers))]
+    return bulk_upsert("stocks", rows, on_conflict="ticker")
+
+
 # ------------------------------------------------------------------
 # Read helpers
 # ------------------------------------------------------------------

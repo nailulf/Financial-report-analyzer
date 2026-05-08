@@ -270,8 +270,9 @@ def check_parse_daily_prices(ticker: str):
     end = date.today()
     start = end - timedelta(days=10)
     df = _download_batch([ticker], start, end)
-    rows = _parse_batch_df(df, [ticker])
+    rows, missing = _parse_batch_df(df, [ticker])
     assert len(rows) > 0, "No rows parsed"
+    assert ticker not in missing, f"{ticker} flagged as missing despite parsed rows"
     assert all(r["ticker"] == ticker for r in rows)
     assert all(r.get("close") is not None for r in rows)
     return f"{len(rows)} price rows parsed OK"

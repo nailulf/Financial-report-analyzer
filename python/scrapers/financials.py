@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import RATE_LIMIT_YFINANCE_SECONDS, YFINANCE_BATCH_SIZE
 from utils.helpers import RunResult, setup_logging, safe_float, safe_int, compute_ratio
-from utils.supabase_client import bulk_upsert, fetch_column, fetch_one, get_client, start_run, finish_run
+from utils.supabase_client import bulk_upsert, bump_data_change, fetch_column, fetch_one, get_client, start_run, finish_run
 
 logger = logging.getLogger(__name__)
 
@@ -441,6 +441,10 @@ def run(
 
             # Upsert immediately — don't buffer all tickers in memory
             bulk_upsert("financials", rows, on_conflict="ticker,year,quarter")
+            # `_merge_with_existing` already filters out no-op updates, so
+            # reaching this point means at least one new period or NULL fill
+            # landed — flag the ticker for AI re-analysis.
+            bump_data_change([ticker])
             result.ok(ticker)
 
         except Exception as e:

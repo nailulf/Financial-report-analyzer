@@ -418,6 +418,11 @@ export interface AIAnalysis {
   caveats: string[]
   modelUsed: string | null
   generatedAt: string | null
+  // Set by --daily scrapers (financials, financials_fallback) when new
+  // financial periods land or NULL fields fill. Compared against
+  // generatedAt to gate the Re-analyze button.
+  lastDataChangeAt: string | null
+  isStale: boolean
 }
 
 export interface ContextQuality {

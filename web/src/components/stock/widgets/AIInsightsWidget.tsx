@@ -285,6 +285,66 @@ function ThesisSection({ bull, neutral, bear }: {
 }
 
 // ---------------------------------------------------------------------------
+// Re-analyze control (header button)
+//
+// Shown only when an analysis already exists. Active state appears when the
+// daily pipeline has flagged new financial data (stocks.last_data_change_at >
+// ai_analysis.generated_at). Disabled state shows a tooltip explaining there's
+// nothing new to re-analyze, so we don't burn LLM cost on identical inputs.
+// ---------------------------------------------------------------------------
+
+function ReanalyzeControl({
+  isStale,
+  lastDataChangeAt,
+  generatedAt,
+  generating,
+  onClick,
+}: {
+  isStale: boolean
+  lastDataChangeAt: string | null
+  generatedAt: string | null
+  generating: boolean
+  onClick: () => void
+}) {
+  if (generating) {
+    return (
+      <span className="font-mono text-[10px] font-bold tracking-[0.5px] px-2.5 py-1 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-300 inline-flex items-center gap-1.5">
+        <span className="w-2.5 h-2.5 border border-emerald-400 border-t-transparent rounded-full animate-spin" />
+        RUNNING
+      </span>
+    )
+  }
+
+  if (isStale) {
+    const since = lastDataChangeAt ? new Date(lastDataChangeAt) : null
+    const tooltip = since
+      ? `Data baru tersedia (terakhir berubah ${since.toLocaleDateString()}). Klik untuk jalankan ulang analisis.`
+      : 'Data baru tersedia. Klik untuk jalankan ulang analisis.'
+    return (
+      <Tooltip text={tooltip}>
+        <button
+          onClick={onClick}
+          className="font-mono text-[10px] font-bold tracking-[0.5px] px-2.5 py-1 rounded border border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 hover:border-emerald-400/60 transition-colors"
+        >
+          ↻ RE-ANALYZE
+        </button>
+      </Tooltip>
+    )
+  }
+
+  const generatedLabel = generatedAt ? new Date(generatedAt).toLocaleDateString() : '—'
+  return (
+    <Tooltip
+      text={`Belum ada data baru sejak analisis terakhir (${generatedLabel}). Re-analyze akan aktif setelah --daily mendeteksi periode finansial baru.`}
+    >
+      <span className="font-mono text-[10px] font-bold tracking-[0.5px] px-2.5 py-1 rounded border border-white/10 bg-white/[0.03] text-white/30 cursor-not-allowed">
+        ↻ RE-ANALYZE
+      </span>
+    </Tooltip>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main widget
 // ---------------------------------------------------------------------------
 
@@ -453,8 +513,27 @@ export function AIInsightsWidget({ ticker }: Props) {
             <LynchBadge category={data.lynchCategory} />
             {data.buffettMoat && <MoatBadge moat={data.buffettMoat} />}
             <VerdictBadge verdict={data.analystVerdict} />
+            <ReanalyzeControl
+              isStale={data.isStale}
+              lastDataChangeAt={data.lastDataChangeAt}
+              generatedAt={data.generatedAt}
+              generating={generating}
+              onClick={handleGenerate}
+            />
           </div>
         </div>
+
+        {/* ── Re-analysis status banner ── */}
+        {(generating || genStatus) && (
+          <div className="mx-6 mb-4 px-3 py-2 rounded-lg bg-emerald-500/[0.06] border border-emerald-500/20 flex items-start gap-2">
+            {generating && (
+              <span className="w-3 h-3 mt-0.5 border-[1.5px] border-emerald-400 border-t-transparent rounded-full animate-spin shrink-0" />
+            )}
+            <pre className="font-mono text-[11px] text-emerald-300/80 whitespace-pre-wrap break-words flex-1">
+              {genStatus ?? 'Re-analyzing…'}
+            </pre>
+          </div>
+        )}
 
         {/* ── Business narrative ── */}
         <div className="px-6 pb-4">

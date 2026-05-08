@@ -22,6 +22,7 @@ Master list of all IDX-listed companies. Refreshed weekly.
 | is_idx30 | BOOLEAN | Member of IDX30 index (current period) |
 | status | TEXT | `Active`, `Suspended`, or `Delisted` |
 | last_updated | TIMESTAMPTZ | Row refresh timestamp |
+| last_data_change_at | TIMESTAMPTZ | Bumped by `--daily` scrapers (financials, financials_fallback) when new financial periods or NULL fills land. Compared against `ai_analysis.generated_at` to gate the Re-analyze button. (v28) |
 
 ---
 

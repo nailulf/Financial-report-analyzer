@@ -37,7 +37,7 @@ from typing import Literal
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from utils.helpers import RunResult, setup_logging, safe_int, safe_float, compute_ratio
-from utils.supabase_client import get_client, bulk_upsert, fetch_column, start_run, finish_run
+from utils.supabase_client import get_client, bulk_upsert, bump_data_change, fetch_column, start_run, finish_run
 logger = logging.getLogger(__name__)
 
 SourceType = Literal["stockbit"]
@@ -570,7 +570,26 @@ def _process_ticker(
     upsert_rows: list[dict] = []
 
     if source in ("stockbit", "both"):
-        # Try findata-view first (full HTML statements — same as web UI refresh)
+        # Stockbit exposes two financial endpoints with different freshness:
+        #
+        #   findata-view (fetch_full_financials)
+        #     → comprehensive: full income / balance / cash flow per period
+        #     → STALE on the latest period (often lags real reporting by weeks)
+        #
+        #   keystats history (_fetch_stockbit)
+        #     → narrow: only revenue / net_income / eps
+        #     → FRESH: includes the latest filed quarter the same day Stockbit
+        #       processes it
+        #
+        # Old behaviour: query findata first, only query keystats if findata
+        # returned zero rows. That meant tickers with ANY historical findata
+        # rows never got the freshest period — even when keystats had it.
+        #
+        # New behaviour: query BOTH unconditionally and merge by (year, quarter):
+        # findata wins where both have a period (full field coverage), keystats
+        # supplies any periods findata missed (with the 3 narrow fields).
+        merged_rows: dict[tuple[int, int], dict] = {}
+
         if stockbit_client and stockbit_client.is_authenticated:
             try:
                 import datetime as _dt
@@ -580,31 +599,37 @@ def _process_ticker(
                 fd_rows, _ = fetch_full_financials(
                     ticker, year_from=_yr_from, year_to=_yr_to, client=stockbit_client,
                 )
+                for r in fd_rows or []:
+                    r["source"] = "stockbit"
+                    r["is_ttm"] = False
+                    r["last_updated"] = now_iso
+                    for k in list(r.keys()):
+                        if k not in allowed:
+                            del r[k]
+                    merged_rows[(int(r["year"]), int(r["quarter"]))] = r
                 if fd_rows:
-                    for r in fd_rows:
-                        r["source"] = "stockbit"
-                        r["is_ttm"] = False
-                        r["last_updated"] = now_iso
-                        # Strip fields that don't exist in the DB
-                        for k in list(r.keys()):
-                            if k not in allowed:
-                                del r[k]
-                    upsert_rows.extend(fd_rows)
                     logger.info("%s: Stockbit findata-view → %d period rows", ticker, len(fd_rows))
             except Exception as e:
-                logger.warning("%s: Stockbit findata-view failed, falling back to keystats: %s", ticker, e)
+                logger.warning("%s: Stockbit findata-view failed: %s", ticker, e)
 
-        # Fall back to keystats-only if findata didn't produce rows
-        if not upsert_rows:
-            try:
-                sb_rows = _fetch_stockbit(ticker, client=stockbit_client)
-                if sb_rows:
-                    upsert_rows.extend(sb_rows)
-                    logger.info("%s: Stockbit keystats → %d period rows", ticker, len(sb_rows))
-                else:
-                    logger.info("%s: Stockbit keystats returned no data", ticker)
-            except Exception as e:
-                logger.info("Stockbit keystats unavailable for %s: %s", ticker, e)
+        # Always query keystats too — it has the latest period that findata lags.
+        try:
+            sb_rows = _fetch_stockbit(ticker, client=stockbit_client)
+            new_from_keystats = 0
+            for r in sb_rows or []:
+                key = (int(r["year"]), int(r["quarter"]))
+                if key not in merged_rows:
+                    merged_rows[key] = r
+                    new_from_keystats += 1
+            if sb_rows:
+                logger.info(
+                    "%s: Stockbit keystats → %d total rows, %d new periods (rest already in findata)",
+                    ticker, len(sb_rows), new_from_keystats,
+                )
+        except Exception as e:
+            logger.info("Stockbit keystats unavailable for %s: %s", ticker, e)
+
+        upsert_rows.extend(merged_rows.values())
 
     if not upsert_rows:
         return 0, 0, "no_data"
@@ -612,6 +637,10 @@ def _process_ticker(
     # ── Direct upsert — same as web refresh flow (no merge, just write) ─
     if not dry_run:
         bulk_upsert("financials", upsert_rows, on_conflict="ticker,year,quarter")
+        # Flag the ticker for AI re-analysis. The `only_missing` gate above
+        # already short-circuits when nothing is missing, so reaching here
+        # means we actually filled gaps or wrote new periods.
+        bump_data_change([ticker])
 
     return len(upsert_rows), len(upsert_rows), "ok"
 

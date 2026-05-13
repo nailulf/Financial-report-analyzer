@@ -187,6 +187,7 @@ export function StockPageClient({
           <ShareholdersWidget
             shareholders={displayedShareholders}
             shareholderHistory={shareholderHistory}
+            ticker={header.ticker}
           />
         </div>
       </div>

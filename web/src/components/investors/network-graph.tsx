@@ -23,11 +23,26 @@ function nodeRadius(n: GraphNode): number {
   return Math.min(12, 4 + Math.sqrt(n.investor_count ?? 1) * 1.5)
 }
 
-// Ring radius needed to give each neighbor ≥ ~110px of arc length
-// (label pill + breathing room). Scales linearly with neighbor count.
-function ringRadiusFor(neighborCount: number): number {
-  const n = Math.max(1, neighborCount)
-  return Math.max(220, (n * 110) / (2 * Math.PI))
+// Multi-ring "zigzag" layout. Instead of fitting every neighbor on a
+// single circle (which forces a huge radius for popular investors and
+// makes labels collide at any zoom), distribute them across N concentric
+// rings. Adjacent neighbors in index land on different rings, so their
+// labels are vertically separated even when angular spacing is tight.
+const ARC_PER_NEIGHBOR = 60  // min arc length per neighbor *per ring*
+const RING_GAP         = 60  // radial spacing between consecutive rings
+
+function neighborLayout(neighborCount: number) {
+  const N = Math.max(1, neighborCount)
+  // Add another ring for roughly every 25 neighbors, capped at 5.
+  const ringCount  = Math.max(1, Math.min(5, Math.ceil(N / 25)))
+  const baseRadius = Math.max(150, (N * ARC_PER_NEIGHBOR) / (2 * Math.PI * ringCount))
+  return { ringCount, baseRadius, ringGap: RING_GAP }
+}
+
+function neighborPosition(i: number, total: number, layout: ReturnType<typeof neighborLayout>) {
+  const angle  = (i * 2 * Math.PI) / Math.max(1, total) - Math.PI / 2
+  const radius = layout.baseRadius + (i % layout.ringCount) * layout.ringGap
+  return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius }
 }
 
 const C = {
@@ -40,6 +55,7 @@ const C = {
 
 // ─── Build the subgraph for the selected node ─────────────────────────────────
 
+// 1-hop subgraph: the selected node plus everything directly linked to it.
 function buildSubgraph(
   data: InvestorGraphData,
   selectedNode: GraphNode
@@ -61,6 +77,101 @@ function buildSubgraph(
     nodes: data.nodes.filter((n) => nodeSet.has(n.id)).map((n) => ({ ...n })),
     links: filteredLinks,
   }
+}
+
+// 3-hop subgraph for a stock — four conceptual layers radiating outward:
+//   L1: the selected stock itself           (hub)
+//   L2: direct shareholders                  (inner ring)
+//   L3: each shareholder's other holdings    (middle ring, clustered per shareholder)
+//   L4: those secondary stocks' other major  (outer ring, clustered per secondary stock)
+//       shareholders (excluding L2 dupes)
+// Layout hints are returned so the caller can place nodes by sector / sub-sector.
+function buildStockSubgraph(
+  data: InvestorGraphData,
+  selectedStock: GraphNode,
+  perShareholderCap: number,
+  perSecondaryStockCap: number,
+): {
+  nodes: GraphNode[]
+  links: GraphLink[]
+  shareholderIds: string[]
+  secondaryByShareholder: Map<string, string[]>
+  tertiaryBySecondaryStock: Map<string, string[]>
+} {
+  // L2 — direct shareholders, sorted by their stake in the selected stock.
+  const sharePct = new Map<string, number>()
+  for (const lk of data.links) {
+    if (nodeId(lk.target) === selectedStock.id) {
+      sharePct.set(nodeId(lk.source), lk.percentage)
+    }
+  }
+  const shareholderIds = Array.from(sharePct.keys())
+    .sort((a, b) => (sharePct.get(b) ?? 0) - (sharePct.get(a) ?? 0))
+
+  // L3 — for each shareholder, their top other holdings. A secondary stock
+  // is clustered under its first (highest-stake) shareholder so layout is
+  // deterministic.
+  const secondaryByShareholder = new Map<string, string[]>()
+  const placedSecondary = new Set<string>()
+  for (const shId of shareholderIds) {
+    const candidates: Array<{ id: string; pct: number }> = []
+    for (const lk of data.links) {
+      if (nodeId(lk.source) !== shId) continue
+      const tgt = nodeId(lk.target)
+      if (tgt === selectedStock.id) continue
+      candidates.push({ id: tgt, pct: lk.percentage })
+    }
+    candidates.sort((a, b) => b.pct - a.pct)
+    const assigned: string[] = []
+    for (const c of candidates) {
+      if (assigned.length >= perShareholderCap) break
+      if (placedSecondary.has(c.id)) continue
+      placedSecondary.add(c.id)
+      assigned.push(c.id)
+    }
+    secondaryByShareholder.set(shId, assigned)
+  }
+
+  // L4 — for each secondary stock, its top OTHER major shareholders.
+  // We skip any investor already in L2 (the inner ring) so we don't render
+  // duplicates; same-investor connections still show as cross-edges.
+  const tertiaryBySecondaryStock = new Map<string, string[]>()
+  const placedTertiary = new Set<string>(shareholderIds)
+  for (const stockIds of secondaryByShareholder.values()) {
+    for (const stockId of stockIds) {
+      if (tertiaryBySecondaryStock.has(stockId)) continue
+      const candidates: Array<{ id: string; pct: number }> = []
+      for (const lk of data.links) {
+        if (nodeId(lk.target) !== stockId) continue
+        const src = nodeId(lk.source)
+        if (placedTertiary.has(src)) continue
+        candidates.push({ id: src, pct: lk.percentage })
+      }
+      candidates.sort((a, b) => b.pct - a.pct)
+      const assigned: string[] = []
+      for (const c of candidates) {
+        if (assigned.length >= perSecondaryStockCap) break
+        if (placedTertiary.has(c.id)) continue
+        placedTertiary.add(c.id)
+        assigned.push(c.id)
+      }
+      tertiaryBySecondaryStock.set(stockId, assigned)
+    }
+  }
+
+  const nodeSet = new Set<string>([selectedStock.id, ...shareholderIds])
+  for (const ids of secondaryByShareholder.values()) for (const id of ids) nodeSet.add(id)
+  for (const ids of tertiaryBySecondaryStock.values()) for (const id of ids) nodeSet.add(id)
+
+  const nodes = data.nodes.filter((n) => nodeSet.has(n.id)).map((n) => ({ ...n }))
+  // Keep every link whose endpoints are both in the subgraph — this draws
+  // the cross-edges from a secondary stock to every inner-ring shareholder
+  // that owns it, making shared ownership immediately visible.
+  const links = data.links
+    .filter((lk) => nodeSet.has(nodeId(lk.source)) && nodeSet.has(nodeId(lk.target)))
+    .map((lk) => ({ ...lk }))
+
+  return { nodes, links, shareholderIds, secondaryByShareholder, tertiaryBySecondaryStock }
 }
 
 // ─── Collision force (no d3-force import needed) ──────────────────────────────
@@ -116,12 +227,99 @@ export function NetworkGraph({ data, selectedNode, onNodeClick }: Props) {
 
   const graphData = useMemo(() => {
     if (!data || !selectedNode) return null
+
+    // ── Stock-centric: flower layout (hub + inner shareholders + outer petals)
+    if (selectedNode.type === 'stock') {
+      // Cap secondary stocks per shareholder so the outer ring stays
+      // navigable. Fewer secondaries when there are many shareholders, since
+      // each sector gets a smaller angular slice.
+      const tentativeM = Array.from(
+        new Set(
+          data.links
+            .filter((lk) => nodeId(lk.target) === selectedNode.id)
+            .map((lk) => nodeId(lk.source))
+        )
+      ).length
+      const perShareholderCap     = Math.max(3, Math.min(6, Math.floor(70 / Math.max(1, tentativeM))))
+      const perSecondaryStockCap  = 2  // top-2 other major shareholders per secondary stock (L4)
+      const sub = buildStockSubgraph(data, selectedNode, perShareholderCap, perSecondaryStockCap)
+      const M   = sub.shareholderIds.length
+
+      // Pin hub at origin
+      for (const n of sub.nodes) {
+        if (n.id === selectedNode.id) {
+          ;(n as any).fx = 0
+          ;(n as any).fy = 0
+        }
+      }
+
+      if (M === 0) return { nodes: sub.nodes, links: sub.links }
+
+      // Inner ring of shareholders, evenly spaced.
+      const innerR = Math.max(170, (M * 70) / (2 * Math.PI))
+      const sectorSize = (2 * Math.PI) / M
+      // Outer ring radius: large enough that the busiest shareholder's
+      // secondary stocks fit comfortably inside its angular sector.
+      const maxK = Math.max(
+        1,
+        ...Array.from(sub.secondaryByShareholder.values()).map((arr) => arr.length),
+      )
+      const sectorArc = sectorSize * 0.78   // leave ~22% breathing room
+      const outerR   = Math.max(innerR + 130, (maxK * 60) / Math.max(0.05, sectorArc))
+
+      // L4 (tertiary) ring radius — far enough from the L3 stocks that
+      // their labels don't collide. Computed from the busiest sub-sector.
+      const tertiaryK   = Math.max(1, perSecondaryStockCap)
+      const tertiaryR   = outerR + 140 + tertiaryK * 18
+
+      sub.shareholderIds.forEach((shId, i) => {
+        const angle = i * sectorSize - Math.PI / 2
+        const node  = sub.nodes.find((nd) => nd.id === shId)
+        if (node) {
+          ;(node as any).fx = Math.cos(angle) * innerR
+          ;(node as any).fy = Math.sin(angle) * innerR
+        }
+
+        // L3: fan this shareholder's other stocks across its sector.
+        const stocks = sub.secondaryByShareholder.get(shId) ?? []
+        const K = stocks.length
+        const subSectorWidth = K > 0 ? sectorArc / K : 0
+        stocks.forEach((stockId, j) => {
+          const offset = K === 1 ? 0 : (j / (K - 1) - 0.5) * sectorArc
+          const stockAngle = angle + offset
+          const stockNode = sub.nodes.find((nd) => nd.id === stockId)
+          if (stockNode) {
+            ;(stockNode as any).fx = Math.cos(stockAngle) * outerR
+            ;(stockNode as any).fy = Math.sin(stockAngle) * outerR
+          }
+
+          // L4: tertiary shareholders fan around this stock within its
+          // sub-sector. Width capped to a fraction of the sub-sector so
+          // adjacent stocks' L4 clusters don't overlap.
+          const tertiaries = sub.tertiaryBySecondaryStock.get(stockId) ?? []
+          const T = tertiaries.length
+          const subSubArc = Math.max(0.05, subSectorWidth * 0.7)
+          tertiaries.forEach((tertId, t) => {
+            const tOffset = T === 1 ? 0 : (t / (T - 1) - 0.5) * subSubArc
+            const tAngle  = stockAngle + tOffset
+            const tNode   = sub.nodes.find((nd) => nd.id === tertId)
+            if (tNode) {
+              ;(tNode as any).fx = Math.cos(tAngle) * tertiaryR
+              ;(tNode as any).fy = Math.sin(tAngle) * tertiaryR
+            }
+          })
+        })
+      })
+
+      // Only forward {nodes, links} to react-force-graph — extra props like
+      // the Map of layout hints can trip up its prop diffing / re-init.
+      return { nodes: sub.nodes, links: sub.links }
+    }
+
+    // ── Investor-centric: existing 1-hop concentric-ring layout
     const sub = buildSubgraph(data, selectedNode)
     const neighbors = sub.nodes.filter((n) => n.id !== selectedNode.id)
-    const radius = ringRadiusFor(neighbors.length)
-    // Seed a clean ring: hub pinned at origin, neighbors placed at evenly
-    // spaced positions on a circle. The force sim then refines this layout
-    // organically — but it never has to spread nodes from scratch.
+    const layout = neighborLayout(neighbors.length)
     for (const n of sub.nodes) {
       if (n.id === selectedNode.id) {
         ;(n as any).fx = 0
@@ -129,26 +327,22 @@ export function NetworkGraph({ data, selectedNode, onNodeClick }: Props) {
       }
     }
     neighbors.forEach((n, i) => {
-      const angle = (2 * Math.PI * i) / Math.max(1, neighbors.length) - Math.PI / 2
-      ;(n as any).x = Math.cos(angle) * radius
-      ;(n as any).y = Math.sin(angle) * radius
+      const pos = neighborPosition(i, neighbors.length, layout)
+      ;(n as any).fx = pos.x
+      ;(n as any).fy = pos.y
     })
     return sub
   }, [data, selectedNode])
 
-  // Tune forces so a ring layout actually holds for large stars.
-  // Link strength is intentionally low so charge + collision can keep
-  // neighbors spread along the ring rather than pulling them inward.
+  // Re-fit the camera whenever the subgraph changes. Nodes are pinned at
+  // explicit fx/fy, so the layout is settled the moment graphData hits the
+  // engine — we don't need to wait for onEngineStop to maybe fire.
   useEffect(() => {
     if (!graphRef.current || !graphData) return
-    const neighborCount = Math.max(1, graphData.nodes.length - 1)
-    const radius = ringRadiusFor(neighborCount)
-    const charge = Math.max(-1200, -400 - neighborCount * 10)
-
-    graphRef.current.d3Force('collision', makeCollisionForce(28))
-    graphRef.current.d3Force('charge')?.strength(charge)
-    graphRef.current.d3Force('link')?.distance(radius).strength(0.15)
-    graphRef.current.d3ReheatSimulation()
+    const t = setTimeout(() => {
+      try { graphRef.current?.zoomToFit(400, 100) } catch { /* ignore */ }
+    }, 50)
+    return () => clearTimeout(t)
   }, [graphData])
 
   const paintNode = useCallback(
@@ -172,8 +366,9 @@ export function NetworkGraph({ data, selectedNode, onNodeClick }: Props) {
         : C.stock
       ctx.fill()
 
-      // Label below the node with white pill background
-      const fontSize  = Math.max(8, 11 / globalScale)
+      // Constant-screen-size labels: zigzag layout already prevents
+      // collisions, so we want labels to stay readable at every zoom level.
+      const fontSize   = Math.max(8, 11 / globalScale)
       const fontWeight = isSelected ? '700' : '500'
       ctx.font = `${fontWeight} ${fontSize}px Inter,system-ui,sans-serif`
       ctx.textAlign    = 'center'
@@ -209,6 +404,20 @@ export function NetworkGraph({ data, selectedNode, onNodeClick }: Props) {
       ctx.fillText(label, node.x, textY)
     },
     [selectedNode]
+  )
+
+  // Larger transparent hit-target around each node so the graph is forgiving
+  // of small nodes / dense rings. The painted area is invisible — only used
+  // by react-force-graph's pointer hit-testing.
+  const paintNodePointerArea = useCallback(
+    (node: any, color: string, ctx: CanvasRenderingContext2D) => {
+      const r = Math.max(14, nodeRadius(node as GraphNode) * 2.4)
+      ctx.fillStyle = color
+      ctx.beginPath()
+      ctx.arc(node.x, node.y, r, 0, 2 * Math.PI)
+      ctx.fill()
+    },
+    [],
   )
 
   // ── Render states ─────────────────────────────────────────────────────────
@@ -259,13 +468,16 @@ export function NetworkGraph({ data, selectedNode, onNodeClick }: Props) {
         }
         nodeCanvasObject={paintNode}
         nodeCanvasObjectMode={() => 'replace'}
+        nodePointerAreaPaint={paintNodePointerArea}
         linkColor={() => C.edge}
         linkWidth={(lk: any) => Math.max(0.5, (lk.percentage ?? 0) / 10)}
         onNodeClick={(node: any, evt: MouseEvent) => {
           evt.stopPropagation()
-          onNodeClick(selectedNode?.id === node.id ? null : (node as GraphNode))
+          // Keep the existing selection if user re-clicks the hub — toggling
+          // off into the empty state mid-exploration is jarring. Use the
+          // panel's ✕ button (or List view) to clear.
+          if (selectedNode?.id !== node.id) onNodeClick(node as GraphNode)
         }}
-        onBackgroundClick={() => onNodeClick(null)}
         onNodeDragEnd={(node: any) => {
           // Pin node at dropped position so it stays put
           node.fx = node.x
@@ -274,9 +486,12 @@ export function NetworkGraph({ data, selectedNode, onNodeClick }: Props) {
         onEngineStop={() => {
           try { graphRef.current?.zoomToFit(400, 80) } catch { /* ignore */ }
         }}
-        cooldownTicks={300}
-        d3AlphaDecay={0.015}
-        d3VelocityDecay={0.3}
+        // Nodes are pinned via fx/fy, so the simulation has nothing to
+        // converge — burn just a handful of ticks and stop, so navigation
+        // between selections stays snappy.
+        cooldownTicks={30}
+        d3AlphaDecay={0.05}
+        d3VelocityDecay={0.4}
         enableNodeDrag
         nodeRelSize={1}
       />

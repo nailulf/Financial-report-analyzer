@@ -1,11 +1,15 @@
 'use client'
 
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { NetworkGraph } from '@/components/investors/network-graph'
 import { InvestorPanel } from '@/components/investors/investor-panel'
 import type { GraphNode, InvestorGraphData } from '@/lib/types/network'
 
 export default function InvestorsPage() {
+  const searchParams                    = useSearchParams()
+  const initialTicker                   = searchParams.get('ticker')?.toUpperCase() ?? null
+  const initialInvestor                 = searchParams.get('investor') ?? null
   const [mounted, setMounted]           = useState(false)
   const [data, setData]                 = useState<InvestorGraphData | null>(null)
   const [loading, setLoading]           = useState(true)
@@ -26,6 +30,21 @@ export default function InvestorsPage() {
       .then((d: InvestorGraphData) => { setData(d); setLoading(false) })
       .catch((e) => { setError(e.message); setLoading(false) })
   }, [])
+
+  // Auto-select a node when deep-linked via ?ticker=XXX or ?investor=NAME.
+  // Runs once after data loads.
+  useEffect(() => {
+    if (!data) return
+    if (!initialTicker && !initialInvestor) return
+    const targetId = initialTicker
+      ? `stk:${initialTicker}`
+      : `inv:${initialInvestor}`
+    const found = data.nodes.find((n) => n.id === targetId)
+    if (found) {
+      setSelectedNode(found)
+      setView('graph')
+    }
+  }, [data, initialTicker, initialInvestor])
 
   // Search: find node and select it (NetworkGraph handles the zoom)
   const handleSearch = useCallback(

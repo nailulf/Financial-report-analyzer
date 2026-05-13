@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import Link from 'next/link'
 import type { Shareholder } from '@/lib/types/api'
 
 const MONTHS = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des']
@@ -32,9 +33,10 @@ function typeBg(t: string | null): string {
 interface Props {
   shareholders: Shareholder[]
   shareholderHistory?: Shareholder[][]
+  ticker?: string
 }
 
-export function ShareholdersWidget({ shareholders, shareholderHistory = [] }: Props) {
+export function ShareholdersWidget({ shareholders, shareholderHistory = [], ticker }: Props) {
   const historyDates = shareholderHistory
     .map((snap) => snap[0]?.report_date ?? null)
     .filter(Boolean) as string[]
@@ -62,7 +64,17 @@ export function ShareholdersWidget({ shareholders, shareholderHistory = [] }: Pr
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-3 border-b border-[#E0E0E5]">
         <div className="flex flex-col gap-0.5">
-          <span className="font-mono text-[13px] font-bold tracking-[0.5px] text-[#1A1A1A]">PEMEGANG SAHAM</span>
+          {ticker ? (
+            <Link
+              href={`/investors?ticker=${ticker}`}
+              className="font-mono text-[13px] font-bold tracking-[0.5px] text-[#1A1A1A] hover:text-blue-600 hover:underline underline-offset-2"
+              title="Lihat jaringan pemegang saham"
+            >
+              PEMEGANG SAHAM →
+            </Link>
+          ) : (
+            <span className="font-mono text-[13px] font-bold tracking-[0.5px] text-[#1A1A1A]">PEMEGANG SAHAM</span>
+          )}
           {snapshotDate && (
             <span className="font-mono text-[11px] text-[#888888]">Per tanggal {fmtDate(snapshotDate)}</span>
           )}

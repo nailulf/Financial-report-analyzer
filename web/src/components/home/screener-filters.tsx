@@ -106,7 +106,7 @@ const FILTER_KEYS = [
   'minRoe', 'maxPe', 'maxPbv', 'minNetMargin', 'minDivYield',
   'minDivAvg3yr', 'minDivAvg5yr',
   'minRevCagr3yr', 'minRevCagr5yr', 'minPriceCagr3yr', 'minPriceCagr5yr', 'minOcfCagr3yr', 'minOcfCagr5yr',
-  'minMktCap', 'minCompleteness', 'minConfidence',
+  'minMktCap',
   'maxPhaseDays',
   'sector', 'board', 'phase',
   'minRsi', 'maxRsi', 'macdCross', 'maxMacdCrossDays', 'minVolChangePct', 'minVolAvg',

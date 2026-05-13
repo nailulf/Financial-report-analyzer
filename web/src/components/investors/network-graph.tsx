@@ -19,8 +19,15 @@ function nodeId(ref: string | GraphNode): string {
 }
 
 function nodeRadius(n: GraphNode): number {
-  if (n.type === 'investor') return 5 + Math.sqrt(n.stock_count ?? 1) * 2.5
-  return 4 + Math.sqrt(n.investor_count ?? 1) * 2
+  if (n.type === 'investor') return Math.min(22, 5 + Math.sqrt(n.stock_count ?? 1) * 2)
+  return Math.min(12, 4 + Math.sqrt(n.investor_count ?? 1) * 1.5)
+}
+
+// Ring radius needed to give each neighbor ≥ ~110px of arc length
+// (label pill + breathing room). Scales linearly with neighbor count.
+function ringRadiusFor(neighborCount: number): number {
+  const n = Math.max(1, neighborCount)
+  return Math.max(220, (n * 110) / (2 * Math.PI))
 }
 
 const C = {
@@ -107,31 +114,42 @@ export function NetworkGraph({ data, selectedNode, onNodeClick }: Props) {
     return () => ro.disconnect()
   }, [])
 
-  // Zoom to fit after selection changes
-  useEffect(() => {
-    if (!graphRef.current) return
-    setTimeout(() => {
-      try { graphRef.current.zoomToFit(400, 80) } catch { /* ignore */ }
-    }, 500)
-  }, [selectedNode])
-
-  // Tune forces when selection changes
-  useEffect(() => {
-    if (!graphRef.current || !graphData) return
-    // Collision: nodes can't overlap + 16px breathing room
-    graphRef.current.d3Force('collision', makeCollisionForce(16))
-    // Stronger repulsion spreads nodes further apart
-    graphRef.current.d3Force('charge')?.strength(-200)
-    // Longer link distance so connected nodes aren't crammed together
-    graphRef.current.d3Force('link')?.distance(100)
-    graphRef.current.d3ReheatSimulation()
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedNode])
-
   const graphData = useMemo(() => {
     if (!data || !selectedNode) return null
-    return buildSubgraph(data, selectedNode)
+    const sub = buildSubgraph(data, selectedNode)
+    const neighbors = sub.nodes.filter((n) => n.id !== selectedNode.id)
+    const radius = ringRadiusFor(neighbors.length)
+    // Seed a clean ring: hub pinned at origin, neighbors placed at evenly
+    // spaced positions on a circle. The force sim then refines this layout
+    // organically — but it never has to spread nodes from scratch.
+    for (const n of sub.nodes) {
+      if (n.id === selectedNode.id) {
+        ;(n as any).fx = 0
+        ;(n as any).fy = 0
+      }
+    }
+    neighbors.forEach((n, i) => {
+      const angle = (2 * Math.PI * i) / Math.max(1, neighbors.length) - Math.PI / 2
+      ;(n as any).x = Math.cos(angle) * radius
+      ;(n as any).y = Math.sin(angle) * radius
+    })
+    return sub
   }, [data, selectedNode])
+
+  // Tune forces so a ring layout actually holds for large stars.
+  // Link strength is intentionally low so charge + collision can keep
+  // neighbors spread along the ring rather than pulling them inward.
+  useEffect(() => {
+    if (!graphRef.current || !graphData) return
+    const neighborCount = Math.max(1, graphData.nodes.length - 1)
+    const radius = ringRadiusFor(neighborCount)
+    const charge = Math.max(-1200, -400 - neighborCount * 10)
+
+    graphRef.current.d3Force('collision', makeCollisionForce(28))
+    graphRef.current.d3Force('charge')?.strength(charge)
+    graphRef.current.d3Force('link')?.distance(radius).strength(0.15)
+    graphRef.current.d3ReheatSimulation()
+  }, [graphData])
 
   const paintNode = useCallback(
     (node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
@@ -253,9 +271,12 @@ export function NetworkGraph({ data, selectedNode, onNodeClick }: Props) {
           node.fx = node.x
           node.fy = node.y
         }}
-        cooldownTicks={150}
-        d3AlphaDecay={0.02}
-        d3VelocityDecay={0.25}
+        onEngineStop={() => {
+          try { graphRef.current?.zoomToFit(400, 80) } catch { /* ignore */ }
+        }}
+        cooldownTicks={300}
+        d3AlphaDecay={0.015}
+        d3VelocityDecay={0.3}
         enableNodeDrag
         nodeRelSize={1}
       />

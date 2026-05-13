@@ -6,7 +6,8 @@ run_all.py — Master orchestrator
 Controls which scrapers run, in what order, and with what arguments.
 
 Usage:
-    python run_all.py --daily          # daily_prices + money_flow
+    python run_all.py --daily          # quarterly (current year) + daily_prices + money_flow + scores + signals
+    python run_all.py --daily-light    # daily_prices + money_flow + scores only (no quarterly, no signals)
     python run_all.py --weekly         # stock_universe
     python run_all.py --quarterly      # financials + company_profiles
     python run_all.py --full           # everything (weekly + quarterly + daily)
@@ -190,17 +191,6 @@ def _finalize_job(job_id: int, ticker: str, status: str, error_message: str | No
 # Run modes
 # ------------------------------------------------------------------
 
-def _update_scores(tickers: list[str] | None) -> None:
-    """Recompute completeness + confidence scores after a scraper run."""
-    from utils.score_calculator import update_scores_for_ticker, update_all_scores
-    console.rule("[bold cyan]SCORES: updating completeness & confidence")
-    if tickers:
-        for ticker in tickers:
-            update_scores_for_ticker(ticker)
-    else:
-        update_all_scores()
-
-
 def run_daily(
     tickers: list[str] | None,
     days: int,
@@ -212,7 +202,7 @@ def run_daily(
     """
     Runs the daily refresh chain:
         quarterly (current year by default) →
-        daily_prices → money_flow → scores → technical_signals
+        daily_prices → money_flow → technical_signals
 
     The quarterly portion (financials, company_profiles, document_links,
     corporate_events) is folded in so latest filings get picked up the same
@@ -232,21 +222,39 @@ def run_daily(
     _run_tracked(dp.run, "daily_prices", job_id, tickers=tickers)
     console.rule("[bold blue]DAILY: money_flow")
     _run_tracked(mf.run, "money_flow", job_id, tickers=tickers, days=days)
-    _update_scores(tickers)
     _run_technical_signals(tickers)
 
 
+def run_daily_light(
+    tickers: list[str] | None,
+    days: int,
+    job_id: int | None = None,
+) -> None:
+    """
+    Lightweight daily refresh: daily_prices → money_flow.
+
+    Skips the quarterly chain (financials_fallback, company_profiles,
+    document_links, corporate_events) and technical_signals computation —
+    use this for the typical end-of-day refresh where nothing at quarterly
+    cadence has changed. Chain --compute-signals to recompute MACD/RSI.
+    """
+    _, dp, _, mf = _import_scrapers()
+    console.rule("[bold blue]DAILY-LIGHT: daily_prices")
+    _run_tracked(dp.run, "daily_prices", job_id, tickers=tickers)
+    console.rule("[bold blue]DAILY-LIGHT: money_flow")
+    _run_tracked(mf.run, "money_flow", job_id, tickers=tickers, days=days)
+
+
 def run_weekly(tickers: list[str] | None, job_id: int | None = None) -> None:
-    """Runs: stock_universe → scores"""
+    """Runs: stock_universe"""
     su, *_ = _import_scrapers()
     console.rule("[bold green]WEEKLY: stock_universe")
     _run_tracked(su.run, "stock_universe", job_id, tickers=tickers)
-    _update_scores(tickers)
 
 
 def run_quarterly(tickers: list[str] | None, period: str, job_id: int | None = None,
                    year_from: int | None = None, year_to: int | None = None) -> None:
-    """Runs: stockbit financials → company_profiles → docs → events → scores"""
+    """Runs: stockbit financials → company_profiles → docs → events"""
     _, _, cp, _ = _import_scrapers()
     dl, ce = _import_phase2_scrapers()
     _, _, _, ff = _import_enrichment_scrapers()
@@ -262,16 +270,13 @@ def run_quarterly(tickers: list[str] | None, period: str, job_id: int | None = N
     _run_tracked_optional(dl.run, "document_links", job_id, tickers=tickers)
     console.rule("[bold yellow]QUARTERLY: corporate_events")
     _run_tracked_optional(ce.run, "corporate_events", job_id, tickers=tickers)
-    _update_scores(tickers)
 
 
 def run_enrich_ratios(tickers: list[str] | None, dry_run: bool = False) -> None:
-    """Runs: ratio_enricher → scores"""
+    """Runs: ratio_enricher"""
     re_, _, _, _ = _import_enrichment_scrapers()
     console.rule("[bold magenta]ENRICH: ratio_enricher")
     _run_tracked(re_.run, "ratio_enricher", None, tickers=tickers, dry_run=dry_run)
-    if not dry_run:
-        _update_scores(tickers)
 
 
 def run_dividends(tickers: list[str] | None, job_id: int | None = None) -> None:
@@ -295,8 +300,6 @@ def run_financials_fallback(
     _run_tracked(ff.run, "financials_fallback", None,
                  tickers=tickers, source=source, only_missing=only_missing, dry_run=dry_run,
                  year_from=year_from, year_to=year_to)
-    if not dry_run:
-        _update_scores(tickers)
 
 
 def run_fill_gaps(
@@ -392,7 +395,6 @@ def run_full(tickers: list[str] | None, period: str, days: int, job_id: int | No
         console.rule("[bold blue]FULL: broker_flow + bandar_signal (backfill)")
         _run_tracked(_backfill, "broker_backfill", job_id,
                      tickers=tickers, days=backfill_days, offset=offset, limit=batch_limit)
-    _update_scores(tickers)
 
     # ── Enrich ratios (denormalize PE/PBV/ROE etc. to stocks table) ──
     if _should_run("ratio_enricher"):
@@ -881,7 +883,10 @@ Examples:
     # Mode flags (at least one required)
     mode = parser.add_argument_group("Run modes (pick one or more)")
     mode.add_argument("--daily", action="store_true",
-                      help="Run: quarterly (current year) + daily_prices + money_flow + scores + technical_signals")
+                      help="Run: quarterly (current year) + daily_prices + money_flow + technical_signals")
+    mode.add_argument("--daily-light", action="store_true",
+                      help="Run: daily_prices + money_flow only (no quarterly chain, no signals). "
+                           "Chain --compute-signals if you also want MACD/RSI updated.")
     mode.add_argument("--weekly", action="store_true", help="Run: stock_universe")
     mode.add_argument("--quarterly", action="store_true",
                       help="Run: financials + company_profiles + docs + events "
@@ -1055,7 +1060,7 @@ Examples:
 
     args = parser.parse_args()
 
-    all_modes = [args.daily, args.weekly, args.quarterly, args.full,
+    all_modes = [args.daily, args.daily_light, args.weekly, args.quarterly, args.full,
                  args.enrich_ratios, args.dividends, args.fill_gaps, args.fallback_financials,
                  args.broker_backfill, args.insider,
                  args.build_ai_context, args.run_ai_analysis, args.ai_full,
@@ -1119,6 +1124,8 @@ Examples:
                 run_daily(tickers, args.days, job_id=job_id,
                           period=args.period,
                           year_from=args.year_from, year_to=args.year_to)
+            if args.daily_light:
+                run_daily_light(tickers, args.days, job_id=job_id)
             if args.fallback_financials:
                 run_financials_fallback(
                     tickers=tickers,

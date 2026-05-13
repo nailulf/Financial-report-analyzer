@@ -143,10 +143,11 @@ def _clean_numeric(val) -> Optional[float]:
             # dot is decimal separator
             s = s.replace(",", "")
     elif has_comma:
-        # Could be thousand sep ("1,234") or decimal ("1,5")
+        # Indonesian convention: a single comma is the decimal separator
+        # (e.g. "15,32" → 15.32, "49,74874372" → 49.74874372).
+        # Multiple commas indicate thousand grouping ("1,234,567" → 1234567).
         parts = s.split(",")
-        if len(parts) == 2 and len(parts[1]) <= 2:
-            # Treat as decimal ("15,32" → "15.32")
+        if len(parts) == 2:
             s = s.replace(",", ".")
         else:
             s = s.replace(",", "")
@@ -236,9 +237,11 @@ def dataframe_to_rows(
         if holder_name.lower() in ("nama pemegang", "pemegang saham", "holder", "total"):
             continue
 
-        # Warn but still include unknown tickers (data may lag stock_universe)
+        # Skip unknown tickers — FK on shareholders_major.ticker would reject them.
+        # Run stock_universe first to register new listings, then re-run this loader.
         if known_tickers and ticker not in known_tickers:
             warnings.append(f"Unknown ticker: {ticker} (row {idx})")
+            continue
 
         holder_type = None
         if col["holder_type"]:

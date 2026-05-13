@@ -66,47 +66,6 @@ function ScoreBar({ score, max, barColor }: { score: number; max: number; barCol
   )
 }
 
-function ScoreLine({
-  label,
-  score,
-  max = 100,
-  showFraction = false,
-}: {
-  label: string
-  score: number | null
-  max?: number
-  showFraction?: boolean
-}) {
-  if (score == null) {
-    return (
-      <div className="space-y-1">
-        <div className="flex items-center justify-between text-sm">
-          <span className="text-[#6D6C6A]">{label}</span>
-          <span className="text-[#9C9B99] text-xs">Not computed yet</span>
-        </div>
-        <div className="h-1.5 w-full bg-[#EDECEA] rounded-full" />
-      </div>
-    )
-  }
-
-  const { label: bandLabel, textColor, barColor } = scoreBand((score / max) * 100)
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between text-sm">
-        <span className="text-[#6D6C6A]">{label}</span>
-        <div className="flex items-center gap-2">
-          {showFraction && (
-            <span className="text-xs text-[#9C9B99]">{score} / {max}</span>
-          )}
-          <span className={`font-semibold tabular-nums ${textColor}`}>{score}</span>
-          <span className={`text-xs ${textColor}`}>{bandLabel}</span>
-        </div>
-      </div>
-      <ScoreBar score={score} max={max} barColor={barColor} />
-    </div>
-  )
-}
-
 function CategoryRow({ name, cat }: { name: string; cat: QualityCategory }) {
   const pct = cat.max > 0 ? Math.round((cat.score / cat.max) * 100) : 0
   const { barColor } = scoreBand(pct)
@@ -764,16 +723,6 @@ function StockbitRefreshModal({
                 })}
               </div>
 
-              {step === 'done' && job && (job.completeness_after != null || job.confidence_after != null) && (
-                <div className="bg-[#F5F4F1] rounded-lg px-3 py-2 text-xs border border-[#E5E4E1] flex items-center gap-4">
-                  {job.completeness_before != null && job.completeness_after != null && (
-                    <span className="text-[#6D6C6A]">Completeness: {job.completeness_before} → <span className="font-medium text-[#1A1918]">{job.completeness_after}</span></span>
-                  )}
-                  {job.confidence_before != null && job.confidence_after != null && (
-                    <span className="text-[#6D6C6A]">Confidence: {job.confidence_before} → <span className="font-medium text-[#1A1918]">{job.confidence_after}</span></span>
-                  )}
-                </div>
-              )}
             </div>
           )}
 
@@ -876,10 +825,9 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
 
   if (!data) return null
 
-  const { completeness_score, confidence_score, scores_updated_at, last_scraped_at, missing_categories } = data
+  const { scores_updated_at, last_scraped_at, missing_categories } = data
   const timestamp          = scores_updated_at ?? last_scraped_at
   const hasMissing         = missing_categories.length > 0
-  const isLowCompleteness  = completeness_score < 50
 
   return (
     <>
@@ -900,13 +848,9 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
           </button>
         </div>
 
-        {/* Score bars */}
-        <div className="px-5 py-4 space-y-4">
-          <ScoreLine label="Completeness" score={completeness_score} max={100} showFraction />
-          <ScoreLine label="Confidence"   score={confidence_score}   max={100} />
-
-          {/* Footer row */}
-          <div className="flex items-center justify-between pt-1">
+        {/* Footer row */}
+        <div className="px-5 py-4">
+          <div className="flex items-center justify-between">
             <span className="text-xs text-[#9C9B99]">
               {timestamp ? `Updated ${relativeTime(timestamp, isMounted)}` : 'Never updated'}
             </span>
@@ -919,11 +863,7 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
               {isLocalHost && (
                 <button
                   onClick={openModal}
-                  className={`text-xs px-2.5 py-1 rounded-lg border transition-colors ${
-                    isLowCompleteness
-                      ? 'border-amber-300 text-amber-600 hover:bg-amber-50'
-                      : 'border-[#E5E4E1] text-[#6D6C6A] hover:bg-[#F5F4F1]'
-                  }`}
+                  className="text-xs px-2.5 py-1 rounded-lg border border-[#E5E4E1] text-[#6D6C6A] hover:bg-[#F5F4F1] transition-colors"
                 >
                   ↺ Refresh Data
                 </button>
@@ -937,10 +877,7 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
           <div className="border-t border-[#E5E4E1]">
             <div className="px-5 py-4">
               <p className="text-xs font-semibold text-[#9C9B99] uppercase tracking-wide mb-3">
-                Completeness Breakdown
-                <span className="ml-1.5 font-normal text-[#9C9B99] normal-case">
-                  ({completeness_score} / 100 pts)
-                </span>
+                Data Coverage Breakdown
               </p>
               <table className="w-full">
                 <tbody>
@@ -950,22 +887,6 @@ export function DataQualityPanel({ data, ticker }: DataQualityPanelProps) {
                 </tbody>
               </table>
             </div>
-
-            {confidence_score == null && (
-              <div className="px-5 pb-4">
-                <p className="text-xs text-[#9C9B99] bg-[#F5F4F1] rounded px-3 py-2 border border-[#E5E4E1]">
-                  {isLocalHost ? (
-                    <>
-                      Confidence score has not been computed yet. Use{' '}
-                      <span className="font-medium text-[#6D6C6A]">↺ Refresh Data</span>{' '}
-                      to pull data from Stockbit.
-                    </>
-                  ) : (
-                    <>Confidence score has not been computed yet. Run a refresh from your local dev environment to pull data from Stockbit.</>
-                  )}
-                </p>
-              </div>
-            )}
 
             {hasMissing && (
               <AlternativeSources

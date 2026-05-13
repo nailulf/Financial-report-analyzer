@@ -57,7 +57,7 @@ type ColumnKey =
   | 'revenue_cagr_3yr' | 'revenue_cagr_5yr'
   | 'price_cagr_3yr' | 'price_cagr_5yr'
   | 'div_yield_avg_3yr' | 'div_yield_avg_5yr'
-  | 'market_cap' | 'completeness' | 'confidence'
+  | 'market_cap'
   | 'rsi_14' | 'macd_cross' | 'volume_change' | 'volume_avg'
   | 'wyckoff_event' | 'wyckoff_phase' | 'wyckoff_confidence'
   | 'wyckoff_event_v2' | 'wyckoff_phase_v2' | 'wyckoff_fsm_phase_v2' | 'wyckoff_confidence_v2'
@@ -326,25 +326,6 @@ const COLUMNS: ColumnDef[] = [
       return <span className="text-gray-600">{formatIDRCompact(v)}</span>
     },
   },
-  // ── Data Quality ──
-  {
-    key: 'completeness', label: 'Completeness', align: 'right',
-    render: (r) => {
-      const v = r.completeness_score
-      if (v == null) return <span className="text-gray-400">—</span>
-      const c = v >= 80 ? 'text-green-600' : v >= 60 ? 'text-amber-600' : 'text-red-500'
-      return <span className={`font-medium ${c}`}>{v}</span>
-    },
-  },
-  {
-    key: 'confidence', label: 'Confidence', align: 'right',
-    render: (r) => {
-      const v = r.confidence_score
-      if (v == null) return <span className="text-gray-400">—</span>
-      const c = v >= 70 ? 'text-green-600' : v >= 45 ? 'text-amber-600' : 'text-red-500'
-      return <span className={`font-medium ${c}`}>{v}</span>
-    },
-  },
 ]
 
 // ---------------------------------------------------------------------------
@@ -400,7 +381,6 @@ function ColumnPicker({
             { group: 'Dividends', keys: ['dividend_yield', 'div_yield_avg_3yr', 'div_yield_avg_5yr'] },
             { group: 'Growth', keys: ['revenue_cagr_3yr', 'revenue_cagr_5yr', 'price_cagr_3yr', 'price_cagr_5yr'] },
             { group: 'Technical', keys: ['rsi_14', 'macd_cross', 'volume_change', 'volume_avg'] },
-            { group: 'Data Quality', keys: ['completeness', 'confidence'] },
           ].map(({ group, keys }) => (
             <div key={group}>
               <div className="px-3 pt-2 pb-1 text-[10px] font-semibold text-gray-400 uppercase tracking-wider">{group}</div>

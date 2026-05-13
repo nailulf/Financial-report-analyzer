@@ -12,7 +12,7 @@ const NUMERIC_PARAMS = [
   'minRoe', 'maxPe', 'maxPbv', 'minNetMargin', 'minDivYield',
   'minDivAvg3yr', 'minDivAvg5yr',
   'minRevCagr3yr', 'minRevCagr5yr', 'minPriceCagr3yr', 'minPriceCagr5yr', 'minOcfCagr3yr', 'minOcfCagr5yr',
-  'minMktCap', 'minCompleteness', 'minConfidence', 'maxPhaseDays',
+  'minMktCap', 'maxPhaseDays',
   'minRsi', 'maxRsi', 'maxMacdCrossDays', 'minVolChangePct', 'minVolAvg',
   'maxWyckoffDays', 'minWyckoffConf',
   'maxWyckoffDaysV2', 'minWyckoffConfV2',

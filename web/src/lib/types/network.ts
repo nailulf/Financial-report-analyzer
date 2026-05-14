@@ -29,12 +29,17 @@ export interface GraphLink {
   source: string | GraphNode   // may be mutated to node object by force simulation
   target: string | GraphNode
   percentage: number
+  // % held in the previous snapshot. `null` means new position (didn't exist
+  // before); `0` on `percentage` with a non-null `prevPercentage` means the
+  // position was exited this quarter.
+  prevPercentage?: number | null
 }
 
 export interface InvestorGraphData {
   nodes: GraphNode[]
   links: GraphLink[]
   report_date: string | null
+  previous_report_date?: string | null
 }
 
 // Detail data computed client-side when an investor is selected
@@ -49,11 +54,14 @@ export interface InvestorDetail {
   holder_type: string | null
   total_pct: number
   stock_count: number
+  prev_total_pct?: number | null    // sum of % in the previous snapshot
+  prev_stock_count?: number | null  // # of positions in the previous snapshot
   holdings: Array<{
     ticker: string
     stock_name: string | null
     sector: string | null
     percentage: number
+    prevPercentage?: number | null  // % in the previous snapshot (null = NEW)
   }>
   co_investors: CoInvestor[]
 }
@@ -63,9 +71,11 @@ export interface StockDetail {
   stock_name: string | null
   sector: string | null
   investor_count: number
+  prev_investor_count?: number | null
   investors: Array<{
     name: string
     holder_type: string | null
     percentage: number
+    prevPercentage?: number | null  // % in the previous snapshot (null = NEW)
   }>
 }

@@ -41,6 +41,40 @@ function SectorBadge({ sector }: { sector: string | null | undefined }) {
   )
 }
 
+// Delta indicator for percentage changes between snapshots.
+// - prevPct null + curPct > 0  → NEW position
+// - prevPct > 0  + curPct = 0  → EXITED
+// - both > 0                   → ±delta (in %-points, 2dp)
+// Returns null when there's no previous snapshot to compare against.
+function PctDelta({ cur, prev }: { cur: number; prev: number | null | undefined }) {
+  if (prev === undefined || prev === null) {
+    if (cur > 0) {
+      return <span className="text-[10px] font-semibold px-1 py-0.5 rounded bg-emerald-100 text-emerald-700">NEW</span>
+    }
+    return null
+  }
+  if (cur === 0 && prev > 0) {
+    return <span className="text-[10px] font-semibold px-1 py-0.5 rounded bg-red-100 text-red-700">EXITED</span>
+  }
+  const d = cur - prev
+  if (Math.abs(d) < 0.005) {
+    return <span className="text-[10px] text-gray-400">▬</span>
+  }
+  const cls = d > 0 ? 'text-emerald-600' : 'text-red-600'
+  const sign = d > 0 ? '+' : ''
+  return <span className={`text-[10px] font-semibold ${cls}`}>{sign}{d.toFixed(2)}%</span>
+}
+
+// Compact delta for header summary counts/totals.
+function CountDelta({ cur, prev, suffix = '' }: { cur: number; prev: number | null | undefined; suffix?: string }) {
+  if (prev === undefined || prev === null) return null
+  const d = cur - prev
+  if (Math.abs(d) < 0.005) return null
+  const cls = d > 0 ? 'text-emerald-600' : 'text-red-600'
+  const sign = d > 0 ? '+' : ''
+  return <span className={`ml-1 text-[10px] font-semibold ${cls}`}>{sign}{d.toFixed(suffix === '%' ? 1 : 0)}{suffix}</span>
+}
+
 // ─── Compute detail objects from graph data ───────────────────────────────────
 
 function nodeId(ref: string | GraphNode): string {
@@ -48,22 +82,33 @@ function nodeId(ref: string | GraphNode): string {
 }
 
 function buildInvestorDetail(node: GraphNode, data: InvestorGraphData): InvestorDetail {
-  // Find all stock links for this investor
+  // Find all stock links for this investor (current + ghost-exited)
   const links = data.links.filter((lk) => nodeId(lk.source) === node.id)
-  const ownedStockIds = new Set(links.map((lk) => nodeId(lk.target)))
+  const ownedStockIds = new Set(links.filter((lk) => lk.percentage > 0).map((lk) => nodeId(lk.target)))
 
   const holdings = links
     .map((lk) => {
       const stockId = nodeId(lk.target)
       const stockNode = data.nodes.find((n) => n.id === stockId)
       return {
-        ticker:     stockNode?.label ?? stockId.replace('stk:', ''),
-        stock_name: stockNode?.stock_name ?? null,
-        sector:     stockNode?.sector ?? null,
-        percentage: lk.percentage,
+        ticker:         stockNode?.label ?? stockId.replace('stk:', ''),
+        stock_name:     stockNode?.stock_name ?? null,
+        sector:         stockNode?.sector ?? null,
+        percentage:     lk.percentage,
+        prevPercentage: lk.prevPercentage ?? null,
       }
     })
-    .sort((a, b) => b.percentage - a.percentage)
+    // Sort: current positions descending by %, exited rows last
+    .sort((a, b) => {
+      if (a.percentage > 0 && b.percentage === 0) return -1
+      if (a.percentage === 0 && b.percentage > 0) return 1
+      return b.percentage - a.percentage
+    })
+
+  // Previous-snapshot totals — only counting positions that existed then.
+  const prevHoldings = holdings.filter((h) => (h.prevPercentage ?? 0) > 0)
+  const prev_total_pct   = prevHoldings.reduce((s, h) => s + (h.prevPercentage ?? 0), 0)
+  const prev_stock_count = prevHoldings.length
 
   // Co-investors: other investors connected to any of the same stocks
   const coMap = new Map<string, Set<string>>()
@@ -86,10 +131,12 @@ function buildInvestorDetail(node: GraphNode, data: InvestorGraphData): Investor
     .slice(0, 20)
 
   return {
-    name:        node.label,
-    holder_type: node.holder_type ?? null,
-    total_pct:   node.total_pct ?? 0,
-    stock_count: node.stock_count ?? 0,
+    name:            node.label,
+    holder_type:     node.holder_type ?? null,
+    total_pct:       node.total_pct ?? 0,
+    stock_count:     node.stock_count ?? 0,
+    prev_total_pct:   prev_stock_count > 0 ? prev_total_pct : null,
+    prev_stock_count: prev_stock_count > 0 ? prev_stock_count : null,
     holdings,
     co_investors,
   }
@@ -102,18 +149,26 @@ function buildStockDetail(node: GraphNode, data: InvestorGraphData): StockDetail
       const invId   = nodeId(lk.source)
       const invNode = data.nodes.find((n) => n.id === invId)
       return {
-        name:        invNode?.label ?? invId.replace('inv:', ''),
-        holder_type: invNode?.holder_type ?? null,
-        percentage:  lk.percentage,
+        name:           invNode?.label ?? invId.replace('inv:', ''),
+        holder_type:    invNode?.holder_type ?? null,
+        percentage:     lk.percentage,
+        prevPercentage: lk.prevPercentage ?? null,
       }
     })
-    .sort((a, b) => b.percentage - a.percentage)
+    .sort((a, b) => {
+      if (a.percentage > 0 && b.percentage === 0) return -1
+      if (a.percentage === 0 && b.percentage > 0) return 1
+      return b.percentage - a.percentage
+    })
+
+  const prev_investor_count = investors.filter((i) => (i.prevPercentage ?? 0) > 0).length
 
   return {
-    ticker:         node.label,
-    stock_name:     node.stock_name ?? null,
-    sector:         node.sector ?? null,
-    investor_count: node.investor_count ?? 0,
+    ticker:               node.label,
+    stock_name:           node.stock_name ?? null,
+    sector:               node.sector ?? null,
+    investor_count:       node.investor_count ?? 0,
+    prev_investor_count:  prev_investor_count > 0 ? prev_investor_count : null,
     investors,
   }
 }
@@ -158,9 +213,12 @@ function InvestorView({
                 )}
               </div>
               <div className="shrink-0 ml-2 text-right">
-                <span className="text-sm font-semibold text-gray-700">
-                  {h.percentage.toFixed(2)}%
-                </span>
+                <div className="flex items-center gap-1.5 justify-end">
+                  <span className="text-sm font-semibold text-gray-700">
+                    {h.percentage > 0 ? `${h.percentage.toFixed(2)}%` : '—'}
+                  </span>
+                  <PctDelta cur={h.percentage} prev={h.prevPercentage} />
+                </div>
                 <div className="mt-0.5 h-1 w-16 bg-gray-100 rounded-full overflow-hidden">
                   <div
                     className="h-full bg-emerald-500 rounded-full"
@@ -239,9 +297,12 @@ function StockView({
                 )}
               </div>
               <div className="shrink-0 ml-2 text-right">
-                <span className="text-sm font-semibold text-gray-700">
-                  {inv.percentage.toFixed(2)}%
-                </span>
+                <div className="flex items-center gap-1.5 justify-end">
+                  <span className="text-sm font-semibold text-gray-700">
+                    {inv.percentage > 0 ? `${inv.percentage.toFixed(2)}%` : '—'}
+                  </span>
+                  <PctDelta cur={inv.percentage} prev={inv.prevPercentage} />
+                </div>
                 <div className="mt-0.5 h-1 w-16 bg-gray-100 rounded-full overflow-hidden">
                   <div
                     className="h-full bg-blue-500 rounded-full"
@@ -297,19 +358,35 @@ export function InvestorPanel({ node, data, onClose, onSelectNode }: Props) {
           </button>
         </div>
 
-        {/* Summary stats */}
-        <div className="flex gap-4 mt-3 text-xs text-gray-500">
+        {/* Summary stats — with delta vs previous snapshot */}
+        <div className="flex flex-wrap gap-4 mt-3 text-xs text-gray-500">
           {isInvestor && inv && (
             <>
-              <span><span className="font-semibold text-gray-700">{inv.stock_count}</span> stocks</span>
-              <span><span className="font-semibold text-gray-700">{inv.total_pct.toFixed(1)}%</span> total</span>
+              <span>
+                <span className="font-semibold text-gray-700">{inv.stock_count}</span> stocks
+                <CountDelta cur={inv.stock_count} prev={inv.prev_stock_count} />
+              </span>
+              <span>
+                <span className="font-semibold text-gray-700">{inv.total_pct.toFixed(1)}%</span> total
+                <CountDelta cur={inv.total_pct} prev={inv.prev_total_pct} suffix="%" />
+              </span>
               <span><span className="font-semibold text-gray-700">{inv.co_investors.length}</span> co-investors</span>
             </>
           )}
           {!isInvestor && stk && (
-            <span><span className="font-semibold text-gray-700">{stk.investor_count}</span> major investors</span>
+            <span>
+              <span className="font-semibold text-gray-700">{stk.investor_count}</span> major investors
+              <CountDelta cur={stk.investor_count} prev={stk.prev_investor_count} />
+            </span>
           )}
         </div>
+
+        {/* Comparison-date hint */}
+        {data.previous_report_date && (
+          <p className="mt-2 text-[10px] text-gray-400">
+            Δ vs {data.previous_report_date}
+          </p>
+        )}
       </div>
 
       {/* Scrollable body */}

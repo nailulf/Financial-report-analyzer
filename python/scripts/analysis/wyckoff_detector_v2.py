@@ -283,6 +283,15 @@ class WyckoffParamsV2:
     BC_DISTRIBUTED_VOL_Z_MIN: float = 1.0
     SC_DISTRIBUTED_VOL_Z_MIN: float = 0.8
 
+    # Feedback 1: lookback window for "is this range break driven by a
+    # climactic bar?" check. last3 was too narrow — on SCMA, the climactic
+    # up-bar at the breakout's leading edge aged out of the 3-bar window
+    # before distr_failed fired, defeating the block. 7 bars covers the
+    # typical span from a climactic blow-off to the bars that close above
+    # the range, while still being short enough not to suppress genuine
+    # non-climactic re-accumulation breakouts.
+    CLIMACTIC_BREAK_BLOCK_LOOKBACK: int = 7
+
     # CLIMACTIC_CLUSTER (3-bar gradual climax)
     CLUSTER_LOOKBACK: int = 3
     CLUSTER_VOL_Z_SUM_MIN: float = 4.0
@@ -524,8 +533,13 @@ class WyckoffDetectorV2:
             # Feedback 1 mirror: block accum_failed when the break is driven
             # by a climactic down-bar. A climactic down-bar inside an
             # accumulation range is consistent with capitulation / late SC
-            # action, not clean re-distribution.
-            if any(self._climactic_down_bar_shape(b.idx) for b in last3):
+            # action, not clean re-distribution. Use wider lookback so a
+            # leading-edge climactic bar doesn't age out before the 3-bar
+            # break completes.
+            block_window = self.bars[
+                max(0, idx - self.params.CLIMACTIC_BREAK_BLOCK_LOOKBACK + 1): idx + 1
+            ]
+            if any(self._climactic_down_bar_shape(b.idx) for b in block_window):
                 return
             ev = WyckoffEvent(
                 ticker=self._ticker or "",
@@ -575,9 +589,14 @@ class WyckoffDetectorV2:
             # climactic up-bar. A climactic up-bar inside a distribution range
             # is consistent with late-stage topping (a delayed BC / final
             # blow-off) — calling it re-accumulation here destroys the
-            # topping sequence. Wait for the breakout to mature into
-            # non-climactic continuation before declaring distr_failed.
-            if any(self._climactic_up_bar_shape(b.idx) for b in last3):
+            # topping sequence. Use a wider 7-bar window so the climactic
+            # leading-edge bar doesn't age out before the 3-bar break
+            # completes (SCMA Oct 2025: climactic at idx 175, breakout
+            # closes at 176-178 — last3 misses the climactic).
+            block_window = self.bars[
+                max(0, idx - self.params.CLIMACTIC_BREAK_BLOCK_LOOKBACK + 1): idx + 1
+            ]
+            if any(self._climactic_up_bar_shape(b.idx) for b in block_window):
                 return
             ev = WyckoffEvent(
                 ticker=self._ticker or "",

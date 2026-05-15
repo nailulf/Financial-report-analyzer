@@ -1,12 +1,30 @@
 'use client'
 
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { Suspense, useEffect, useState, useCallback } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { NetworkGraph } from '@/components/investors/network-graph'
 import { InvestorPanel } from '@/components/investors/investor-panel'
 import type { GraphNode, InvestorGraphData } from '@/lib/types/network'
 
+// Next.js requires `useSearchParams` to live under a Suspense boundary so the
+// page can statically prerender without bailing out to CSR. The boundary just
+// wraps the body that depends on URL params.
 export default function InvestorsPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex flex-col" style={{ height: 'calc(100vh - 56px)' }}>
+          <div className="shrink-0 h-12 bg-white border-b border-gray-200 animate-pulse" />
+          <div className="flex-1 bg-gray-50" />
+        </div>
+      }
+    >
+      <InvestorsPageBody />
+    </Suspense>
+  )
+}
+
+function InvestorsPageBody() {
   const searchParams                    = useSearchParams()
   const initialTicker                   = searchParams.get('ticker')?.toUpperCase() ?? null
   const initialInvestor                 = searchParams.get('investor') ?? null

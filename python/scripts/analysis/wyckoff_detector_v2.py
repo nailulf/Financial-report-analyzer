@@ -274,6 +274,15 @@ class WyckoffParamsV2:
     SC_CLIMAX_VOL_Z: float = 1.3
     BC_CLIMAX_VOL_Z: float = 1.5
 
+    # Feedback 3: vol_z floor for distributed climax paths (cluster /
+    # absorption). The cluster predicate fires on a 3-bar volume SUM, and
+    # the absorption predicate fires on a 15-bar volume sum — neither
+    # guarantees that the CURRENT bar has meaningful volume, which hurts
+    # BC timing accuracy. Require the trigger bar itself to contribute
+    # volume above this floor when firing via the distributed paths.
+    BC_DISTRIBUTED_VOL_Z_MIN: float = 1.0
+    SC_DISTRIBUTED_VOL_Z_MIN: float = 0.8
+
     # CLIMACTIC_CLUSTER (3-bar gradual climax)
     CLUSTER_LOOKBACK: int = 3
     CLUSTER_VOL_Z_SUM_MIN: float = 4.0
@@ -512,6 +521,12 @@ class WyckoffDetectorV2:
         bar = self.bars[idx]
         # Down-break failure
         if all(b.close < self.state.range_low * 0.95 for b in last3):
+            # Feedback 1 mirror: block accum_failed when the break is driven
+            # by a climactic down-bar. A climactic down-bar inside an
+            # accumulation range is consistent with capitulation / late SC
+            # action, not clean re-distribution.
+            if any(self._climactic_down_bar_shape(b.idx) for b in last3):
+                return
             ev = WyckoffEvent(
                 ticker=self._ticker or "",
                 event_type=ACCUM_FAILED,
@@ -556,6 +571,14 @@ class WyckoffDetectorV2:
         last3 = self.bars[idx - 2: idx + 1]
         bar = self.bars[idx]
         if all(b.close > self.state.range_high * 1.05 for b in last3):
+            # Feedback 1: block distr_failed when the break is driven by a
+            # climactic up-bar. A climactic up-bar inside a distribution range
+            # is consistent with late-stage topping (a delayed BC / final
+            # blow-off) — calling it re-accumulation here destroys the
+            # topping sequence. Wait for the breakout to mature into
+            # non-climactic continuation before declaring distr_failed.
+            if any(self._climactic_up_bar_shape(b.idx) for b in last3):
+                return
             ev = WyckoffEvent(
                 ticker=self._ticker or "",
                 event_type=DISTR_FAILED,
@@ -605,13 +628,16 @@ class WyckoffDetectorV2:
         if cur in (FSMPhase.DOWNTREND, FSMPhase.MARKDOWN) and slope > threshold:
             self.state.phase = FSMPhase.UPTREND
             self.state.trend_start_idx = idx
-            # Fresh trend → climax-candidate gap counter resets relative to
-            # this bar; old candidates from the prior trend don't gate.
-            self.state.last_bc_candidate_idx = -10_000
+            # Fresh trend → reset BC lockout fields (v2.1 asymmetric lockout)
+            # so the new uptrend can produce a BC candidate without being
+            # blocked by a confirmed/invalidated climax from the prior cycle.
+            self.state.last_bc_confirmed_idx = -10_000
+            self.state.last_bc_invalidated_idx = -10_000
         elif cur in (FSMPhase.UPTREND, FSMPhase.MARKUP) and slope < -threshold:
             self.state.phase = FSMPhase.DOWNTREND
             self.state.trend_start_idx = idx
-            self.state.last_sc_candidate_idx = -10_000
+            self.state.last_sc_confirmed_idx = -10_000
+            self.state.last_sc_invalidated_idx = -10_000
 
     # =================================================================
     # Rolling indicators
@@ -722,6 +748,41 @@ class WyckoffDetectorV2:
                 and vz > p.CLIMAX_VOL_Z
                 and bar.close_position < 0.75
                 and self._trend_slope(idx) > p.TREND_SLOPE_THRESHOLD)
+
+    def _climactic_up_bar_shape(self, idx: int) -> bool:
+        """
+        Spec CLIMACTIC_UP_BAR predicate — bar shape only, no trend context.
+
+        Distinct from _is_climactic_up which gates on trend_slope (used for
+        BC candidate eligibility while in MARKUP/UPTREND). This variant is
+        used where we need to recognize a climactic up-bar regardless of FSM
+        phase, e.g., blocking distr_failed when the range break is driven
+        by climactic action (which would more likely be a late BC than a
+        clean re-accumulation breakout — feedback 1).
+        """
+        bar = self.bars[idx]
+        atr = self._atr(idx)
+        p = self.params
+        if atr == 0:
+            return False
+        vz = self._vol_z(idx)
+        return (bar.spread > p.CLIMAX_SPREAD_ATR * atr
+                and vz > p.CLIMAX_VOL_Z
+                and bar.is_up
+                and bar.close_position > 0.4)
+
+    def _climactic_down_bar_shape(self, idx: int) -> bool:
+        """Mirror — spec CLIMACTIC_DOWN_BAR, bar shape only."""
+        bar = self.bars[idx]
+        atr = self._atr(idx)
+        p = self.params
+        if atr == 0:
+            return False
+        vz = self._vol_z(idx)
+        return (bar.spread > p.CLIMAX_SPREAD_ATR * atr
+                and vz > p.CLIMAX_VOL_Z
+                and bar.close_position < 0.4
+                and not bar.is_up)
 
     def _is_wide_up_bar(self, idx: int) -> bool:
         bar = self.bars[idx]
@@ -1107,20 +1168,39 @@ class WyckoffDetectorV2:
         """
         Mark an SC candidate per v2.1 spec. Three valid trigger paths
         mirroring BC: single-bar, 3-bar cluster, or 15-bar absorption regime.
+
+        Feedback 2+4: the absorption path no longer goes through the
+        candidate-confirmation cycle — the 15-bar absorption pattern itself
+        contains both stopping action (the new low) and the rally (the
+        recovery off that low), which IS the AR. Wiring it as a direct
+        MARKDOWN→ACCUM_A edge that emits SC + AR_up simultaneously unblocks
+        the dead zone where soft capitulation never produces a textbook SC
+        bar (DEWA March–April 2026 case).
         """
         p = self.params
         if idx - self.state.trend_start_idx < p.SC_MIN_TREND_PERSIST_BARS:
             return
-        if not self._climax_lockout_clear("SC", idx):
+
+        # Priority 1: absorption regime → direct entry (feedback 4).
+        # Check FIRST and bypass the single-bar/cluster soft lockout — the
+        # absorption pattern is a 15-bar structural signal, not a single-bar
+        # trigger, so an invalidated single-bar candidate inside the window
+        # is unrelated evidence and shouldn't gate this path. Hard lockout
+        # (after a confirmed SC) still applies.
+        if (idx - self.state.last_sc_confirmed_idx >= p.HARD_LOCKOUT_BARS
+                and self._absorption_regime(idx, "down")):
+            self._enter_accum_a_from_absorption(idx)
             return
 
+        # Priority 2 + 3: single-bar / cluster → traditional candidate path
+        if not self._climax_lockout_clear("SC", idx):
+            return
+        vz = self._vol_z(idx)
         path = None
-        if self._is_climactic_down(idx) and self._vol_z(idx) > p.SC_CLIMAX_VOL_Z:
+        if self._is_climactic_down(idx) and vz > p.SC_CLIMAX_VOL_Z:
             path = "single-bar"
-        elif self._climactic_cluster(idx, "down"):
+        elif vz > p.SC_DISTRIBUTED_VOL_Z_MIN and self._climactic_cluster(idx, "down"):
             path = "cluster-3bar"
-        elif self._absorption_regime(idx, "down"):
-            path = "absorption-15bar"
         if path is None:
             return
 
@@ -1129,9 +1209,74 @@ class WyckoffDetectorV2:
         if path == "single-bar":
             self.state.sc_candidate_low = bar.low
         else:
-            window = self.bars[max(0, idx - p.ABSORPTION_LOOKBACK + 1): idx + 1]
+            window = self.bars[max(0, idx - p.CLUSTER_LOOKBACK + 1): idx + 1]
             self.state.sc_candidate_low = min(b.low for b in window)
         self.state.sc_candidate_volume = bar.volume
+
+    def _enter_accum_a_from_absorption(self, idx: int) -> None:
+        """
+        Direct MARKDOWN → ACCUM_A transition when ABSORPTION_REGIME(down)
+        fires (feedback 2 + 4). The 15-bar absorption window already embeds:
+          - The SC: the lowest bar in the window (capitulation low)
+          - The AR_up: the bar with the highest high (rally off the low)
+        Emit both events at their actual bar dates and seat the FSM in
+        ACCUM_A with range_high established. No candidate cycle needed —
+        the absorption pattern's predicate (new low + >= 30% recovery) IS
+        the confirmation.
+        """
+        p = self.params
+        window = self.bars[idx - p.ABSORPTION_LOOKBACK + 1: idx + 1]
+        sc_bar = min(window, key=lambda b: b.low)
+        # AR is the highest high AFTER the SC (recovery rally). If the
+        # window's max-high happens to predate the low, fall back to the
+        # current bar's high (which by definition has rallied >= 30%).
+        post_sc = [b for b in window if b.idx > sc_bar.idx]
+        if post_sc:
+            ar_bar = max(post_sc, key=lambda b: b.high)
+        else:
+            ar_bar = self.bars[idx]
+
+        self.state.phase = FSMPhase.ACCUM_A
+        self.state.sc_idx = sc_bar.idx
+        self.state.sc_low = sc_bar.low
+        self.state.sc_volume = sc_bar.volume
+        self.state.range_high = ar_bar.high
+        # Treat as confirmed SC for lockout purposes — hard lockout prevents
+        # immediately re-flagging the same absorption window.
+        self.state.last_sc_confirmed_idx = sc_bar.idx
+        # Soft-entry suppression so basis_building doesn't double-fire
+        self.state.last_soft_entry_idx = idx
+
+        sc_evt = WyckoffEvent(
+            ticker=self._ticker or "",
+            event_type=SC,
+            event_date=sc_bar.date,
+            bar_idx=sc_bar.idx,
+            price=int(sc_bar.low),
+            volume=int(sc_bar.volume),
+            confidence=65,
+            inferred_phase="accumulation",
+            fsm_phase=self.state.phase.value,
+            notes=(f"Selling Climax (absorption-regime) — lowest low in "
+                   f"15-bar absorption window. Distributed capitulation, "
+                   f"no single climactic bar. Implicit AR at bar {ar_bar.idx}."),
+        )
+        self.state.events.append(sc_evt)
+
+        ar_evt = WyckoffEvent(
+            ticker=self._ticker or "",
+            event_type=AR_UP,
+            event_date=ar_bar.date,
+            bar_idx=ar_bar.idx,
+            price=int(ar_bar.high),
+            volume=int(ar_bar.volume),
+            confidence=60,
+            inferred_phase="accumulation",
+            fsm_phase=self.state.phase.value,
+            notes=(f"Automatic Rally (absorption-regime) — high {int(ar_bar.high)} "
+                   f"defines range_high. Recovery off SC at bar {sc_bar.idx}."),
+        )
+        self.state.events.append(ar_evt)
 
     def _check_sc_candidate(self, idx: int) -> None:
         """Mirror of _check_bc_candidate — same invalidate / confirm / timeout logic."""
@@ -1353,13 +1498,17 @@ class WyckoffDetectorV2:
         if not self._climax_lockout_clear("BC", idx):
             return
 
-        # Three valid trigger paths
+        # Three valid trigger paths. Feedback 3: cluster + absorption now
+        # also require vol_z(idx) > BC_DISTRIBUTED_VOL_Z_MIN so the BC bar
+        # itself anchors on meaningful volume — without this, BC can fire
+        # on a flat tail bar of a climactic cluster, hurting timing.
         path = None
-        if self._is_climactic_up(idx) and self._vol_z(idx) > p.BC_CLIMAX_VOL_Z:
+        vz = self._vol_z(idx)
+        if self._is_climactic_up(idx) and vz > p.BC_CLIMAX_VOL_Z:
             path = "single-bar"
-        elif self._climactic_cluster(idx, "up"):
+        elif vz > p.BC_DISTRIBUTED_VOL_Z_MIN and self._climactic_cluster(idx, "up"):
             path = "cluster-3bar"
-        elif self._absorption_regime(idx, "up"):
+        elif vz > p.BC_DISTRIBUTED_VOL_Z_MIN and self._absorption_regime(idx, "up"):
             path = "absorption-15bar"
         if path is None:
             return

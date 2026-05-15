@@ -2,6 +2,18 @@
 
 A specification for an AI agent to implement. Designed to fix the failures of the v1 algorithm observed on DEWA, where every climactic bar in a strong markup was misclassified as a Buying Climax.
 
+## v2.2 refinements (post-DEWA/AVIA review)
+
+Four refinements were added after observing v2.1 behavior on real IDX data:
+
+1. **Block `distr_failed` / `accum_failed` on climactic break bars.** A climactic up-bar inside a distribution range is more consistent with a late-stage BC / final blow-off than with a clean re-accumulation breakout. If any of the last 3 bars triggering a range-fail check has climactic up-bar shape, the failure event is suppressed — wait for the breakout to mature into non-climactic continuation before declaring `distr_failed`. Mirror logic applies to `accum_failed` on climactic down-bars. This preserves the topping sequence when distribution ends in a late blow-off rather than rolling over.
+
+2. **MARKDOWN → ACCUM_A via direct absorption entry.** The 15-bar absorption-regime predicate already embeds both a new low (stopping action) AND ≥30% recovery (rally). Rather than treating the trigger as a candidate that re-confirms over the next 5–10 bars, the algorithm now emits both `SC` (at the window's lowest bar) and `AR_up` (at the highest post-SC bar) simultaneously and seats the FSM in `ACCUM_A` with `range_high` established. This unblocks the dead zone where soft capitulation never produces a textbook single-bar SC. The absorption path bypasses the single-bar/cluster *soft* lockout (an invalidated single-bar SC candidate is unrelated evidence to a 15-bar structural pattern); the hard lockout after a confirmed SC still applies.
+
+3. **BC vol_z floor on distributed paths.** The cluster predicate fires on a 3-bar volume sum and the absorption predicate fires on a 15-bar volume sum — neither guarantees the *trigger bar itself* has meaningful volume, which hurts BC timing accuracy. The trigger bar must now exceed `BC_DISTRIBUTED_VOL_Z_MIN = 1.0` for both cluster and absorption paths. Same floor applies symmetrically to SC's cluster path (`SC_DISTRIBUTED_VOL_Z_MIN = 0.8`).
+
+4. **Trend-flip lockout reset.** When `_reclassify_trend` flips a stuck DOWNTREND/UPTREND to its opposite, the asymmetric lockout fields for the *new* trend's climax type are reset so the new cycle can produce a candidate without being blocked by the prior cycle's confirmation/invalidation.
+
 ## Design philosophy
 
 **Detection without invalidation is the original sin.** v1 committed to a phase on the first matching bar; it had no way to say "I was wrong" except via timeout. v2 separates *candidate* (this bar might be a BC) from *confirmation* (the next 10 bars proved it).
